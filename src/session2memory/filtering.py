@@ -9,8 +9,8 @@ NOISE_PREFIXES = (
 
 INSTRUCTION_MARKERS = (
     "agents.md instructions",
-    "claude.md",
-    "gemini.md",
+    "claude.md instructions",
+    "gemini.md instructions",
     "<instructions>",
 )
 

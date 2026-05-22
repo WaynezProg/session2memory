@@ -74,6 +74,10 @@ def test_noise_filter_removes_plain_wrapped_gemini_instruction_blocks() -> None:
     assert is_noise(message(1, "user", text))
 
 
+def test_noise_filter_keeps_normal_claude_md_content() -> None:
+    assert not is_noise(message(1, "assistant", "完成：更新 CLAUDE.md 的使用說明"))
+
+
 def test_extracts_only_high_signal_candidates() -> None:
     session = record(
         [
@@ -90,3 +94,10 @@ def test_extracts_only_high_signal_candidates() -> None:
     assert candidates[0].durable is True
     assert candidates[1].durable is True
     assert candidates[0].text == "P0 不用 LLM 摘要。"
+
+
+def test_extraction_skips_negated_decision_marker() -> None:
+    session = record([message(1, "user", "這不是決定：先別記")])
+    workspace = resolve_workspace(session)
+
+    assert extract_candidates(session, workspace) == []
