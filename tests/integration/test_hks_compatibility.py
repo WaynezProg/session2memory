@@ -149,7 +149,12 @@ def test_readme_documents_hks_safe_workflow() -> None:
     assert "export KS_ROOT=" in readme
     assert "uv run ks ingest /path/to/out/session-memory" in readme
     assert "uv run ks update /path/to/out/session-memory" in readme
-    assert "Do not ingest `~/.codex/sessions`" in readme
+    assert "Do not ingest" in readme
+    assert "`~/.codex/sessions`" in readme
+    assert "`~/.claude/projects`" in readme
+    assert "`~/.qwen/projects`" in readme
+    assert "OpenCode" in readme
+    assert "SQLite directly" in readme
     assert "uv run pytest -q" in readme
     assert "uv run ruff check ." in readme
     assert "uv run mypy src/session2memory" in readme
