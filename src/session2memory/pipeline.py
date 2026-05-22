@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -30,9 +30,14 @@ def run_pipeline(
     filtered_count = 0
     candidates: list[MemoryCandidate] = []
     workspaces: dict[str, WorkspaceIdentity] = {}
+    skipped: list[str] = []
     workspace_filter = workspace.resolve(strict=False) if workspace else None
 
-    for _tool, adapter in sorted(adapters.items()):
+    for tool, adapter in sorted(adapters.items()):
+        source_root = source_roots.get(tool)
+        if source_root is not None and not source_root.exists():
+            skipped.append(f"{tool}: missing source root: {source_root.as_posix()}")
+            continue
         for record in adapter.iter_sessions(date):
             resolved_workspace = resolve_workspace(record)
             if workspace_filter and not _matches_workspace(
@@ -44,6 +49,7 @@ def run_pipeline(
             filtered_count += sum(1 for message in record.messages if is_noise(message))
             workspaces[resolved_workspace.workspace_id] = resolved_workspace
             candidates.extend(extract_candidates(record, resolved_workspace))
+        skipped.extend(_adapter_skipped(adapter))
 
     write_output(
         output_dir=output_dir,
@@ -52,7 +58,7 @@ def run_pipeline(
         workspaces=workspaces,
         scanned_tools=sorted(adapters),
         source_roots=source_roots,
-        skipped=[],
+        skipped=skipped,
         session_count=session_count,
         message_count=message_count,
         filtered_count=filtered_count,
@@ -66,3 +72,10 @@ def _matches_workspace(
 ) -> bool:
     record_cwd = record.cwd.resolve(strict=False) if record.cwd else None
     return workspace_filter in {record_cwd, resolved_workspace.canonical_path}
+
+
+def _adapter_skipped(adapter: PipelineAdapter) -> list[str]:
+    raw: object = getattr(adapter, "skipped", ())
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+        return []
+    return [str(reason) for reason in raw]

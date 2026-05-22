@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from session2memory.adapters.base import make_message, parse_datetime, read_jsonl
+from session2memory.adapters.base import (
+    make_message,
+    parse_datetime,
+    read_jsonl,
+    skipped_file_reason,
+)
 from session2memory.models import SessionMessage, SessionRecord
 
 
@@ -12,11 +17,16 @@ class CodexAdapter:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.skipped: list[str] = []
 
     def iter_sessions(self, date: str) -> Iterator[SessionRecord]:
+        self.skipped.clear()
         year, month, day = date.split("-")
         for path in sorted((self.root / year / month / day).glob("*.jsonl")):
-            yield self._read_file(path)
+            try:
+                yield self._read_file(path)
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.skipped.append(skipped_file_reason(self.tool, path, exc))
 
     def _read_file(self, path: Path) -> SessionRecord:
         session_id = path.stem

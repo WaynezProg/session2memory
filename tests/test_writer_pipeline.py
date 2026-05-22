@@ -125,12 +125,21 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     assert "P0 不用 LLM 摘要。" in memory
     assert "/tmp/raw/session.jsonl" not in daily
     assert evidence["source_path"] == "/tmp/raw/session.jsonl"
+    assert evidence["id"] == "e000001"
+    assert evidence["evidence_id"] == "e000001"
     assert manifest["generator"] == "session2memory"
     assert manifest["version"] == "0.1.0"
     assert manifest["counts"]["sessions"] == 1
     assert manifest["counts"]["messages"] == 2
     assert manifest["counts"]["durable_memories"] == 1
     assert manifest["counts"]["evidence_records"] == 1
+    assert manifest["counts"]["daily_entries"] == 1
+    assert manifest["output_files"] == [
+        "daily/2026-05-22.md",
+        "evidence/index.jsonl",
+        "manifest.json",
+        "memories/repo-123.md",
+    ]
 
 
 def test_write_output_removes_stale_managed_files(tmp_path: Path) -> None:
@@ -301,6 +310,8 @@ def test_evidence_order_is_stable_when_only_workspace_path_or_durable_differs(
 
 def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: Path) -> None:
     output = tmp_path / "session-memory"
+    source_root = tmp_path / "raw"
+    source_root.mkdir()
     adapter = FakeAdapter(
         [
             record(
@@ -316,7 +327,7 @@ def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: 
         adapters={"codex": adapter},
         output_dir=output,
         date="2026-05-22",
-        source_roots={"codex": Path("/tmp/raw")},
+        source_roots={"codex": source_root},
         dry_run=False,
     )
 
@@ -327,6 +338,124 @@ def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: 
     assert manifest["counts"]["messages"] == 2
     assert manifest["counts"]["filtered"] == 1
     assert manifest["counts"]["evidence_records"] == 1
+
+
+def test_run_pipeline_keeps_completed_and_verification_out_of_workspace_memory(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "session-memory"
+    source_root = tmp_path / "raw"
+    source_root.mkdir()
+    adapter = FakeAdapter(
+        [
+            record(
+                [
+                    message(1, "user", "Decision: durable architecture choice."),
+                    message(2, "assistant", "Done: implemented contract fix."),
+                    message(3, "assistant", "Verification: uv run pytest -q passed."),
+                ]
+            )
+        ]
+    )
+
+    sessions, memories = run_pipeline(
+        adapters={"codex": adapter},
+        output_dir=output,
+        date="2026-05-22",
+        source_roots={"codex": source_root},
+        dry_run=False,
+    )
+
+    daily = (output / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
+    memory = next((output / "memories").glob("*.md")).read_text(encoding="utf-8")
+    evidence_rows = [
+        json.loads(line)
+        for line in (output / "evidence" / "index.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert (sessions, memories) == (1, 3)
+    assert "implemented contract fix" in daily
+    assert "uv run pytest -q passed" in daily
+    assert "durable architecture choice" in memory
+    assert "implemented contract fix" not in memory
+    assert "uv run pytest -q passed" not in memory
+    assert {(row["kind"], row["durable"]) for row in evidence_rows} == {
+        ("decision", True),
+        ("completed", False),
+        ("verification", False),
+    }
+
+
+def test_run_pipeline_merges_malformed_jsonl_skips_into_manifest(tmp_path: Path) -> None:
+    source_root = tmp_path / "codex-source"
+    source_dir = source_root / "2026" / "05" / "22"
+    source_dir.mkdir(parents=True)
+    valid_path = source_dir / "valid.jsonl"
+    bad_path = source_dir / "bad.jsonl"
+    valid_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "valid-1",
+                            "timestamp": "2026-05-22T01:00:00Z",
+                            "cwd": "/tmp/repo",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "Decision: keep valid."}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bad_path.write_text("{bad json\n", encoding="utf-8")
+    output = tmp_path / "session-memory"
+
+    sessions, memories = run_pipeline(
+        adapters={"codex": CodexAdapter(source_root)},
+        output_dir=output,
+        date="2026-05-22",
+        source_roots={"codex": source_root},
+        dry_run=False,
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+
+    assert (sessions, memories) == (1, 1)
+    assert manifest["counts"]["sessions"] == 1
+    assert any(bad_path.as_posix() in reason for reason in manifest["skipped"])
+    assert any("malformed JSON" in reason for reason in manifest["skipped"])
+
+
+def test_run_pipeline_records_missing_source_root_in_manifest(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    missing_root = tmp_path / "missing-codex"
+
+    sessions, memories = run_pipeline(
+        adapters={"codex": FakeAdapter([record([message(1, "user", "Decision: ignore.")])])},
+        output_dir=output,
+        date="2026-05-22",
+        source_roots={"codex": missing_root},
+        dry_run=False,
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+
+    assert (sessions, memories) == (0, 0)
+    assert any(missing_root.as_posix() in reason for reason in manifest["skipped"])
+    assert any("missing source root" in reason for reason in manifest["skipped"])
 
 
 def test_pipeline_evidence_round_trips_to_raw_source_range_without_markdown_paths(

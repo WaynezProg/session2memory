@@ -35,13 +35,16 @@ def write_output(
     (output_dir / "memories").mkdir(parents=True, exist_ok=True)
     (output_dir / "evidence").mkdir(parents=True, exist_ok=True)
 
-    (output_dir / "daily" / f"{date}.md").write_text(
+    daily_path = output_dir / "daily" / f"{date}.md"
+    daily_path.write_text(
         _daily_markdown(date, ordered, evidence_by_id),
         encoding="utf-8",
     )
     durable_candidates = [candidate for candidate in ordered if candidate.durable]
+    memory_files: list[str] = []
     for workspace_id, workspace_candidates in _group_by_workspace(durable_candidates).items():
-        (output_dir / "memories" / f"{workspace_id}.md").write_text(
+        memory_path = output_dir / "memories" / f"{workspace_id}.md"
+        memory_path.write_text(
             _workspace_markdown(
                 workspaces.get(workspace_id),
                 workspace_id,
@@ -50,6 +53,7 @@ def write_output(
             ),
             encoding="utf-8",
         )
+        memory_files.append(memory_path.relative_to(output_dir).as_posix())
 
     evidence_lines = [
         json.dumps(
@@ -59,10 +63,17 @@ def write_output(
         )
         for candidate in ordered
     ]
-    (output_dir / "evidence" / "index.jsonl").write_text(
+    evidence_path = output_dir / "evidence" / "index.jsonl"
+    evidence_path.write_text(
         "\n".join(evidence_lines) + ("\n" if evidence_lines else ""),
         encoding="utf-8",
     )
+    output_files = [
+        daily_path.relative_to(output_dir).as_posix(),
+        evidence_path.relative_to(output_dir).as_posix(),
+        "manifest.json",
+        *memory_files,
+    ]
 
     manifest = {
         "date": date,
@@ -74,7 +85,9 @@ def write_output(
             "filtered": filtered_count,
             "evidence_records": len(candidates),
             "durable_memories": sum(1 for candidate in candidates if candidate.durable),
+            "daily_entries": len(candidates),
         },
+        "output_files": output_files,
         "scanned_tools": sorted(scanned_tools),
         "source_roots": {
             tool: source_roots[tool].as_posix() for tool in sorted(source_roots)
@@ -164,6 +177,7 @@ def _evidence_record(evidence_id: str, candidate: MemoryCandidate) -> dict[str, 
     record = candidate.evidence.to_json()
     record.update(
         {
+            "id": evidence_id,
             "evidence_id": evidence_id,
             "kind": candidate.kind,
             "workspace_id": candidate.workspace_id,

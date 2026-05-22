@@ -3,7 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from session2memory.adapters.base import make_message, parse_datetime, read_jsonl
+from session2memory.adapters.base import (
+    make_message,
+    parse_datetime,
+    read_jsonl,
+    skipped_file_reason,
+)
 from session2memory.models import SessionMessage, SessionRecord
 
 
@@ -12,12 +17,18 @@ class ClaudeAdapter:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.skipped: list[str] = []
 
     def iter_sessions(self, date: str) -> Iterator[SessionRecord]:
+        self.skipped.clear()
         for path in sorted(self.root.glob("**/*.jsonl")):
             if "/subagents/" in path.as_posix():
                 continue
-            record = self._read_file(path)
+            try:
+                record = self._read_file(path)
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.skipped.append(skipped_file_reason(self.tool, path, exc))
+                continue
             if record.started_at and record.started_at.date().isoformat() == date:
                 yield record
 

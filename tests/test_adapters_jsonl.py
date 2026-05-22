@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from session2memory.adapters.claude import ClaudeAdapter
@@ -40,3 +41,50 @@ def test_claude_adapter_reads_jsonl_content_blocks() -> None:
     assert records[0].tool == "claude"
     assert records[0].session_id == "claude-1"
     assert records[0].messages[0].text == "坑：不要把 raw transcript 丟進 HKS。"
+
+
+def test_codex_adapter_skips_malformed_jsonl_file_and_keeps_valid_session(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "codex"
+    date_dir = root / "2026" / "05" / "22"
+    date_dir.mkdir(parents=True)
+    valid_path = date_dir / "valid.jsonl"
+    bad_path = date_dir / "bad.jsonl"
+    valid_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "valid-1",
+                            "timestamp": "2026-05-22T01:00:00Z",
+                            "cwd": "/tmp/repo",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "Decision: keep valid."}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bad_path.write_text("{bad json\n", encoding="utf-8")
+    adapter = CodexAdapter(root)
+
+    records = list(adapter.iter_sessions("2026-05-22"))
+
+    assert len(records) == 1
+    assert records[0].session_id == "valid-1"
+    assert any(bad_path.as_posix() in reason for reason in adapter.skipped)
+    assert any("malformed JSON" in reason for reason in adapter.skipped)

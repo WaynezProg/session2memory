@@ -108,17 +108,23 @@ def test_extracts_only_high_signal_candidates() -> None:
     session = record(
         [
             message(1, "user", "決定：P0 不用 LLM 摘要。"),
-            message(2, "assistant", "驗證：uv run pytest -q passed。"),
-            message(3, "assistant", "這裡只是一般聊天，沒有穩定記憶。"),
+            message(2, "assistant", "完成：writer contract 已更新。"),
+            message(3, "assistant", "驗證：uv run pytest -q passed。"),
+            message(4, "assistant", "這裡只是一般聊天，沒有穩定記憶。"),
         ]
     )
     workspace = resolve_workspace(session)
 
     candidates = extract_candidates(session, workspace)
 
-    assert [candidate.kind for candidate in candidates] == ["decision", "verification"]
+    assert [candidate.kind for candidate in candidates] == [
+        "decision",
+        "completed",
+        "verification",
+    ]
     assert candidates[0].durable is True
-    assert candidates[1].durable is True
+    assert candidates[1].durable is False
+    assert candidates[2].durable is False
     assert candidates[0].text == "P0 不用 LLM 摘要。"
 
 

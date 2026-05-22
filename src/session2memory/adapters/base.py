@@ -28,7 +28,21 @@ def read_jsonl(path: Path) -> Iterator[tuple[int, dict[str, object]]]:
         for line_number, line in enumerate(handle, start=1):
             stripped = line.strip()
             if stripped:
-                yield line_number, cast("dict[str, object]", json.loads(stripped))
+                try:
+                    loaded = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"{path.as_posix()}:{line_number}: malformed JSON: {exc.msg}"
+                    ) from exc
+                if not isinstance(loaded, dict):
+                    raise ValueError(
+                        f"{path.as_posix()}:{line_number}: expected JSON object"
+                    )
+                yield line_number, cast("dict[str, object]", loaded)
+
+
+def skipped_file_reason(tool: str, path: Path, exc: Exception) -> str:
+    return f"{tool}: skipped {path.as_posix()}: {exc}"
 
 
 def normalize_role(role: str) -> Role:

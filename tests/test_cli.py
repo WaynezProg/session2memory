@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -188,3 +189,28 @@ def test_import_workspace_mismatch_filters_codex_fixture(tmp_path: Path) -> None
 
     assert result.exit_code == 0
     assert_summary(result.output, "date=2026-05-22 tools=1 sessions=0 written=1 candidates=0")
+
+
+def test_import_writes_missing_source_root_reason_to_manifest(tmp_path: Path) -> None:
+    output_dir = tmp_path / "memory"
+    missing_root = tmp_path / "missing-codex"
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "codex",
+            "--source-root",
+            f"codex={missing_root}",
+            "--output",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert_summary(result.output, "date=2026-05-22 tools=1 sessions=0 written=1 candidates=0")
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert any(missing_root.as_posix() in reason for reason in manifest["skipped"])
+    assert any("missing source root" in reason for reason in manifest["skipped"])

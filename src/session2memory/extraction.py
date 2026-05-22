@@ -7,10 +7,10 @@ from session2memory.models import MemoryCandidate, MemoryKind, SessionRecord, Wo
 
 RULES: tuple[tuple[MemoryKind, str, bool], ...] = (
     ("decision", r"^\s*(?:決定|Decision)[:：]\s*(.+)", True),
-    ("completed", r"^\s*(?:完成|Done)[:：]\s*(.+)", True),
+    ("completed", r"^\s*(?:完成|Done)[:：]\s*(.+)", False),
     ("pitfall", r"^\s*(?:坑|Pitfall)[:：]\s*(.+)", True),
     ("constraint", r"^\s*(?:限制|Constraint)[:：]\s*(.+)", True),
-    ("verification", r"^\s*(?:驗證|Verification)[:：]\s*(.+)", True),
+    ("verification", r"^\s*(?:驗證|Verification)[:：]\s*(.+)", False),
 )
 
 NEGATION_MARKERS = (
