@@ -5,9 +5,13 @@ from session2memory.models import SessionMessage
 NOISE_PREFIXES = (
     "You are Codex",
     "You are Claude",
+)
+
+INSTRUCTION_MARKERS = (
     "# AGENTS.md instructions",
     "# CLAUDE.md",
     "# GEMINI.md",
+    "<INSTRUCTIONS>",
 )
 
 TELEMETRY_MARKERS = (
@@ -32,9 +36,11 @@ def is_noise(message: SessionMessage) -> bool:
         return True
     if any(text.startswith(prefix) for prefix in NOISE_PREFIXES):
         return True
+    if any(marker in text for marker in INSTRUCTION_MARKERS):
+        return True
     if any(marker in text for marker in TELEMETRY_MARKERS):
         return True
-    if message.role == "tool" and text.count("\n") > 300:
+    if message.role == "tool" and (text.count("\n") > 300 or len(text) > 20_000):
         return True
     if text.startswith("Traceback (most recent call last)") and not _contains_signal(text):
         return True

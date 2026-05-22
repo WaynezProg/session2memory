@@ -46,6 +46,16 @@ def test_noise_filter_removes_system_prompt_agents_and_huge_output() -> None:
     assert not is_noise(message(5, "assistant", "驗證：uv run pytest -q passed。"))
 
 
+def test_noise_filter_removes_single_line_huge_tool_output() -> None:
+    assert is_noise(message(1, "tool", "x" * 20_001))
+
+
+def test_noise_filter_removes_wrapped_instruction_blocks() -> None:
+    text = "wrapper header\n\nSome context before pasted policy.\n<INSTRUCTIONS>\nRules..."
+
+    assert is_noise(message(1, "user", text))
+
+
 def test_extracts_only_high_signal_candidates() -> None:
     session = record(
         [
