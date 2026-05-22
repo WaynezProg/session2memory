@@ -39,7 +39,8 @@ def write_output(
         _daily_markdown(date, ordered, evidence_by_id),
         encoding="utf-8",
     )
-    for workspace_id, workspace_candidates in _group_by_workspace(ordered).items():
+    durable_candidates = [candidate for candidate in ordered if candidate.durable]
+    for workspace_id, workspace_candidates in _group_by_workspace(durable_candidates).items():
         (output_dir / "memories" / f"{workspace_id}.md").write_text(
             _workspace_markdown(
                 workspaces.get(workspace_id),

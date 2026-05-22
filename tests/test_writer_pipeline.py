@@ -165,6 +165,50 @@ def test_write_output_removes_stale_managed_files(tmp_path: Path) -> None:
     assert unmanaged.read_text(encoding="utf-8") == "keep"
 
 
+def test_write_output_keeps_non_durable_candidates_out_of_workspace_memories(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "session-memory"
+    durable_candidate = candidate("decision", "durable fact", "repo-123")
+    non_durable_candidate = candidate(
+        "daily",
+        "daily note",
+        "repo-123",
+        durable=False,
+        digest="sha256:daily",
+    )
+    only_daily_candidate = candidate(
+        "daily",
+        "other daily note",
+        "repo-456",
+        durable=False,
+        digest="sha256:other-daily",
+    )
+
+    write_output(
+        output_dir=output,
+        date="2026-05-22",
+        candidates=[durable_candidate, non_durable_candidate, only_daily_candidate],
+        workspaces={"repo-123": workspace("repo-123"), "repo-456": workspace("repo-456")},
+        scanned_tools=["codex"],
+        source_roots={"codex": Path("/tmp/raw")},
+        skipped=[],
+        session_count=1,
+        message_count=3,
+        filtered_count=0,
+        dry_run=False,
+    )
+
+    daily = (output / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
+    memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
+
+    assert "daily note" in daily
+    assert "other daily note" in daily
+    assert "durable fact" in memory
+    assert "daily note" not in memory
+    assert not (output / "memories" / "repo-456.md").exists()
+
+
 def test_evidence_order_is_stable_for_reversed_similar_candidates(tmp_path: Path) -> None:
     first = candidate(
         "decision",
