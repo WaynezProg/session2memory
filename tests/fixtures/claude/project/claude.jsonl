@@ -1,0 +1,2 @@
+{"sessionId":"claude-1","timestamp":"2026-05-22T03:00:00.000Z","type":"user","cwd":"/tmp/repo","message":{"role":"user","content":[{"type":"text","text":"坑：不要把 raw transcript 丟進 HKS。"}]}}
+{"sessionId":"claude-1","timestamp":"2026-05-22T03:01:00.000Z","type":"assistant","cwd":"/tmp/repo","message":{"role":"assistant","content":[{"type":"text","text":"已記錄，raw transcript 只當 evidence source。"}]}}

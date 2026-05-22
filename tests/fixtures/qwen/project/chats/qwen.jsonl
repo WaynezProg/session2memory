@@ -1,0 +1,2 @@
+{"uuid":"q1","sessionId":"qwen-1","timestamp":"2026-05-22T02:00:00.000Z","type":"user","cwd":"/tmp/repo","message":{"role":"user","parts":[{"text":"決定：P0 不用 LLM 摘要。"}]}}
+{"uuid":"q2","sessionId":"qwen-1","timestamp":"2026-05-22T02:01:00.000Z","type":"assistant","cwd":"/tmp/repo","message":{"role":"model","parts":[{"text":"收到，P0 採 deterministic extraction。"}]}}
