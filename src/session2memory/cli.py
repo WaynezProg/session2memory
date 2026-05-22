@@ -11,6 +11,7 @@ from session2memory.review import (
     ReviewNotFoundError,
     ReviewStatus,
     approve_review,
+    inspect_review,
     list_reviews,
     promote_reviews,
     reject_review,
@@ -145,6 +146,42 @@ def review_list(
             f"{row.get('kind', '')} {row.get('workspace_id', '')} "
             f"{row.get('evidence_id', '')} {row.get('text', '')}"
         )
+
+
+@review_app.command("inspect")
+def review_inspect(
+    review_id: Annotated[str, typer.Argument(help="Review row id.")],
+    date: Annotated[str, typer.Option("--date", help="Date to review in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+) -> None:
+    parsed_date = _parse_date(date)
+    try:
+        inspection = inspect_review(output_dir=output, date=parsed_date, review_id=review_id)
+    except ReviewNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    row = inspection.row
+    durable = "durable" if row.get("durable_suggestion") is True else "daily"
+    typer.echo(
+        f"id={row.get('id', '')} status={row.get('status', '')} durable={durable} "
+        f"kind={row.get('kind', '')} workspace={row.get('workspace_id', '')} "
+        f"evidence={row.get('evidence_id', '')}"
+    )
+    typer.echo("candidate:")
+    typer.echo(str(row.get("text", "")))
+    typer.echo("evidence:")
+    evidence = inspection.evidence
+    if evidence is None:
+        typer.echo("missing")
+    else:
+        typer.echo(
+            f"tool={evidence.get('tool', '')} session={evidence.get('session_id', '')} "
+            f"source={evidence.get('source_path', '')} "
+            f"lines={evidence.get('message_start', '')}-{evidence.get('message_end', '')} "
+            f"digest={evidence.get('digest', '')}"
+        )
+    typer.echo("preview:")
+    typer.echo(inspection.preview)
 
 
 @review_app.command("approve")

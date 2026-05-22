@@ -77,6 +77,14 @@ uv run session2memory review list \
   --output ./out/session-memory
 ```
 
+Inspect one candidate with its evidence preview:
+
+```bash
+uv run session2memory review inspect r000001 \
+  --date 2026-05-22 \
+  --output ./out/session-memory
+```
+
 Approve one candidate:
 
 ```bash
@@ -131,8 +139,8 @@ entries stay in `daily/` plus `evidence/`.
 
 ## Roadmap
 
-The next important review workflow is assisted review: evidence previews,
-bulk approval/rejection, and conflict handling for repeated promotions.
+The next important review workflow is bulk approval/rejection and conflict
+handling for repeated promotions.
 
 ## Verification
 

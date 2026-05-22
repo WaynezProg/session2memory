@@ -128,6 +128,59 @@ def test_review_list_missing_date_prints_no_rows(tmp_path: Path) -> None:
     assert result.output == ""
 
 
+def test_review_inspect_prints_candidate_and_evidence_preview(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+    source_path = tmp_path / "raw" / "session.jsonl"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {"id": "s1"}}),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Decision: use evidence-backed memory compiler.",
+                                }
+                            ],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence_path = output / "evidence" / "index.jsonl"
+    evidence_row = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence_row["source_path"] = source_path.as_posix()
+    evidence_path.write_text(json.dumps(evidence_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        ["review", "inspect", "r000001", "--date", "2026-05-22", "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == (
+        "id=r000001 status=approved durable=durable kind=decision "
+        "workspace=repo-123 evidence=e000001\n"
+        "candidate:\n"
+        "Use evidence-backed memory compiler.\n"
+        "evidence:\n"
+        f"tool=codex session=s1 source={source_path.as_posix()} lines=2-2 "
+        "digest=sha256:abc\n"
+        "preview:\n"
+        "Decision: use evidence-backed memory compiler.\n"
+    )
+
+
 def test_review_approve_updates_status_and_note_without_manual_jsonl_edit(
     tmp_path: Path,
 ) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -21,6 +22,13 @@ class ReviewUpdateResult:
     status: ReviewStatus
 
 
+@dataclass(frozen=True)
+class ReviewInspection:
+    row: dict[str, Any]
+    evidence: dict[str, Any] | None
+    preview: str
+
+
 class ReviewNotFoundError(ValueError):
     pass
 
@@ -32,6 +40,20 @@ def list_reviews(
     if status is None:
         return rows
     return [row for row in rows if row.get("status") == status]
+
+
+def inspect_review(*, output_dir: Path, date: str, review_id: str) -> ReviewInspection:
+    rows = _read_reviews(output_dir=output_dir, date=date)
+    for row in rows:
+        if row.get("id") != review_id:
+            continue
+        evidence = _find_evidence(output_dir=output_dir, row=row)
+        return ReviewInspection(
+            row=dict(row),
+            evidence=dict(evidence) if evidence is not None else None,
+            preview=_evidence_preview(evidence),
+        )
+    raise ReviewNotFoundError(f"Review id not found: {review_id}")
 
 
 def approve_review(
@@ -133,6 +155,169 @@ def _read_reviews(*, output_dir: Path, date: str) -> list[dict[str, Any]]:
 
 def _review_path(*, output_dir: Path, date: str) -> Path:
     return output_dir / "review" / f"{date}.jsonl"
+
+
+def _find_evidence(*, output_dir: Path, row: dict[str, Any]) -> dict[str, Any] | None:
+    evidence_id = str(row.get("evidence_id", ""))
+    for evidence in _read_jsonl(output_dir / "evidence" / "index.jsonl"):
+        if evidence.get("id") == evidence_id or evidence.get("evidence_id") == evidence_id:
+            return evidence
+    return None
+
+
+def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> str:
+    if evidence is None:
+        return "[evidence unavailable]"
+    source_value = evidence.get("source_path")
+    if not isinstance(source_value, str) or not source_value:
+        return "[source unavailable]"
+    source_path = Path(source_value)
+    start = _positive_int(evidence.get("message_start"))
+    end = _positive_int(evidence.get("message_end"))
+    if start is None:
+        return "[source range unavailable]"
+    if end is None or end < start:
+        end = start
+    if not source_path.exists():
+        return f"[source unavailable: {source_path.as_posix()}]"
+
+    tool = str(evidence.get("tool", ""))
+    if tool == "opencode":
+        preview = _opencode_preview(
+            source_path=source_path,
+            evidence=evidence,
+            start=start,
+            end=end,
+        )
+        return _truncate(preview, limit)
+    preview = _jsonl_preview(source_path=source_path, tool=tool, start=start, end=end)
+    return _truncate(preview, limit)
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _jsonl_preview(*, source_path: Path, tool: str, start: int, end: int) -> str:
+    try:
+        lines = source_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        return f"[source unreadable: {exc}]"
+    if start > len(lines):
+        return "[source range unavailable]"
+
+    preview_lines: list[str] = []
+    for raw in lines[start - 1 : end]:
+        preview_lines.append(_event_preview_text(raw=raw, tool=tool))
+    return "\n".join(line for line in preview_lines if line).strip() or "[empty evidence preview]"
+
+
+def _event_preview_text(*, raw: str, tool: str) -> str:
+    try:
+        event = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw.strip()
+    if not isinstance(event, dict):
+        return raw.strip()
+
+    if tool == "codex":
+        text = _codex_event_text(event)
+    elif tool == "claude":
+        text = _claude_event_text(event)
+    elif tool == "qwen":
+        text = _qwen_event_text(event)
+    else:
+        text = ""
+    return text or raw.strip()
+
+
+def _codex_event_text(event: dict[str, Any]) -> str:
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    if payload.get("type") != "message":
+        return ""
+    return _join_text_blocks(payload.get("content"))
+
+
+def _claude_event_text(event: dict[str, Any]) -> str:
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return ""
+    return _join_text_blocks(message.get("content"))
+
+
+def _qwen_event_text(event: dict[str, Any]) -> str:
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return ""
+    return _join_text_blocks(message.get("parts"))
+
+
+def _join_text_blocks(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    texts: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text.strip())
+    return "\n".join(texts)
+
+
+def _opencode_preview(
+    *, source_path: Path, evidence: dict[str, Any], start: int, end: int
+) -> str:
+    session_id = str(evidence.get("session_id", ""))
+    if not session_id:
+        return "[source range unavailable]"
+    try:
+        connection = sqlite3.connect(source_path)
+    except sqlite3.Error as exc:
+        return f"[source unreadable: {exc}]"
+    try:
+        rows = connection.execute(
+            """
+            select p.data
+            from message m
+            join part p on p.message_id = m.id and p.session_id = m.session_id
+            where m.session_id = ?
+            order by m.time_created, m.id, p.id
+            """,
+            (session_id,),
+        )
+        preview_lines: list[str] = []
+        for row_index, (part_data,) in enumerate(rows, start=1):
+            if row_index < start or row_index > end:
+                continue
+            try:
+                part_json = json.loads(str(part_data))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(part_json, dict) or part_json.get("type") != "text":
+                continue
+            text = part_json.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            preview_lines.append(text.strip())
+        return "\n".join(preview_lines).strip() or "[empty evidence preview]"
+    except sqlite3.Error as exc:
+        return f"[source unreadable: {exc}]"
+    finally:
+        connection.close()
+
+
+def _truncate(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
