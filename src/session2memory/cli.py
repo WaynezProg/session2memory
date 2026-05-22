@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import date as Date
 from pathlib import Path
 from typing import Annotated
 
@@ -44,11 +45,20 @@ def _parse_source_root(raw: list[str]) -> dict[str, Path]:
 
 
 def _selected_tools(requested_tools: list[str] | None, roots: dict[str, Path]) -> list[str]:
-    selected = requested_tools or sorted(roots) or list(P0_TOOLS)
-    for tool in selected:
+    selected: list[str] = []
+    for tool in requested_tools or sorted(roots) or list(P0_TOOLS):
         if tool not in P0_TOOLS:
             raise typer.BadParameter(f"Unsupported tool: {tool}")
+        if tool not in selected:
+            selected.append(tool)
     return selected
+
+
+def _parse_date(value: str) -> str:
+    try:
+        return Date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise typer.BadParameter("--date must use YYYY-MM-DD") from exc
 
 
 def _default_source_roots() -> dict[str, Path]:
@@ -76,6 +86,7 @@ def import_sessions(
         bool, typer.Option("--dry-run", help="Scan and report without writing output.")
     ] = False,
 ) -> None:
+    parsed_date = _parse_date(date)
     overrides = _parse_source_root(source_root or [])
     selected_tools = _selected_tools(tool, overrides)
     source_roots = _default_source_roots()
@@ -84,12 +95,12 @@ def import_sessions(
     session_count, candidate_count = run_pipeline(
         adapters=_build_adapters(selected_tools, source_roots),
         output_dir=output,
-        date=date,
+        date=parsed_date,
         source_roots=selected_source_roots,
         dry_run=dry_run,
         workspace=workspace,
     )
     typer.echo(
-        f"date={date} tools={len(selected_tools)} sessions={session_count} "
+        f"date={parsed_date} tools={len(selected_tools)} sessions={session_count} "
         f"written={0 if dry_run else 1} candidates={candidate_count}"
     )
