@@ -43,6 +43,12 @@ def test_session_message_text_is_stripped() -> None:
         digest="sha256:def",
     )
 
-    message = SessionMessage(index=1, role="user", text="  hello  ", timestamp=None, raw_pointer=pointer)
+    message = SessionMessage(
+        index=1,
+        role="user",
+        text="  hello  ",
+        timestamp=None,
+        raw_pointer=pointer,
+    )
 
     assert message.text == "hello"
