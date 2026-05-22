@@ -32,9 +32,15 @@ def find_git_root(cwd: Path) -> Path | None:
 
 
 def resolve_workspace(record: SessionRecord) -> WorkspaceIdentity:
-    opened_cwd = record.cwd.resolve() if record.cwd else None
-    repo_root = find_git_root(opened_cwd) if opened_cwd else None
-    canonical = repo_root or opened_cwd or record.source_path.parent.resolve()
+    opened_cwd = record.cwd.resolve(strict=False) if record.cwd else None
+    source_parent = record.source_path.parent.resolve()
+    cwd_exists = opened_cwd.exists() if opened_cwd else False
+    if cwd_exists and opened_cwd:
+        repo_root = find_git_root(opened_cwd)
+        canonical = repo_root or opened_cwd
+    else:
+        repo_root = None
+        canonical = source_parent
     workspace_id = f"{_slug_base(canonical)}-{_short_digest(canonical)}"
     return WorkspaceIdentity(
         workspace_id=workspace_id,
