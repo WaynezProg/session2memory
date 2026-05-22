@@ -17,7 +17,7 @@ INSTRUCTION_HEADING_RE = re.compile(
     (?:agents\.md\ instructions|claude\.md\ instructions|gemini\.md\ instructions|<instructions>)
     (?:
         \s*$ |
-        \s+for\b.*$ |
+        \s+for\s+(?:/|~/|[a-z]:[\\/]).*$ |
         \s*[:：].*$ |
         \s*[`'">\])}]+$
     )

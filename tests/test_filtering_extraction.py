@@ -78,6 +78,10 @@ def test_noise_filter_removes_markdown_agents_instruction_heading() -> None:
     assert is_noise(message(1, "user", "## AGENTS.md instructions for /tmp/repo"))
 
 
+def test_noise_filter_removes_path_suffix_instruction_heading() -> None:
+    assert is_noise(message(1, "user", "AGENTS.md instructions for /tmp/repo"))
+
+
 def test_noise_filter_removes_markdown_claude_instruction_heading() -> None:
     assert is_noise(message(1, "user", "### CLAUDE.md instructions"))
 
@@ -92,6 +96,12 @@ def test_noise_filter_keeps_mid_sentence_claude_md_instructions_content() -> Non
 
 def test_noise_filter_keeps_line_start_claude_md_instructions_prose() -> None:
     assert not is_noise(message(1, "assistant", "CLAUDE.md instructions 區段需要更新"))
+
+
+def test_noise_filter_keeps_non_path_for_suffix_prose() -> None:
+    assert not is_noise(
+        message(1, "assistant", "CLAUDE.md instructions for contributors need update")
+    )
 
 
 def test_extracts_only_high_signal_candidates() -> None:
