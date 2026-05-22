@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from session2memory.models import SessionMessage
 
 NOISE_PREFIXES = (
@@ -7,11 +9,15 @@ NOISE_PREFIXES = (
     "You are Claude",
 )
 
-INSTRUCTION_MARKERS = (
-    "agents.md instructions",
-    "claude.md instructions",
-    "gemini.md instructions",
-    "<instructions>",
+INSTRUCTION_HEADING_RE = re.compile(
+    r"""
+    ^\s*
+    [-*>`'"\[\]().:：\s]*
+    (?:\#\s*)?
+    (?:agents\.md\ instructions|claude\.md\ instructions|gemini\.md\ instructions|<instructions>)
+    (?=\s|$)
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 TELEMETRY_MARKERS = (
@@ -32,12 +38,11 @@ SIGNAL_MARKERS = (
 
 def is_noise(message: SessionMessage) -> bool:
     text = message.text.strip()
-    normalized_text = text.casefold()
     if message.role == "system":
         return True
     if any(text.startswith(prefix) for prefix in NOISE_PREFIXES):
         return True
-    if any(marker in normalized_text for marker in INSTRUCTION_MARKERS):
+    if _contains_instruction_heading(text):
         return True
     if any(marker in text for marker in TELEMETRY_MARKERS):
         return True
@@ -50,3 +55,7 @@ def is_noise(message: SessionMessage) -> bool:
 
 def _contains_signal(text: str) -> bool:
     return any(marker in text for marker in SIGNAL_MARKERS)
+
+
+def _contains_instruction_heading(text: str) -> bool:
+    return any(INSTRUCTION_HEADING_RE.match(line) for line in text.splitlines())

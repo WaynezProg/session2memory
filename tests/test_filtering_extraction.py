@@ -78,6 +78,10 @@ def test_noise_filter_keeps_normal_claude_md_content() -> None:
     assert not is_noise(message(1, "assistant", "完成：更新 CLAUDE.md 的使用說明"))
 
 
+def test_noise_filter_keeps_mid_sentence_claude_md_instructions_content() -> None:
+    assert not is_noise(message(1, "assistant", "完成：更新 CLAUDE.md instructions 區段"))
+
+
 def test_extracts_only_high_signal_candidates() -> None:
     session = record(
         [
