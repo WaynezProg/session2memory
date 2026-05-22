@@ -127,6 +127,7 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
 
     assert "P0 不用 LLM 摘要。" in daily
+    assert "source: codex, session: s1, lines: 2-2" in daily
     assert not list((output / "memories").glob("*.md"))
     assert len(review_rows) == 1
     review_row = review_rows[0]
@@ -139,6 +140,12 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
         "text": "P0 不用 LLM 摘要。",
         "workspace_id": "repo-123",
         "evidence_id": "e000001",
+        "source": {
+            "tool": "codex",
+            "session_id": "s1",
+            "message_start": 2,
+            "message_end": 2,
+        },
         "durable_suggestion": True,
         "review_note": "",
     }
@@ -586,3 +593,4 @@ def test_pipeline_evidence_round_trips_to_raw_source_range_without_markdown_path
     assert evidence["message_end"] == 2
     assert evidence["digest"] == digest_text(extracted)
     assert source_path.as_posix() not in daily
+    assert "source: codex, session: codex-evidence, lines: 2-2" in daily

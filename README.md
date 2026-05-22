@@ -32,6 +32,9 @@ Import writes three layers:
 - `review/YYYY-MM-DD.jsonl`: pending memory candidates for review.
 
 It does not write new entries into `memories/` directly.
+Daily and review rows include compact provenance such as
+`source: codex, session: <id>, lines: 2-2`. Full raw `source_path` values stay
+in `evidence/index.jsonl`.
 
 Limit to one tool:
 

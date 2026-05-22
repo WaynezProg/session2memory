@@ -373,7 +373,7 @@ def _append_workspace_memory(
         lines.append("")
     lines.append(
         f"- [{row['kind']}] {row['text']} "
-        f"(evidence: {evidence_id}, review: {review_ref})"
+        f"(evidence: {evidence_id}{_memory_source_suffix(row)}, review: {review_ref})"
     )
 
     with memory_path.open("a", encoding="utf-8") as handle:
@@ -383,6 +383,19 @@ def _append_workspace_memory(
 
 def _memory_header(workspace_id: str) -> list[str]:
     return [f"# {workspace_id}", ""]
+
+
+def _memory_source_suffix(row: dict[str, Any]) -> str:
+    source = row.get("source")
+    if not isinstance(source, dict):
+        return ""
+    tool = source.get("tool")
+    session_id = source.get("session_id")
+    message_start = source.get("message_start")
+    message_end = source.get("message_end")
+    if not tool or not session_id or not message_start or not message_end:
+        return ""
+    return f", source: {tool}, session: {session_id}, lines: {message_start}-{message_end}"
 
 
 def _promotion_key(row: dict[str, Any]) -> str:

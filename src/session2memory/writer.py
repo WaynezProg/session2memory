@@ -144,7 +144,8 @@ def _daily_markdown(
     for candidate in candidates:
         lines.append(
             f"- [{candidate.kind}] {candidate.text} "
-            f"(workspace: {candidate.workspace_id}, evidence: {evidence_by_id[id(candidate)]})"
+            f"(workspace: {candidate.workspace_id}, evidence: {evidence_by_id[id(candidate)]}, "
+            f"{_source_summary(candidate)})"
         )
     return "\n".join(lines).rstrip() + "\n"
 
@@ -202,9 +203,27 @@ def _review_record(review_id: str, evidence_id: str, candidate: MemoryCandidate)
         "text": candidate.text,
         "workspace_id": candidate.workspace_id,
         "evidence_id": evidence_id,
+        "source": _source_record(candidate),
         "durable_suggestion": candidate.durable,
         "review_note": "",
     }
+
+
+def _source_record(candidate: MemoryCandidate) -> dict[str, str | int]:
+    return {
+        "tool": candidate.evidence.tool,
+        "session_id": candidate.evidence.session_id,
+        "message_start": candidate.evidence.message_start,
+        "message_end": candidate.evidence.message_end,
+    }
+
+
+def _source_summary(candidate: MemoryCandidate) -> str:
+    source = _source_record(candidate)
+    return (
+        f"source: {source['tool']}, session: {source['session_id']}, "
+        f"lines: {source['message_start']}-{source['message_end']}"
+    )
 
 
 def _review_id(candidate: MemoryCandidate) -> str:

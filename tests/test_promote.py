@@ -67,6 +67,12 @@ def write_review_fixture(output: Path) -> None:
                 "text": "Use evidence-backed memory compiler.",
                 "workspace_id": "repo-123",
                 "evidence_id": "e000001",
+                "source": {
+                    "tool": "codex",
+                    "session_id": "s1",
+                    "message_start": 2,
+                    "message_end": 2,
+                },
                 "durable_suggestion": True,
                 "review_note": "approved by reviewer",
             },
@@ -94,6 +100,7 @@ def test_promote_approved_review_entries_to_workspace_memories(tmp_path: Path) -
 
     assert "Use evidence-backed memory compiler." in memory
     assert "e000001" in memory
+    assert "source: codex, session: s1, lines: 2-2" in memory
     assert "/tmp/raw/session.jsonl" not in memory
     assert review_row["status"] == "promoted"
     assert "memories/repo-123.md" in manifest["output_files"]
@@ -112,7 +119,7 @@ def test_review_list_prints_compact_candidate_rows(tmp_path: Path) -> None:
     assert (
         result.output
         == "r000001 approved durable decision repo-123 e000001 "
-        "Use evidence-backed memory compiler.\n"
+        "source=codex session=s1 lines=2-2 Use evidence-backed memory compiler.\n"
     )
 
 

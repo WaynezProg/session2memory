@@ -141,10 +141,11 @@ def review_list(
     parsed_date = _parse_date(date)
     for row in list_reviews(output_dir=output, date=parsed_date, status=status):
         durable = "durable" if row.get("durable_suggestion") is True else "daily"
+        source = _review_source_label(row)
         typer.echo(
             f"{row.get('id', '')} {row.get('status', '')} {durable} "
             f"{row.get('kind', '')} {row.get('workspace_id', '')} "
-            f"{row.get('evidence_id', '')} {row.get('text', '')}"
+            f"{row.get('evidence_id', '')} {source}{row.get('text', '')}"
         )
 
 
@@ -237,3 +238,16 @@ def review_promote(
     parsed_date = _parse_date(date)
     result = promote_reviews(output_dir=output, date=parsed_date)
     typer.echo(f"date={parsed_date} reviewed={result.reviewed} promoted={result.promoted}")
+
+
+def _review_source_label(row: dict[str, object]) -> str:
+    source = row.get("source")
+    if not isinstance(source, dict):
+        return ""
+    tool = source.get("tool")
+    session_id = source.get("session_id")
+    message_start = source.get("message_start")
+    message_end = source.get("message_end")
+    if not tool or not session_id or not message_start or not message_end:
+        return ""
+    return f"source={tool} session={session_id} lines={message_start}-{message_end} "
