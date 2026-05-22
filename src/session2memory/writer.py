@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ def write_output(
     ordered = sorted(candidates, key=_candidate_sort_key)
     evidence_by_id = {id(candidate): f"e{index:06d}" for index, candidate in enumerate(ordered, 1)}
 
+    _clear_managed_output(output_dir)
     (output_dir / "daily").mkdir(parents=True, exist_ok=True)
     (output_dir / "memories").mkdir(parents=True, exist_ok=True)
     (output_dir / "evidence").mkdir(parents=True, exist_ok=True)
@@ -88,13 +90,25 @@ def write_output(
     )
 
 
-def _candidate_sort_key(candidate: MemoryCandidate) -> tuple[str, str, str, str, int]:
+def _clear_managed_output(output_dir: Path) -> None:
+    for directory in ("daily", "memories", "evidence"):
+        shutil.rmtree(output_dir / directory, ignore_errors=True)
+    (output_dir / "manifest.json").unlink(missing_ok=True)
+
+
+def _candidate_sort_key(
+    candidate: MemoryCandidate,
+) -> tuple[str, str, str, str, int, str, str, int, str]:
     return (
         candidate.workspace_id,
         candidate.kind,
         candidate.text,
         candidate.evidence.session_id,
         candidate.evidence.message_start,
+        candidate.evidence.tool,
+        candidate.evidence.source_path.as_posix(),
+        candidate.evidence.message_end,
+        candidate.evidence.digest,
     )
 
 

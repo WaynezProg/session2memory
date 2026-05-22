@@ -17,7 +17,16 @@ from session2memory.pipeline import run_pipeline
 from session2memory.writer import write_output
 
 
-def candidate(kind: MemoryKind, text: str, workspace_id: str) -> MemoryCandidate:
+def candidate(
+    kind: MemoryKind,
+    text: str,
+    workspace_id: str,
+    *,
+    source_path: Path = Path("/tmp/raw/session.jsonl"),
+    message_start: int = 2,
+    message_end: int = 2,
+    digest: str = "sha256:abc",
+) -> MemoryCandidate:
     return MemoryCandidate(
         kind=kind,
         text=text,
@@ -25,11 +34,11 @@ def candidate(kind: MemoryKind, text: str, workspace_id: str) -> MemoryCandidate
         evidence=EvidencePointer(
             tool="codex",
             session_id="s1",
-            source_path=Path("/tmp/raw/session.jsonl"),
-            message_start=2,
-            message_end=2,
+            source_path=source_path,
+            message_start=message_start,
+            message_end=message_end,
             workspace_path=Path("/tmp/repo"),
-            digest="sha256:abc",
+            digest=digest,
         ),
         durable=True,
     )
@@ -118,6 +127,85 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     assert manifest["counts"]["messages"] == 2
     assert manifest["counts"]["durable_memories"] == 1
     assert manifest["counts"]["evidence_records"] == 1
+
+
+def test_write_output_removes_stale_managed_files(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    stale_memory = output / "memories" / "old.md"
+    stale_daily = output / "daily" / "2026-05-21.md"
+    stale_evidence = output / "evidence" / "old.jsonl"
+    unmanaged = output / "notes.txt"
+    stale_memory.parent.mkdir(parents=True)
+    stale_daily.parent.mkdir(parents=True)
+    stale_evidence.parent.mkdir(parents=True)
+    stale_memory.write_text("obsolete", encoding="utf-8")
+    stale_daily.write_text("obsolete", encoding="utf-8")
+    stale_evidence.write_text("obsolete", encoding="utf-8")
+    unmanaged.write_text("keep", encoding="utf-8")
+
+    write_output(
+        output_dir=output,
+        date="2026-05-22",
+        candidates=[],
+        workspaces={},
+        scanned_tools=["codex"],
+        source_roots={"codex": Path("/tmp/raw")},
+        skipped=[],
+        session_count=0,
+        message_count=0,
+        filtered_count=0,
+        dry_run=False,
+    )
+
+    assert not stale_memory.exists()
+    assert not stale_daily.exists()
+    assert not stale_evidence.exists()
+    assert unmanaged.read_text(encoding="utf-8") == "keep"
+
+
+def test_evidence_order_is_stable_for_reversed_similar_candidates(tmp_path: Path) -> None:
+    first = candidate(
+        "decision",
+        "same text",
+        "repo-123",
+        source_path=Path("/tmp/raw/a.jsonl"),
+        message_end=3,
+        digest="sha256:001",
+    )
+    second = candidate(
+        "decision",
+        "same text",
+        "repo-123",
+        source_path=Path("/tmp/raw/b.jsonl"),
+        message_end=4,
+        digest="sha256:002",
+    )
+
+    paths_by_order: list[list[str]] = []
+    for index, candidates in enumerate(([first, second], [second, first]), start=1):
+        output = tmp_path / f"run-{index}"
+        write_output(
+            output_dir=output,
+            date="2026-05-22",
+            candidates=candidates,
+            workspaces={"repo-123": workspace("repo-123")},
+            scanned_tools=["codex"],
+            source_roots={"codex": Path("/tmp/raw")},
+            skipped=[],
+            session_count=1,
+            message_count=2,
+            filtered_count=0,
+            dry_run=False,
+        )
+        evidence_text = (output / "evidence" / "index.jsonl").read_text(encoding="utf-8")
+        evidence_rows = [
+            json.loads(line)
+            for line in evidence_text.splitlines()
+        ]
+        assert [row["evidence_id"] for row in evidence_rows] == ["e000001", "e000002"]
+        paths_by_order.append([row["source_path"] for row in evidence_rows])
+
+    assert paths_by_order[0] == paths_by_order[1]
 
 
 def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: Path) -> None:
