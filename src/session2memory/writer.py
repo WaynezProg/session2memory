@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from session2memory import __version__
 from session2memory.models import MemoryCandidate, WorkspaceIdentity
 
 
@@ -62,10 +63,13 @@ def write_output(
 
     manifest = {
         "date": date,
+        "generator": "session2memory",
+        "version": __version__,
         "counts": {
             "sessions": session_count,
             "messages": message_count,
             "filtered": filtered_count,
+            "evidence_records": len(candidates),
             "durable_memories": sum(1 for candidate in candidates if candidate.durable),
         },
         "scanned_tools": sorted(scanned_tools),

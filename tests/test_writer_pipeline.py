@@ -112,9 +112,12 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     assert "P0 不用 LLM 摘要。" in memory
     assert "/tmp/raw/session.jsonl" not in daily
     assert evidence["source_path"] == "/tmp/raw/session.jsonl"
+    assert manifest["generator"] == "session2memory"
+    assert manifest["version"] == "0.1.0"
     assert manifest["counts"]["sessions"] == 1
     assert manifest["counts"]["messages"] == 2
     assert manifest["counts"]["durable_memories"] == 1
+    assert manifest["counts"]["evidence_records"] == 1
 
 
 def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: Path) -> None:
@@ -144,3 +147,4 @@ def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: 
     assert manifest["counts"]["sessions"] == 1
     assert manifest["counts"]["messages"] == 2
     assert manifest["counts"]["filtered"] == 1
+    assert manifest["counts"]["evidence_records"] == 1
