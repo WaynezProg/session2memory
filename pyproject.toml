@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "session2memory"
 version = "0.1.0"
-description = "Distill local coding-agent sessions into HKS-ingestable memory documents"
+description = "Compile local AI coding sessions into evidence-backed HKS-ingestable project memory"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

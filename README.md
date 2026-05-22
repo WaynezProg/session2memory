@@ -1,8 +1,10 @@
 # session2memory
 
-`session2memory` converts local coding-agent sessions into refined HKS-ingestable memory documents.
+`session2memory` turns messy local AI coding sessions into clean, evidence-backed, HKS-ingestable project memory without importing raw transcripts.
 
-It does not put raw transcripts into HKS. Raw session stores remain local evidence sources; generated Markdown contains only conservative summaries and evidence ids.
+It is not a complete shared memory system. It is a local memory compiler: it reads coding-agent session stores, extracts conservative project memory, and writes a refined source folder for HKS.
+
+Raw transcripts do not enter HKS. Raw session stores remain local evidence sources; generated Markdown contains only daily logs, durable memories, and evidence ids that point back to the original session.
 
 ## Supported P0 Sources
 
@@ -46,6 +48,16 @@ uv run ks update /path/to/out/session-memory
 ```
 
 The HKS source root is the generated `session-memory` folder. Do not ingest `~/.codex/sessions`, `~/.claude/projects`, `~/.qwen/projects`, or OpenCode SQLite directly.
+
+## Current Extraction Model
+
+P0 extraction is marker-based and conservative. It recognizes explicit session lines such as `Decision:`, `Done:`, `Pitfall:`, `Constraint:`, and `Verification:`. This avoids invented memory, but it can miss important context that was never marked.
+
+Durable memories are kept separate from daily logs. `Decision`, `Pitfall`, and `Constraint` entries can enter `memories/`; `Done` and `Verification` entries stay in `daily/` plus `evidence/`.
+
+## Roadmap
+
+The next important workflow is review and promote: daily memory should land as a temporary review queue first, and durable memory should enter `memories/` only after human or agent review.
 
 ## Verification
 
