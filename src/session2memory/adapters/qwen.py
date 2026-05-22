@@ -14,7 +14,11 @@ class QwenAdapter:
         self.root = root
 
     def iter_sessions(self, date: str) -> Iterator[SessionRecord]:
-        for path in sorted(self.root.glob("project*/chats/*.jsonl")):
+        paths = {
+            *self.root.glob("project*/chats/*.jsonl"),
+            *self.root.glob("projects/*/chats/*.jsonl"),
+        }
+        for path in sorted(paths):
             record = self._read_file(path)
             if record.started_at and record.started_at.date().isoformat() == date:
                 yield record

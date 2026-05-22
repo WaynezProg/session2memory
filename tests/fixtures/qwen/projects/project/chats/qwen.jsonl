@@ -1,0 +1,2 @@
+{"uuid":"qp1","sessionId":"qwen-projects-1","timestamp":"2026-05-22T04:00:00.000Z","type":"user","cwd":"/tmp/repo","message":{"role":"user","parts":[{"text":"決定：Qwen real root 使用 projects/*/chats。"}]}}
+{"uuid":"qp2","sessionId":"qwen-projects-1","timestamp":"2026-05-22T04:01:00.000Z","type":"assistant","cwd":"/tmp/repo","message":{"role":"model","parts":[{"text":"收到，會支援 ~/.qwen/projects/*/chats。"}]}}
