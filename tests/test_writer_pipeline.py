@@ -154,7 +154,7 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     assert evidence["id"] == "e000001"
     assert evidence["evidence_id"] == "e000001"
     assert manifest["generator"] == "session2memory"
-    assert manifest["version"] == "0.1.0"
+    assert manifest["version"] == "0.1.1"
     assert manifest["counts"]["sessions"] == 1
     assert manifest["counts"]["messages"] == 2
     assert manifest["counts"]["durable_memories"] == 0
