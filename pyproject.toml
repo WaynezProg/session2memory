@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "session2memory"
+version = "0.1.0"
+description = "Distill local coding-agent sessions into HKS-ingestable memory documents"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "typer>=0.12,<1",
+]
+
+[project.scripts]
+session2memory = "session2memory.cli:app"
+
+[dependency-groups]
+dev = [
+  "mypy",
+  "pytest",
+  "ruff",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["session2memory*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+packages = ["session2memory"]
