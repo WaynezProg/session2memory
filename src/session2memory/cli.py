@@ -7,6 +7,7 @@ import typer
 
 from session2memory.adapters import ClaudeAdapter, CodexAdapter, OpenCodeAdapter, QwenAdapter
 from session2memory.pipeline import PipelineAdapter, run_pipeline
+from session2memory.review import promote_reviews
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -104,3 +105,13 @@ def import_sessions(
         f"date={parsed_date} tools={len(selected_tools)} sessions={session_count} "
         f"written={0 if dry_run else 1} candidates={candidate_count}"
     )
+
+
+@app.command("promote")
+def promote(
+    date: Annotated[str, typer.Option("--date", help="Date to promote in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+) -> None:
+    parsed_date = _parse_date(date)
+    result = promote_reviews(output_dir=output, date=parsed_date)
+    typer.echo(f"date={parsed_date} reviewed={result.reviewed} promoted={result.promoted}")

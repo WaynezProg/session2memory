@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -34,27 +35,13 @@ def write_output(
     (output_dir / "daily").mkdir(parents=True, exist_ok=True)
     (output_dir / "memories").mkdir(parents=True, exist_ok=True)
     (output_dir / "evidence").mkdir(parents=True, exist_ok=True)
+    (output_dir / "review").mkdir(parents=True, exist_ok=True)
 
     daily_path = output_dir / "daily" / f"{date}.md"
     daily_path.write_text(
         _daily_markdown(date, ordered, evidence_by_id),
         encoding="utf-8",
     )
-    durable_candidates = [candidate for candidate in ordered if candidate.durable]
-    memory_files: list[str] = []
-    for workspace_id, workspace_candidates in _group_by_workspace(durable_candidates).items():
-        memory_path = output_dir / "memories" / f"{workspace_id}.md"
-        memory_path.write_text(
-            _workspace_markdown(
-                workspaces.get(workspace_id),
-                workspace_id,
-                workspace_candidates,
-                evidence_by_id,
-            ),
-            encoding="utf-8",
-        )
-        memory_files.append(memory_path.relative_to(output_dir).as_posix())
-
     evidence_lines = [
         json.dumps(
             _evidence_record(evidence_by_id[id(candidate)], candidate),
@@ -68,10 +55,28 @@ def write_output(
         "\n".join(evidence_lines) + ("\n" if evidence_lines else ""),
         encoding="utf-8",
     )
+    review_path = output_dir / "review" / f"{date}.jsonl"
+    review_lines = [
+        json.dumps(
+            _review_record(_review_id(candidate), evidence_by_id[id(candidate)], candidate),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        for candidate in ordered
+    ]
+    review_path.write_text(
+        "\n".join(review_lines) + ("\n" if review_lines else ""),
+        encoding="utf-8",
+    )
+    memory_files = sorted(
+        path.relative_to(output_dir).as_posix()
+        for path in (output_dir / "memories").glob("*.md")
+    )
     output_files = [
         daily_path.relative_to(output_dir).as_posix(),
         evidence_path.relative_to(output_dir).as_posix(),
         "manifest.json",
+        review_path.relative_to(output_dir).as_posix(),
         *memory_files,
     ]
 
@@ -84,8 +89,10 @@ def write_output(
             "messages": message_count,
             "filtered": filtered_count,
             "evidence_records": len(candidates),
-            "durable_memories": sum(1 for candidate in candidates if candidate.durable),
+            "durable_memories": 0,
+            "durable_suggestions": sum(1 for candidate in candidates if candidate.durable),
             "daily_entries": len(candidates),
+            "review_entries": len(candidates),
         },
         "output_files": output_files,
         "scanned_tools": sorted(scanned_tools),
@@ -105,7 +112,7 @@ def write_output(
 
 
 def _clear_managed_output(output_dir: Path) -> None:
-    for directory in ("daily", "memories", "evidence"):
+    for directory in ("daily", "evidence", "review"):
         shutil.rmtree(output_dir / directory, ignore_errors=True)
     (output_dir / "manifest.json").unlink(missing_ok=True)
 
@@ -185,6 +192,36 @@ def _evidence_record(evidence_id: str, candidate: MemoryCandidate) -> dict[str, 
         }
     )
     return record
+
+
+def _review_record(review_id: str, evidence_id: str, candidate: MemoryCandidate) -> dict[str, Any]:
+    return {
+        "id": review_id,
+        "status": "pending",
+        "kind": candidate.kind,
+        "text": candidate.text,
+        "workspace_id": candidate.workspace_id,
+        "evidence_id": evidence_id,
+        "durable_suggestion": candidate.durable,
+        "review_note": "",
+    }
+
+
+def _review_id(candidate: MemoryCandidate) -> str:
+    raw = "\0".join(
+        (
+            candidate.workspace_id,
+            candidate.kind,
+            candidate.text,
+            candidate.evidence.tool,
+            candidate.evidence.session_id,
+            candidate.evidence.source_path.as_posix(),
+            str(candidate.evidence.message_start),
+            str(candidate.evidence.message_end),
+            candidate.evidence.digest,
+        )
+    )
+    return "r" + sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _workspace_record(workspace: WorkspaceIdentity) -> dict[str, str | None]:

@@ -25,6 +25,14 @@ evidence ids that point back to the original session.
 uv run session2memory import --date 2026-05-22 --output ./out/session-memory
 ```
 
+Import writes three layers:
+
+- `daily/YYYY-MM-DD.md`: HKS-ingestable daily log.
+- `evidence/index.jsonl`: provenance pointers back to original local sessions.
+- `review/YYYY-MM-DD.jsonl`: pending memory candidates for review.
+
+It does not write new entries into `memories/` directly.
+
 Limit to one tool:
 
 ```bash
@@ -57,6 +65,35 @@ The HKS source root is the generated `session-memory` folder. Do not ingest
 `~/.codex/sessions`, `~/.claude/projects`, `~/.qwen/projects`, or OpenCode
 SQLite directly.
 
+## Review And Promote
+
+Durable project memory enters `memories/` only after review.
+
+Edit `review/YYYY-MM-DD.jsonl` and change a candidate from:
+
+```json
+{"status": "pending"}
+```
+
+to:
+
+```json
+{"status": "approved"}
+```
+
+Then run:
+
+```bash
+uv run session2memory promote \
+  --date 2026-05-22 \
+  --output ./out/session-memory
+```
+
+Approved entries are appended to `memories/<workspace-id>.md`, and their review
+status changes to `promoted`. Pending entries stay out of durable memory.
+Entries with `durable_suggestion: false` also stay out unless a reviewer
+explicitly changes that field to `true`.
+
 ## Current Extraction Model
 
 P0 extraction is marker-based and conservative. It recognizes explicit session
@@ -70,9 +107,9 @@ entries stay in `daily/` plus `evidence/`.
 
 ## Roadmap
 
-The next important workflow is review and promote: daily memory should land as
-a temporary review queue first, and durable memory should enter `memories/`
-only after human or agent review.
+The next important workflow is better review ergonomics: compact review views,
+agent-assisted approval suggestions, and conflict handling for repeated
+promotions.
 
 ## Verification
 

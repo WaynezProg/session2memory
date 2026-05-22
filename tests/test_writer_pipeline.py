@@ -117,12 +117,31 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     )
 
     daily = (output / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
-    memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
+    review_rows = [
+        json.loads(line)
+        for line in (output / "review" / "2026-05-22.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
     evidence = json.loads((output / "evidence" / "index.jsonl").read_text(encoding="utf-8").strip())
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
 
     assert "P0 不用 LLM 摘要。" in daily
-    assert "P0 不用 LLM 摘要。" in memory
+    assert not list((output / "memories").glob("*.md"))
+    assert len(review_rows) == 1
+    review_row = review_rows[0]
+    assert review_row["id"].startswith("r")
+    assert len(review_row["id"]) == 17
+    assert review_row == {
+        "id": review_row["id"],
+        "status": "pending",
+        "kind": "decision",
+        "text": "P0 不用 LLM 摘要。",
+        "workspace_id": "repo-123",
+        "evidence_id": "e000001",
+        "durable_suggestion": True,
+        "review_note": "",
+    }
     assert "/tmp/raw/session.jsonl" not in daily
     assert evidence["source_path"] == "/tmp/raw/session.jsonl"
     assert evidence["id"] == "e000001"
@@ -131,18 +150,22 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     assert manifest["version"] == "0.1.0"
     assert manifest["counts"]["sessions"] == 1
     assert manifest["counts"]["messages"] == 2
-    assert manifest["counts"]["durable_memories"] == 1
+    assert manifest["counts"]["durable_memories"] == 0
+    assert manifest["counts"]["durable_suggestions"] == 1
     assert manifest["counts"]["evidence_records"] == 1
     assert manifest["counts"]["daily_entries"] == 1
+    assert manifest["counts"]["review_entries"] == 1
     assert manifest["output_files"] == [
         "daily/2026-05-22.md",
         "evidence/index.jsonl",
         "manifest.json",
-        "memories/repo-123.md",
+        "review/2026-05-22.jsonl",
     ]
 
 
-def test_write_output_removes_stale_managed_files(tmp_path: Path) -> None:
+def test_write_output_removes_stale_import_files_but_preserves_promoted_memories(
+    tmp_path: Path,
+) -> None:
     output = tmp_path / "session-memory"
     stale_memory = output / "memories" / "old.md"
     stale_daily = output / "daily" / "2026-05-21.md"
@@ -170,13 +193,13 @@ def test_write_output_removes_stale_managed_files(tmp_path: Path) -> None:
         dry_run=False,
     )
 
-    assert not stale_memory.exists()
+    assert stale_memory.read_text(encoding="utf-8") == "obsolete"
     assert not stale_daily.exists()
     assert not stale_evidence.exists()
     assert unmanaged.read_text(encoding="utf-8") == "keep"
 
 
-def test_write_output_keeps_non_durable_candidates_out_of_workspace_memories(
+def test_write_output_queues_all_candidates_without_creating_workspace_memories(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "session-memory"
@@ -211,13 +234,21 @@ def test_write_output_keeps_non_durable_candidates_out_of_workspace_memories(
     )
 
     daily = (output / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
-    memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
+    review_rows = [
+        json.loads(line)
+        for line in (output / "review" / "2026-05-22.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
 
     assert "daily note" in daily
     assert "other daily note" in daily
-    assert "durable fact" in memory
-    assert "daily note" not in memory
-    assert not (output / "memories" / "repo-456.md").exists()
+    assert not list((output / "memories").glob("*.md"))
+    assert [(row["text"], row["durable_suggestion"]) for row in review_rows] == [
+        ("daily note", False),
+        ("durable fact", True),
+        ("other daily note", False),
+    ]
 
 
 def test_evidence_order_is_stable_for_reversed_similar_candidates(tmp_path: Path) -> None:
@@ -308,6 +339,37 @@ def test_evidence_order_is_stable_when_only_workspace_path_or_durable_differs(
     assert rows_by_order[0] == rows_by_order[1]
 
 
+def test_review_ids_are_stable_when_candidate_order_changes(tmp_path: Path) -> None:
+    first = candidate("decision", "first durable fact", "repo-123", digest="sha256:first")
+    second = candidate("decision", "second durable fact", "repo-123", digest="sha256:second")
+
+    ids_by_text: list[dict[str, str]] = []
+    for index, candidates in enumerate(([first, second], [second, first]), start=1):
+        output = tmp_path / f"review-order-{index}"
+        write_output(
+            output_dir=output,
+            date="2026-05-22",
+            candidates=candidates,
+            workspaces={"repo-123": workspace("repo-123")},
+            scanned_tools=["codex"],
+            source_roots={"codex": Path("/tmp/raw")},
+            skipped=[],
+            session_count=1,
+            message_count=2,
+            filtered_count=0,
+            dry_run=False,
+        )
+        rows = [
+            json.loads(line)
+            for line in (output / "review" / "2026-05-22.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        ids_by_text.append({row["text"]: row["id"] for row in rows})
+
+    assert ids_by_text[0] == ids_by_text[1]
+
+
 def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: Path) -> None:
     output = tmp_path / "session-memory"
     source_root = tmp_path / "raw"
@@ -367,7 +429,12 @@ def test_run_pipeline_keeps_completed_and_verification_out_of_workspace_memory(
     )
 
     daily = (output / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
-    memory = next((output / "memories").glob("*.md")).read_text(encoding="utf-8")
+    review_rows = [
+        json.loads(line)
+        for line in (output / "review" / "2026-05-22.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
     evidence_rows = [
         json.loads(line)
         for line in (output / "evidence" / "index.jsonl").read_text(encoding="utf-8").splitlines()
@@ -376,9 +443,12 @@ def test_run_pipeline_keeps_completed_and_verification_out_of_workspace_memory(
     assert (sessions, memories) == (1, 3)
     assert "implemented contract fix" in daily
     assert "uv run pytest -q passed" in daily
-    assert "durable architecture choice" in memory
-    assert "implemented contract fix" not in memory
-    assert "uv run pytest -q passed" not in memory
+    assert not list((output / "memories").glob("*.md"))
+    assert sorted((row["kind"], row["durable_suggestion"]) for row in review_rows) == [
+        ("completed", False),
+        ("decision", True),
+        ("verification", False),
+    ]
     assert {(row["kind"], row["durable"]) for row in evidence_rows} == {
         ("decision", True),
         ("completed", False),
@@ -510,11 +580,9 @@ def test_pipeline_evidence_round_trips_to_raw_source_range_without_markdown_path
     raw_range = source_lines[evidence["message_start"] - 1 : evidence["message_end"]]
     extracted = json.loads(raw_range[0])["payload"]["content"][0]["text"]
     daily = (output / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
-    memory = next((output / "memories").glob("*.md")).read_text(encoding="utf-8")
 
     assert evidence["source_path"] == source_path.as_posix()
     assert evidence["message_start"] == 2
     assert evidence["message_end"] == 2
     assert evidence["digest"] == digest_text(extracted)
     assert source_path.as_posix() not in daily
-    assert source_path.as_posix() not in memory

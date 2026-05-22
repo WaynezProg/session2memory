@@ -109,12 +109,11 @@ def test_generated_folder_can_be_ingested_by_adjacent_hks(tmp_path: Path) -> Non
     raw_transcript = raw_transcript_path.as_posix()
 
     assert detail["ks_root"] == ks_root.resolve(strict=False).as_posix()
-    assert detail["total_count"] == 2
-    assert relpaths[0] == "daily/2026-05-22.md"
-    assert relpaths[1].startswith("memories/")
-    assert relpaths[1].endswith(".md")
-    assert formats_by_relpath[relpaths[0]] == "md"
-    assert formats_by_relpath[relpaths[1]] == "md"
+    assert detail["total_count"] == 1
+    assert relpaths == ["daily/2026-05-22.md"]
+    assert formats_by_relpath["daily/2026-05-22.md"] == "md"
+    assert not list((output_dir / "memories").glob("*.md"))
+    assert (output_dir / "review" / "2026-05-22.jsonl").exists()
     assert MEMORY_TEXT in daily
     assert raw_transcript not in source_list.stdout
     assert raw_transcript not in daily

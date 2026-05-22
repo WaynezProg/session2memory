@@ -59,6 +59,8 @@ def test_import_writes_memory_output_from_codex_fixture(tmp_path: Path) -> None:
     assert_summary(result.output, "date=2026-05-22 tools=1 sessions=1 written=1 candidates=0")
     assert (output_dir / "daily" / "2026-05-22.md").exists()
     assert (output_dir / "evidence" / "index.jsonl").exists()
+    assert (output_dir / "review" / "2026-05-22.jsonl").exists()
+    assert not list((output_dir / "memories").glob("*.md"))
 
 
 def test_dry_run_scans_codex_fixture_without_writing_output(tmp_path: Path) -> None:
