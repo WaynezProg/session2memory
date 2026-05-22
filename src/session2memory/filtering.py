@@ -13,9 +13,14 @@ INSTRUCTION_HEADING_RE = re.compile(
     r"""
     ^\s*
     [-*>`'"\[\]().:：\s]*
-    (?:\#\s*)?
+    (?:\#+\s*)?
     (?:agents\.md\ instructions|claude\.md\ instructions|gemini\.md\ instructions|<instructions>)
-    (?=\s|$)
+    (?:
+        \s*$ |
+        \s+for\b.*$ |
+        \s*[:：].*$ |
+        \s*[`'">\])}]+$
+    )
     """,
     re.IGNORECASE | re.VERBOSE,
 )
