@@ -98,7 +98,7 @@ def _clear_managed_output(output_dir: Path) -> None:
 
 def _candidate_sort_key(
     candidate: MemoryCandidate,
-) -> tuple[str, str, str, str, int, str, str, int, str]:
+) -> tuple[str, str, str, str, int, str, str, int, str, str, bool]:
     return (
         candidate.workspace_id,
         candidate.kind,
@@ -109,6 +109,10 @@ def _candidate_sort_key(
         candidate.evidence.source_path.as_posix(),
         candidate.evidence.message_end,
         candidate.evidence.digest,
+        candidate.evidence.workspace_path.as_posix()
+        if candidate.evidence.workspace_path
+        else "",
+        candidate.durable,
     )
 
 

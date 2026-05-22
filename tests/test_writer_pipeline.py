@@ -26,6 +26,8 @@ def candidate(
     message_start: int = 2,
     message_end: int = 2,
     digest: str = "sha256:abc",
+    workspace_path: Path | None = Path("/tmp/repo"),
+    durable: bool = True,
 ) -> MemoryCandidate:
     return MemoryCandidate(
         kind=kind,
@@ -37,10 +39,10 @@ def candidate(
             source_path=source_path,
             message_start=message_start,
             message_end=message_end,
-            workspace_path=Path("/tmp/repo"),
+            workspace_path=workspace_path,
             digest=digest,
         ),
-        durable=True,
+        durable=durable,
     )
 
 
@@ -206,6 +208,49 @@ def test_evidence_order_is_stable_for_reversed_similar_candidates(tmp_path: Path
         paths_by_order.append([row["source_path"] for row in evidence_rows])
 
     assert paths_by_order[0] == paths_by_order[1]
+
+
+def test_evidence_order_is_stable_when_only_workspace_path_or_durable_differs(
+    tmp_path: Path,
+) -> None:
+    first = candidate(
+        "decision",
+        "same text",
+        "repo-123",
+        workspace_path=Path("/tmp/repo/a"),
+        durable=False,
+    )
+    second = candidate(
+        "decision",
+        "same text",
+        "repo-123",
+        workspace_path=Path("/tmp/repo/b"),
+        durable=True,
+    )
+
+    rows_by_order: list[list[tuple[str | None, bool]]] = []
+    for index, candidates in enumerate(([first, second], [second, first]), start=1):
+        output = tmp_path / f"run-tie-{index}"
+        write_output(
+            output_dir=output,
+            date="2026-05-22",
+            candidates=candidates,
+            workspaces={"repo-123": workspace("repo-123")},
+            scanned_tools=["codex"],
+            source_roots={"codex": Path("/tmp/raw")},
+            skipped=[],
+            session_count=1,
+            message_count=2,
+            filtered_count=0,
+            dry_run=False,
+        )
+        evidence_text = (output / "evidence" / "index.jsonl").read_text(encoding="utf-8")
+        evidence_rows = [json.loads(line) for line in evidence_text.splitlines()]
+        rows_by_order.append(
+            [(row["workspace_path"], row["durable"]) for row in evidence_rows]
+        )
+
+    assert rows_by_order[0] == rows_by_order[1]
 
 
 def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: Path) -> None:
