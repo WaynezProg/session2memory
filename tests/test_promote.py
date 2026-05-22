@@ -453,3 +453,33 @@ def test_promote_same_date_reimport_reordered_review_ids_do_not_drop_memory(
     memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
     assert "Use evidence-backed memory compiler." in memory
     assert "A memory inserted before the original candidate." in memory
+
+
+def test_promote_exact_duplicate_repromotion_does_not_increment_durable_count(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+    first = CliRunner().invoke(
+        app,
+        ["review", "promote", "--date", "2026-05-22", "--output", str(output)],
+    )
+    assert first.exit_code == 0
+    assert first.output == "date=2026-05-22 reviewed=1 promoted=1\n"
+
+    review_path = output / "review" / "2026-05-22.jsonl"
+    row = json.loads(review_path.read_text(encoding="utf-8"))
+    row["status"] = "approved"
+    review_path.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+
+    second = CliRunner().invoke(
+        app,
+        ["review", "promote", "--date", "2026-05-22", "--output", str(output)],
+    )
+
+    assert second.exit_code == 0
+    assert second.output == "date=2026-05-22 reviewed=1 promoted=0\n"
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
+    assert manifest["counts"]["durable_memories"] == 1
+    assert memory.count("Use evidence-backed memory compiler.") == 1

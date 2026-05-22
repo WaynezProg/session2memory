@@ -110,10 +110,15 @@ def promote_reviews(*, output_dir: Path, date: str) -> PromoteResult:
     promoted_count = 0
     touched_memory_files: set[str] = set()
     for row in approved:
-        memory_relpath = _append_workspace_memory(output_dir=output_dir, date=date, row=row)
+        memory_relpath, created = _append_workspace_memory(
+            output_dir=output_dir,
+            date=date,
+            row=row,
+        )
         touched_memory_files.add(memory_relpath)
         row["status"] = "promoted"
-        promoted_count += 1
+        if created:
+            promoted_count += 1
 
     _write_jsonl(review_path, rows)
     _update_manifest(
@@ -349,7 +354,9 @@ def _read_manifest(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def _append_workspace_memory(*, output_dir: Path, date: str, row: dict[str, Any]) -> str:
+def _append_workspace_memory(
+    *, output_dir: Path, date: str, row: dict[str, Any]
+) -> tuple[str, bool]:
     workspace_id = str(row["workspace_id"])
     memory_path = output_dir / "memories" / f"{workspace_id}.md"
     memory_path.parent.mkdir(parents=True, exist_ok=True)
@@ -357,7 +364,7 @@ def _append_workspace_memory(*, output_dir: Path, date: str, row: dict[str, Any]
     evidence_id = str(row["evidence_id"])
     review_ref = f"{date}/{_promotion_key(row)}"
     if f"review: {review_ref}" in existing:
-        return memory_path.relative_to(output_dir).as_posix()
+        return memory_path.relative_to(output_dir).as_posix(), False
 
     lines: list[str] = []
     if not existing:
@@ -371,7 +378,7 @@ def _append_workspace_memory(*, output_dir: Path, date: str, row: dict[str, Any]
 
     with memory_path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines).rstrip() + "\n")
-    return memory_path.relative_to(output_dir).as_posix()
+    return memory_path.relative_to(output_dir).as_posix(), True
 
 
 def _memory_header(workspace_id: str) -> list[str]:

@@ -119,7 +119,7 @@ def import_sessions(
     )
 
 
-@app.command("promote")
+@app.command("promote", help="Legacy alias for `review promote`.")
 def promote(
     date: Annotated[str, typer.Option("--date", help="Date to promote in YYYY-MM-DD format.")],
     output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
