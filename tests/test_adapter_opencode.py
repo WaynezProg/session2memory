@@ -102,6 +102,31 @@ def test_opencode_adapter_skips_malformed_part_json(tmp_path: Path) -> None:
     assert [message.text for message in records[0].messages] == ["驗證：uv run pytest -q passed。"]
 
 
+def test_opencode_adapter_skips_reasoning_parts_even_when_text_is_present(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "opencode.db"
+    create_opencode_db(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "insert into part values (?, ?, ?, ?, ?, ?)",
+        (
+            "part2",
+            "msg1",
+            "ses1",
+            1779412156000,
+            1779412156000,
+            json.dumps({"type": "reasoning", "text": "internal chain of thought"}),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-22"))
+
+    assert [message.text for message in records[0].messages] == ["驗證：uv run pytest -q passed。"]
+
+
 def test_opencode_adapter_filters_session_dates_by_utc_boundary(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
     create_opencode_db(db_path)

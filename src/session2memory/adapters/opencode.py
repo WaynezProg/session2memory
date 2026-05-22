@@ -73,6 +73,8 @@ class OpenCodeAdapter:
                 part_json = _json_object(str(part_data))
             except json.JSONDecodeError:
                 continue
+            if part_json.get("type") != "text":
+                continue
             text = part_json.get("text")
             if not isinstance(text, str) or not text.strip():
                 continue

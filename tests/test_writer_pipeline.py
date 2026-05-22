@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from session2memory.adapters.codex import CodexAdapter
 from session2memory.models import (
     EvidencePointer,
     MemoryCandidate,
@@ -12,6 +13,7 @@ from session2memory.models import (
     SessionMessage,
     SessionRecord,
     WorkspaceIdentity,
+    digest_text,
 )
 from session2memory.pipeline import run_pipeline
 from session2memory.writer import write_output
@@ -325,3 +327,65 @@ def test_run_pipeline_counts_sessions_and_writes_extracted_candidates(tmp_path: 
     assert manifest["counts"]["messages"] == 2
     assert manifest["counts"]["filtered"] == 1
     assert manifest["counts"]["evidence_records"] == 1
+
+
+def test_pipeline_evidence_round_trips_to_raw_source_range_without_markdown_paths(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "codex-source"
+    source_path = source_root / "2026" / "05" / "22" / "session.jsonl"
+    source_path.parent.mkdir(parents=True)
+    source_text = "Decision: evidence digest round trip."
+    source_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {
+                            "id": "codex-evidence",
+                            "timestamp": "2026-05-22T01:00:00Z",
+                            "cwd": (tmp_path / "repo").as_posix(),
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": source_text}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "session-memory"
+
+    run_pipeline(
+        adapters={"codex": CodexAdapter(source_root)},
+        output_dir=output,
+        date="2026-05-22",
+        source_roots={"codex": source_root},
+        dry_run=False,
+    )
+
+    evidence = json.loads(
+        (output / "evidence" / "index.jsonl").read_text(encoding="utf-8").strip()
+    )
+    source_lines = source_path.read_text(encoding="utf-8").splitlines()
+    raw_range = source_lines[evidence["message_start"] - 1 : evidence["message_end"]]
+    extracted = json.loads(raw_range[0])["payload"]["content"][0]["text"]
+    daily = (output / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
+    memory = next((output / "memories").glob("*.md")).read_text(encoding="utf-8")
+
+    assert evidence["source_path"] == source_path.as_posix()
+    assert evidence["message_start"] == 2
+    assert evidence["message_end"] == 2
+    assert evidence["digest"] == digest_text(extracted)
+    assert source_path.as_posix() not in daily
+    assert source_path.as_posix() not in memory

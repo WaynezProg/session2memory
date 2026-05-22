@@ -47,7 +47,7 @@ def test_non_git_cwd_groups_to_canonical_cwd(tmp_path: Path) -> None:
     assert workspace.tool_workspace_id == "tool-ws"
 
 
-def test_missing_cwd_falls_back_to_source_parent_without_git(
+def test_missing_cwd_preserves_opened_identity_without_git(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -64,9 +64,27 @@ def test_missing_cwd_falls_back_to_source_parent_without_git(
         make_record(missing, source_path=source_parent / "session.jsonl")
     )
 
-    assert workspace.canonical_path == source_parent.resolve()
+    assert workspace.canonical_path == missing.resolve(strict=False)
     assert workspace.repo_root is None
     assert workspace.opened_cwd == missing.resolve(strict=False)
+
+
+def test_missing_cwd_keeps_distinct_workspaces_for_same_source_parent(tmp_path: Path) -> None:
+    source_parent = tmp_path / "sessions"
+    source_parent.mkdir()
+    first_missing = tmp_path / "deleted" / "alpha"
+    second_missing = tmp_path / "deleted" / "beta"
+
+    first = resolve_workspace(
+        make_record(first_missing, source_path=source_parent / "first.jsonl")
+    )
+    second = resolve_workspace(
+        make_record(second_missing, source_path=source_parent / "second.jsonl")
+    )
+
+    assert first.canonical_path == first_missing.resolve(strict=False)
+    assert second.canonical_path == second_missing.resolve(strict=False)
+    assert first.workspace_id != second.workspace_id
 
 
 def test_none_cwd_falls_back_to_source_parent_with_no_opened_cwd(tmp_path: Path) -> None:

@@ -119,6 +119,21 @@ def test_generated_folder_can_be_ingested_by_adjacent_hks(tmp_path: Path) -> Non
     assert raw_transcript not in source_list.stdout
     assert raw_transcript not in daily
 
+    query = subprocess.run(
+        ["uv", "run", "ks", "query", "HKS generated docs", "--writeback=no"],
+        cwd=hks_root,
+        env=env,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert query.returncode == 0, query.stdout + query.stderr
+    query_payload = json.loads(query.stdout)
+    query_text = json.dumps(query_payload, ensure_ascii=False)
+    assert MEMORY_TEXT in query_text
+    assert "daily/2026-05-22.md" in query_text
+
 
 def test_readme_documents_hks_safe_workflow() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
