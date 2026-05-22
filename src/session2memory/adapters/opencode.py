@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -21,7 +21,8 @@ class OpenCodeAdapter:
         if not self.path.exists():
             return
 
-        with sqlite3.connect(self.path) as connection:
+        connection = sqlite3.connect(self.path)
+        try:
             rows = connection.execute(
                 """
                 select id, directory, time_created, time_updated, workspace_id
@@ -42,6 +43,8 @@ class OpenCodeAdapter:
                     updated_at=_datetime_from_millis(int(time_updated)),
                     workspace_id=str(workspace_id) if workspace_id is not None else None,
                 )
+        finally:
+            connection.close()
 
     def _read_session(
         self,
@@ -65,8 +68,11 @@ class OpenCodeAdapter:
             (session_id,),
         )
         for index, (message_data, part_data, part_time_created) in enumerate(rows, start=1):
-            message_json = _json_object(str(message_data))
-            part_json = _json_object(str(part_data))
+            try:
+                message_json = _json_object(str(message_data))
+                part_json = _json_object(str(part_data))
+            except json.JSONDecodeError:
+                continue
             text = part_json.get("text")
             if not isinstance(text, str) or not text.strip():
                 continue
@@ -97,7 +103,7 @@ class OpenCodeAdapter:
 
 
 def _datetime_from_millis(value: int) -> datetime:
-    return datetime.fromtimestamp(value / 1000)
+    return datetime.fromtimestamp(value / 1000, tz=UTC)
 
 
 def _json_object(value: str) -> dict[str, object]:

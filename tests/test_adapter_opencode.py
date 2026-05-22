@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 from session2memory.adapters.opencode import OpenCodeAdapter
@@ -77,3 +78,42 @@ def test_opencode_adapter_reads_sqlite_messages(tmp_path: Path) -> None:
     assert records[0].tool_workspace_id == "ws1"
     assert records[0].messages[0].text == "驗證：uv run pytest -q passed。"
     assert records[0].messages[0].raw_pointer.message_start == 1
+
+
+def test_opencode_adapter_missing_db_returns_no_sessions(tmp_path: Path) -> None:
+    records = list(OpenCodeAdapter(tmp_path / "missing.db").iter_sessions("2026-05-22"))
+
+    assert records == []
+
+
+def test_opencode_adapter_skips_malformed_part_json(tmp_path: Path) -> None:
+    db_path = tmp_path / "opencode.db"
+    create_opencode_db(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "insert into part values (?, ?, ?, ?, ?, ?)",
+        ("part0", "msg1", "ses1", 1779412154000, 1779412154000, "{not json"),
+    )
+    connection.commit()
+    connection.close()
+
+    records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-22"))
+
+    assert [message.text for message in records[0].messages] == ["驗證：uv run pytest -q passed。"]
+
+
+def test_opencode_adapter_filters_session_dates_by_utc_boundary(tmp_path: Path) -> None:
+    db_path = tmp_path / "opencode.db"
+    create_opencode_db(db_path)
+    boundary_millis = int(datetime(2026, 5, 21, 23, 30, tzinfo=UTC).timestamp() * 1000)
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "update session set time_created = ?, time_updated = ? where id = ?",
+        (boundary_millis, boundary_millis, "ses1"),
+    )
+    connection.commit()
+    connection.close()
+
+    records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-22"))
+
+    assert records == []
