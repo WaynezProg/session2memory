@@ -39,6 +39,7 @@ uv run session2memory import \
 
 ```bash
 cd /Users/waynetu/claw_prog/projects/04-kurisu-github/hks
+export KS_ROOT=/path/to/ks
 export HKS_EMBEDDING_MODEL=simple
 uv run ks ingest /path/to/out/session-memory
 uv run ks update /path/to/out/session-memory
