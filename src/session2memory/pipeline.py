@@ -23,21 +23,27 @@ def run_pipeline(
     date: str,
     source_roots: Mapping[str, Path],
     dry_run: bool,
+    workspace: Path | None = None,
 ) -> tuple[int, int]:
     session_count = 0
     message_count = 0
     filtered_count = 0
     candidates: list[MemoryCandidate] = []
     workspaces: dict[str, WorkspaceIdentity] = {}
+    workspace_filter = workspace.resolve(strict=False) if workspace else None
 
     for _tool, adapter in sorted(adapters.items()):
         for record in adapter.iter_sessions(date):
+            resolved_workspace = resolve_workspace(record)
+            if workspace_filter and not _matches_workspace(
+                record, resolved_workspace, workspace_filter
+            ):
+                continue
             session_count += 1
             message_count += len(record.messages)
             filtered_count += sum(1 for message in record.messages if is_noise(message))
-            workspace = resolve_workspace(record)
-            workspaces[workspace.workspace_id] = workspace
-            candidates.extend(extract_candidates(record, workspace))
+            workspaces[resolved_workspace.workspace_id] = resolved_workspace
+            candidates.extend(extract_candidates(record, resolved_workspace))
 
     write_output(
         output_dir=output_dir,
@@ -53,3 +59,10 @@ def run_pipeline(
         dry_run=dry_run,
     )
     return session_count, len(candidates)
+
+
+def _matches_workspace(
+    record: SessionRecord, resolved_workspace: WorkspaceIdentity, workspace_filter: Path
+) -> bool:
+    record_cwd = record.cwd.resolve(strict=False) if record.cwd else None
+    return workspace_filter in {record_cwd, resolved_workspace.canonical_path}

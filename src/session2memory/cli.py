@@ -1,9 +1,28 @@
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from session2memory.adapters import ClaudeAdapter, CodexAdapter, OpenCodeAdapter, QwenAdapter
+from session2memory.pipeline import PipelineAdapter, run_pipeline
+
 app = typer.Typer(no_args_is_help=True)
+
+AdapterFactory = Callable[[Path], PipelineAdapter]
+P0_TOOLS = ("codex", "claude", "qwen", "opencode")
+DEFAULT_SOURCE_ROOTS = {
+    "codex": Path("~/.codex/sessions"),
+    "claude": Path("~/.claude/projects"),
+    "qwen": Path("~/.qwen"),
+    "opencode": Path("~/.local/share/opencode/opencode.db"),
+}
+ADAPTERS: dict[str, AdapterFactory] = {
+    "codex": CodexAdapter,
+    "claude": ClaudeAdapter,
+    "qwen": QwenAdapter,
+    "opencode": OpenCodeAdapter,
+}
 
 
 @app.callback()
@@ -17,8 +36,27 @@ def _parse_source_root(raw: list[str]) -> dict[str, Path]:
         if "=" not in item:
             raise typer.BadParameter("--source-root must use tool=path")
         tool, path = item.split("=", 1)
-        roots[tool.strip()] = Path(path).expanduser()
+        tool_name = tool.strip()
+        if tool_name not in P0_TOOLS:
+            raise typer.BadParameter(f"Unsupported tool: {tool_name}")
+        roots[tool_name] = Path(path).expanduser()
     return roots
+
+
+def _selected_tools(requested_tools: list[str] | None, roots: dict[str, Path]) -> list[str]:
+    selected = requested_tools or sorted(roots) or list(P0_TOOLS)
+    for tool in selected:
+        if tool not in P0_TOOLS:
+            raise typer.BadParameter(f"Unsupported tool: {tool}")
+    return selected
+
+
+def _default_source_roots() -> dict[str, Path]:
+    return {tool: path.expanduser() for tool, path in DEFAULT_SOURCE_ROOTS.items()}
+
+
+def _build_adapters(tools: list[str], source_roots: dict[str, Path]) -> dict[str, PipelineAdapter]:
+    return {tool: ADAPTERS[tool](source_roots[tool]) for tool in tools}
 
 
 @app.command("import")
@@ -38,10 +76,20 @@ def import_sessions(
         bool, typer.Option("--dry-run", help="Scan and report without writing output.")
     ] = False,
 ) -> None:
-    roots = _parse_source_root(source_root or [])
-    selected_tools = tool or sorted(roots)
-    if dry_run:
-        typer.echo(f"date={date} tools={len(selected_tools)} sessions=0 written=0")
-        return
-    output.mkdir(parents=True, exist_ok=True)
-    typer.echo(f"date={date} tools={len(selected_tools)} sessions=0 written=1")
+    overrides = _parse_source_root(source_root or [])
+    selected_tools = _selected_tools(tool, overrides)
+    source_roots = _default_source_roots()
+    source_roots.update(overrides)
+    selected_source_roots = {tool_name: source_roots[tool_name] for tool_name in selected_tools}
+    session_count, candidate_count = run_pipeline(
+        adapters=_build_adapters(selected_tools, source_roots),
+        output_dir=output,
+        date=date,
+        source_roots=selected_source_roots,
+        dry_run=dry_run,
+        workspace=workspace,
+    )
+    typer.echo(
+        f"date={date} tools={len(selected_tools)} sessions={session_count} "
+        f"written={0 if dry_run else 1} candidates={candidate_count}"
+    )
