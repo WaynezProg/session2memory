@@ -8,10 +8,10 @@ NOISE_PREFIXES = (
 )
 
 INSTRUCTION_MARKERS = (
-    "# AGENTS.md instructions",
-    "# CLAUDE.md",
-    "# GEMINI.md",
-    "<INSTRUCTIONS>",
+    "agents.md instructions",
+    "claude.md",
+    "gemini.md",
+    "<instructions>",
 )
 
 TELEMETRY_MARKERS = (
@@ -32,11 +32,12 @@ SIGNAL_MARKERS = (
 
 def is_noise(message: SessionMessage) -> bool:
     text = message.text.strip()
+    normalized_text = text.casefold()
     if message.role == "system":
         return True
     if any(text.startswith(prefix) for prefix in NOISE_PREFIXES):
         return True
-    if any(marker in text for marker in INSTRUCTION_MARKERS):
+    if any(marker in normalized_text for marker in INSTRUCTION_MARKERS):
         return True
     if any(marker in text for marker in TELEMETRY_MARKERS):
         return True

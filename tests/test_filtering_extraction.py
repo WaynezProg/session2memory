@@ -56,6 +56,24 @@ def test_noise_filter_removes_wrapped_instruction_blocks() -> None:
     assert is_noise(message(1, "user", text))
 
 
+def test_noise_filter_removes_plain_wrapped_agents_instruction_blocks() -> None:
+    text = "wrapper header\n\nAGENTS.md instructions for /tmp/repo\nRules..."
+
+    assert is_noise(message(1, "user", text))
+
+
+def test_noise_filter_removes_plain_wrapped_claude_instruction_blocks() -> None:
+    text = "wrapper header\n\nCLAUDE.md instructions for /tmp/repo\nRules..."
+
+    assert is_noise(message(1, "user", text))
+
+
+def test_noise_filter_removes_plain_wrapped_gemini_instruction_blocks() -> None:
+    text = "wrapper header\n\nGEMINI.md instructions for /tmp/repo\nRules..."
+
+    assert is_noise(message(1, "user", text))
+
+
 def test_extracts_only_high_signal_candidates() -> None:
     session = record(
         [
