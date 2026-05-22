@@ -29,6 +29,9 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["session2memory*"]
 
+[tool.setuptools.package-data]
+session2memory = ["py.typed"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
