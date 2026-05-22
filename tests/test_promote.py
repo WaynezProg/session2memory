@@ -99,6 +99,161 @@ def test_promote_approved_review_entries_to_workspace_memories(tmp_path: Path) -
     assert "memories/repo-123.md" in manifest["output_files"]
 
 
+def test_review_list_prints_compact_candidate_rows(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+
+    result = CliRunner().invoke(
+        app,
+        ["review", "list", "--date", "2026-05-22", "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert (
+        result.output
+        == "r000001 approved durable decision repo-123 e000001 "
+        "Use evidence-backed memory compiler.\n"
+    )
+
+
+def test_review_list_missing_date_prints_no_rows(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+
+    result = CliRunner().invoke(
+        app,
+        ["review", "list", "--date", "2026-05-22", "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_review_approve_updates_status_and_note_without_manual_jsonl_edit(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+    review_path = output / "review" / "2026-05-22.jsonl"
+    row = json.loads(review_path.read_text(encoding="utf-8"))
+    row["status"] = "pending"
+    row["review_note"] = ""
+    review_path.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "review",
+            "approve",
+            "r000001",
+            "--date",
+            "2026-05-22",
+            "--output",
+            str(output),
+            "--note",
+            "keep this",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == "date=2026-05-22 id=r000001 status=approved\n"
+    updated = json.loads(review_path.read_text(encoding="utf-8"))
+    assert updated["status"] == "approved"
+    assert updated["review_note"] == "keep this"
+    assert updated["durable_suggestion"] is True
+
+
+def test_review_reject_updates_status_and_note_without_promoting(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "review",
+            "reject",
+            "r000001",
+            "--date",
+            "2026-05-22",
+            "--output",
+            str(output),
+            "--note",
+            "too local",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == "date=2026-05-22 id=r000001 status=rejected\n"
+    review_row = json.loads((output / "review" / "2026-05-22.jsonl").read_text(encoding="utf-8"))
+    assert review_row["status"] == "rejected"
+    assert review_row["review_note"] == "too local"
+
+    promote_result = CliRunner().invoke(
+        app,
+        ["review", "promote", "--date", "2026-05-22", "--output", str(output)],
+    )
+    assert promote_result.exit_code == 0
+    assert promote_result.output == "date=2026-05-22 reviewed=1 promoted=0\n"
+    assert not list((output / "memories").glob("*.md"))
+
+
+def test_review_approve_can_mark_candidate_as_durable_for_promotion(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+    review_path = output / "review" / "2026-05-22.jsonl"
+    row = json.loads(review_path.read_text(encoding="utf-8"))
+    row["status"] = "pending"
+    row["durable_suggestion"] = False
+    review_path.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
+
+    approved = CliRunner().invoke(
+        app,
+        [
+            "review",
+            "approve",
+            "r000001",
+            "--date",
+            "2026-05-22",
+            "--output",
+            str(output),
+            "--durable",
+        ],
+    )
+    promoted = CliRunner().invoke(
+        app,
+        ["review", "promote", "--date", "2026-05-22", "--output", str(output)],
+    )
+
+    assert approved.exit_code == 0
+    assert promoted.exit_code == 0
+    assert promoted.output == "date=2026-05-22 reviewed=1 promoted=1\n"
+    review_row = json.loads(review_path.read_text(encoding="utf-8"))
+    assert review_row["durable_suggestion"] is True
+    assert review_row["status"] == "promoted"
+
+
+def test_review_action_reports_unknown_review_id(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "review",
+            "approve",
+            "missing",
+            "--date",
+            "2026-05-22",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Review id not found: missing" in result.output
+
+
 def test_promote_pending_review_entries_does_not_write_memories(tmp_path: Path) -> None:
     output = tmp_path / "session-memory"
     write_review_fixture(output)

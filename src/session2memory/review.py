@@ -4,7 +4,9 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+ReviewStatus = Literal["pending", "approved", "rejected", "promoted"]
 
 
 @dataclass(frozen=True)
@@ -13,8 +15,62 @@ class PromoteResult:
     promoted: int
 
 
+@dataclass(frozen=True)
+class ReviewUpdateResult:
+    review_id: str
+    status: ReviewStatus
+
+
+class ReviewNotFoundError(ValueError):
+    pass
+
+
+def list_reviews(
+    *, output_dir: Path, date: str, status: ReviewStatus | None = None
+) -> list[dict[str, Any]]:
+    rows = _read_reviews(output_dir=output_dir, date=date)
+    if status is None:
+        return rows
+    return [row for row in rows if row.get("status") == status]
+
+
+def approve_review(
+    *,
+    output_dir: Path,
+    date: str,
+    review_id: str,
+    note: str | None = None,
+    durable: bool = False,
+) -> ReviewUpdateResult:
+    return _update_review_status(
+        output_dir=output_dir,
+        date=date,
+        review_id=review_id,
+        status="approved",
+        note=note,
+        durable=True if durable else None,
+    )
+
+
+def reject_review(
+    *,
+    output_dir: Path,
+    date: str,
+    review_id: str,
+    note: str | None = None,
+) -> ReviewUpdateResult:
+    return _update_review_status(
+        output_dir=output_dir,
+        date=date,
+        review_id=review_id,
+        status="rejected",
+        note=note,
+        durable=None,
+    )
+
+
 def promote_reviews(*, output_dir: Path, date: str) -> PromoteResult:
-    review_path = output_dir / "review" / f"{date}.jsonl"
+    review_path = _review_path(output_dir=output_dir, date=date)
     if not review_path.exists():
         return PromoteResult(reviewed=0, promoted=0)
 
@@ -47,7 +103,41 @@ def promote_reviews(*, output_dir: Path, date: str) -> PromoteResult:
     return PromoteResult(reviewed=len(rows), promoted=promoted_count)
 
 
+def _update_review_status(
+    *,
+    output_dir: Path,
+    date: str,
+    review_id: str,
+    status: ReviewStatus,
+    note: str | None,
+    durable: bool | None,
+) -> ReviewUpdateResult:
+    review_path = _review_path(output_dir=output_dir, date=date)
+    rows = _read_jsonl(review_path)
+    for row in rows:
+        if row.get("id") != review_id:
+            continue
+        row["status"] = status
+        if note is not None:
+            row["review_note"] = note
+        if durable is not None:
+            row["durable_suggestion"] = durable
+        _write_jsonl(review_path, rows)
+        return ReviewUpdateResult(review_id=review_id, status=status)
+    raise ReviewNotFoundError(f"Review id not found: {review_id}")
+
+
+def _read_reviews(*, output_dir: Path, date: str) -> list[dict[str, Any]]:
+    return _read_jsonl(_review_path(output_dir=output_dir, date=date))
+
+
+def _review_path(*, output_dir: Path, date: str) -> Path:
+    return output_dir / "review" / f"{date}.jsonl"
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
     rows: list[dict[str, Any]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():

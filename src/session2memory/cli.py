@@ -7,9 +7,17 @@ import typer
 
 from session2memory.adapters import ClaudeAdapter, CodexAdapter, OpenCodeAdapter, QwenAdapter
 from session2memory.pipeline import PipelineAdapter, run_pipeline
-from session2memory.review import promote_reviews
+from session2memory.review import (
+    ReviewNotFoundError,
+    ReviewStatus,
+    approve_review,
+    list_reviews,
+    promote_reviews,
+    reject_review,
+)
 
 app = typer.Typer(no_args_is_help=True)
+review_app = typer.Typer(no_args_is_help=True)
 
 AdapterFactory = Callable[[Path], PipelineAdapter]
 P0_TOOLS = ("codex", "claude", "qwen", "opencode")
@@ -30,6 +38,9 @@ ADAPTERS: dict[str, AdapterFactory] = {
 @app.callback()
 def main() -> None:
     pass
+
+
+app.add_typer(review_app, name="review")
 
 
 def _parse_source_root(raw: list[str]) -> dict[str, Path]:
@@ -109,6 +120,80 @@ def import_sessions(
 
 @app.command("promote")
 def promote(
+    date: Annotated[str, typer.Option("--date", help="Date to promote in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+) -> None:
+    parsed_date = _parse_date(date)
+    result = promote_reviews(output_dir=output, date=parsed_date)
+    typer.echo(f"date={parsed_date} reviewed={result.reviewed} promoted={result.promoted}")
+
+
+@review_app.command("list")
+def review_list(
+    date: Annotated[str, typer.Option("--date", help="Date to review in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+    status: Annotated[
+        ReviewStatus | None,
+        typer.Option("--status", help="Limit rows to one review status."),
+    ] = None,
+) -> None:
+    parsed_date = _parse_date(date)
+    for row in list_reviews(output_dir=output, date=parsed_date, status=status):
+        durable = "durable" if row.get("durable_suggestion") is True else "daily"
+        typer.echo(
+            f"{row.get('id', '')} {row.get('status', '')} {durable} "
+            f"{row.get('kind', '')} {row.get('workspace_id', '')} "
+            f"{row.get('evidence_id', '')} {row.get('text', '')}"
+        )
+
+
+@review_app.command("approve")
+def review_approve(
+    review_id: Annotated[str, typer.Argument(help="Review row id.")],
+    date: Annotated[str, typer.Option("--date", help="Date to review in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+    note: Annotated[str | None, typer.Option("--note", help="Reviewer note.")] = None,
+    durable: Annotated[
+        bool,
+        typer.Option("--durable", help="Mark this row as durable memory eligible."),
+    ] = False,
+) -> None:
+    parsed_date = _parse_date(date)
+    try:
+        result = approve_review(
+            output_dir=output,
+            date=parsed_date,
+            review_id=review_id,
+            note=note,
+            durable=durable,
+        )
+    except ReviewNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"date={parsed_date} id={result.review_id} status={result.status}")
+
+
+@review_app.command("reject")
+def review_reject(
+    review_id: Annotated[str, typer.Argument(help="Review row id.")],
+    date: Annotated[str, typer.Option("--date", help="Date to review in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+    note: Annotated[str | None, typer.Option("--note", help="Reviewer note.")] = None,
+) -> None:
+    parsed_date = _parse_date(date)
+    try:
+        result = reject_review(
+            output_dir=output,
+            date=parsed_date,
+            review_id=review_id,
+            note=note,
+        )
+    except ReviewNotFoundError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"date={parsed_date} id={result.review_id} status={result.status}")
+
+
+@review_app.command("promote")
+def review_promote(
     date: Annotated[str, typer.Option("--date", help="Date to promote in YYYY-MM-DD format.")],
     output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
 ) -> None:

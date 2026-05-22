@@ -69,22 +69,46 @@ SQLite directly.
 
 Durable project memory enters `memories/` only after review.
 
-Edit `review/YYYY-MM-DD.jsonl` and change a candidate from:
+List candidates:
 
-```json
-{"status": "pending"}
+```bash
+uv run session2memory review list \
+  --date 2026-05-22 \
+  --output ./out/session-memory
 ```
 
-to:
+Approve one candidate:
 
-```json
-{"status": "approved"}
+```bash
+uv run session2memory review approve r000001 \
+  --date 2026-05-22 \
+  --output ./out/session-memory \
+  --note "keep this"
+```
+
+Reject one candidate:
+
+```bash
+uv run session2memory review reject r000001 \
+  --date 2026-05-22 \
+  --output ./out/session-memory \
+  --note "too local"
+```
+
+If a reviewer wants a daily-only candidate to become durable memory, approve it
+with `--durable`:
+
+```bash
+uv run session2memory review approve r000001 \
+  --date 2026-05-22 \
+  --output ./out/session-memory \
+  --durable
 ```
 
 Then run:
 
 ```bash
-uv run session2memory promote \
+uv run session2memory review promote \
   --date 2026-05-22 \
   --output ./out/session-memory
 ```
@@ -92,7 +116,7 @@ uv run session2memory promote \
 Approved entries are appended to `memories/<workspace-id>.md`, and their review
 status changes to `promoted`. Pending entries stay out of durable memory.
 Entries with `durable_suggestion: false` also stay out unless a reviewer
-explicitly changes that field to `true`.
+explicitly marks them with `review approve --durable`.
 
 ## Current Extraction Model
 
@@ -107,9 +131,8 @@ entries stay in `daily/` plus `evidence/`.
 
 ## Roadmap
 
-The next important workflow is better review ergonomics: compact review views,
-agent-assisted approval suggestions, and conflict handling for repeated
-promotions.
+The next important review workflow is assisted review: evidence previews,
+bulk approval/rejection, and conflict handling for repeated promotions.
 
 ## Verification
 
