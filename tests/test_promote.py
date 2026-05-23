@@ -98,12 +98,30 @@ def test_promote_approved_review_entries_to_workspace_memories(tmp_path: Path) -
     review_row = json.loads((output / "review" / "2026-05-22.jsonl").read_text(encoding="utf-8"))
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
 
+    assert memory.startswith(
+        "---\n"
+        "hks_type: workspace_memory\n"
+        "source_domain: coding_session\n"
+        "workspace_id: repo-123\n"
+        "generator: session2memory\n"
+        "schema_version: 1\n"
+        "---\n"
+        "# repo-123\n"
+    )
     assert "Use evidence-backed memory compiler." in memory
     assert "e000001" in memory
-    assert "source: codex, session: s1, lines: 2-2" in memory
+    assert (
+        "{workspace_id=repo-123 memory_kind=decision tool=codex "
+        "session_id=s1 evidence_id=e000001 lines=2-2"
+    ) in memory
     assert "/tmp/raw/session.jsonl" not in memory
     assert review_row["status"] == "promoted"
     assert "memories/repo-123.md" in manifest["output_files"]
+    assert manifest["hks"] == {
+        "source_type": "session_memory",
+        "primary_documents": ["daily/2026-05-22.md"],
+        "metadata_fields": ["date", "workspace_id", "tool", "memory_kind"],
+    }
 
 
 def test_review_list_prints_compact_candidate_rows(tmp_path: Path) -> None:

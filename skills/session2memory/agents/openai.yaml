@@ -1,0 +1,6 @@
+interface:
+  display_name: "Session2Memory"
+  short_description: "Compile local coding sessions into HKS-ready memory"
+  default_prompt: "Use $session2memory to import local AI coding sessions, review candidates, and ingest the generated Markdown daily logs into an isolated HKS KS_ROOT."
+policy:
+  allow_implicit_invocation: true

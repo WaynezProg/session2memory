@@ -1,0 +1,41 @@
+{
+  "name": "session2memory",
+  "displayName": "Session2Memory",
+  "version": "0.1.1",
+  "description": "Compile local AI coding sessions into evidence-backed, HKS-ingestable project memory.",
+  "entrypoint": "SKILL.md",
+  "agents_metadata": "agents/openai.yaml",
+  "compatible_agents": [
+    "codex",
+    "claude-code",
+    "openclaw",
+    "hermes",
+    "vibe-code"
+  ],
+  "execution_model": {
+    "mode": "manual_cli_workflow",
+    "requires_human_review": true,
+    "resume_source": "review/<date>.jsonl"
+  },
+  "commands": {
+    "import": "uv run session2memory import --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
+    "review_list": "uv run session2memory review list --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
+    "review_inspect": "uv run session2memory review inspect <review-id> --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
+    "review_promote": "uv run session2memory review promote --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
+    "hks_ingest": "KS_ROOT=<hks-repo>/.hks-runs/session-memory/ks uv run ks ingest <session2memory-repo>/out/session-memory",
+    "hks_update": "KS_ROOT=<hks-repo>/.hks-runs/session-memory/ks uv run ks update <session2memory-repo>/out/session-memory"
+  },
+  "outputs": {
+    "generated_source": "out/session-memory/<date>",
+    "daily_log": "daily/<date>.md",
+    "evidence_index": "evidence/index.jsonl",
+    "review_queue": "review/<date>.jsonl",
+    "promoted_memories": "memories/<workspace-id>.md"
+  },
+  "hks_policy": {
+    "default_ks_root": "<hks-repo>/.hks-runs/session-memory/ks",
+    "ingest_markdown_only": true,
+    "do_not_ingest_raw_session_stores": true,
+    "do_not_prune_without_user_request": true
+  }
+}

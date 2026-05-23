@@ -10,6 +10,8 @@ from typing import Any
 from session2memory import __version__
 from session2memory.models import MemoryCandidate, WorkspaceIdentity
 
+P0_TOOL_ORDER = ("codex", "claude", "qwen", "opencode")
+
 
 def write_output(
     *,
@@ -39,7 +41,7 @@ def write_output(
 
     daily_path = output_dir / "daily" / f"{date}.md"
     daily_path.write_text(
-        _daily_markdown(date, ordered, evidence_by_id),
+        _daily_markdown(date, ordered, evidence_by_id, workspaces, scanned_tools),
         encoding="utf-8",
     )
     evidence_lines = [
@@ -104,6 +106,7 @@ def write_output(
             workspace_id: _workspace_record(workspace)
             for workspace_id, workspace in sorted(workspaces.items())
         },
+        "hks": _hks_manifest_hint(date),
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -138,15 +141,58 @@ def _candidate_sort_key(
 
 
 def _daily_markdown(
-    date: str, candidates: Sequence[MemoryCandidate], evidence_by_id: Mapping[int, str]
+    date: str,
+    candidates: Sequence[MemoryCandidate],
+    evidence_by_id: Mapping[int, str],
+    workspaces: Mapping[str, WorkspaceIdentity],
+    scanned_tools: Sequence[str],
 ) -> str:
-    lines = [f"# {date}", ""]
+    grouped = _group_by_workspace(candidates)
+    workspace_ids = sorted(set(workspaces) | set(grouped))
+    lines = [
+        "---",
+        "hks_type: session_daily",
+        f"date: {date}",
+        "generator: session2memory",
+        "source_domain: coding_session",
+        f"tools: {_yaml_flow_list(_ordered_tools(scanned_tools))}",
+        "schema_version: 1",
+        "---",
+        f"# {date}",
+        "",
+        "## Summary",
+        f"- entries: {len(candidates)}",
+        f"- workspaces: {len(workspace_ids)}",
+        f"- durable_suggestions: {sum(1 for candidate in candidates if candidate.durable)}",
+        "",
+        "## Workspaces",
+    ]
+
+    if workspace_ids:
+        for workspace_id in workspace_ids:
+            workspace_candidates = grouped.get(workspace_id, [])
+            memory_kinds = sorted({candidate.kind for candidate in workspace_candidates})
+            tools = _ordered_tools(
+                {candidate.evidence.tool for candidate in workspace_candidates}
+            )
+            lines.extend(
+                [
+                    f"### {workspace_id}",
+                    f"- entries: {len(workspace_candidates)}",
+                    f"- memory_kinds: {', '.join(memory_kinds) if memory_kinds else 'none'}",
+                    f"- tools: {', '.join(tools) if tools else 'none'}",
+                    "",
+                ]
+            )
+        lines.pop()
+    else:
+        lines.append("_No workspaces._")
+
+    lines.extend(["", "## Entries"])
     for candidate in candidates:
-        lines.append(
-            f"- [{candidate.kind}] {candidate.text} "
-            f"(workspace: {candidate.workspace_id}, evidence: {evidence_by_id[id(candidate)]}, "
-            f"{_source_summary(candidate)})"
-        )
+        lines.append(_daily_entry_line(candidate, evidence_by_id[id(candidate)]))
+    if not candidates:
+        lines.append("_No entries._")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -226,6 +272,23 @@ def _source_summary(candidate: MemoryCandidate) -> str:
     )
 
 
+def _daily_entry_line(candidate: MemoryCandidate, evidence_id: str) -> str:
+    return f"- [{candidate.kind}] {candidate.text} {_entry_metadata(candidate, evidence_id)}"
+
+
+def _entry_metadata(candidate: MemoryCandidate, evidence_id: str) -> str:
+    return (
+        "{"
+        f"workspace_id={candidate.workspace_id} "
+        f"memory_kind={candidate.kind} "
+        f"tool={candidate.evidence.tool} "
+        f"session_id={candidate.evidence.session_id} "
+        f"evidence_id={evidence_id} "
+        f"lines={candidate.evidence.message_start}-{candidate.evidence.message_end}"
+        "}"
+    )
+
+
 def _review_id(candidate: MemoryCandidate) -> str:
     raw = "\0".join(
         (
@@ -250,3 +313,22 @@ def _workspace_record(workspace: WorkspaceIdentity) -> dict[str, str | None]:
         "opened_cwd": workspace.opened_cwd.as_posix() if workspace.opened_cwd else None,
         "tool_workspace_id": workspace.tool_workspace_id,
     }
+
+
+def _hks_manifest_hint(date: str) -> dict[str, str | list[str]]:
+    return {
+        "source_type": "session_memory",
+        "primary_documents": [f"daily/{date}.md"],
+        "metadata_fields": ["date", "workspace_id", "tool", "memory_kind"],
+    }
+
+
+def _ordered_tools(tools: Sequence[str] | set[str]) -> list[str]:
+    tool_set = {tool for tool in tools if tool}
+    ordered = [tool for tool in P0_TOOL_ORDER if tool in tool_set]
+    ordered.extend(sorted(tool_set - set(P0_TOOL_ORDER)))
+    return ordered
+
+
+def _yaml_flow_list(values: Sequence[str]) -> str:
+    return "[" + ", ".join(values) + "]"

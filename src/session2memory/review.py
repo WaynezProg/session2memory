@@ -124,6 +124,7 @@ def promote_reviews(*, output_dir: Path, date: str) -> PromoteResult:
     _update_manifest(
         manifest_path=manifest_path,
         manifest=manifest,
+        date=date,
         memory_files=touched_memory_files,
         promoted_count=promoted_count,
     )
@@ -361,9 +362,12 @@ def _append_workspace_memory(
     memory_path = output_dir / "memories" / f"{workspace_id}.md"
     memory_path.parent.mkdir(parents=True, exist_ok=True)
     existing = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+    if existing and not existing.startswith("---\n"):
+        existing = _add_workspace_frontmatter(existing, workspace_id)
+        memory_path.write_text(existing, encoding="utf-8")
     evidence_id = str(row["evidence_id"])
     review_ref = f"{date}/{_promotion_key(row)}"
-    if f"review: {review_ref}" in existing:
+    if _review_ref_exists(existing, review_ref):
         return memory_path.relative_to(output_dir).as_posix(), False
 
     lines: list[str] = []
@@ -371,10 +375,7 @@ def _append_workspace_memory(
         lines.extend(_memory_header(workspace_id))
     elif not existing.endswith("\n"):
         lines.append("")
-    lines.append(
-        f"- [{row['kind']}] {row['text']} "
-        f"(evidence: {evidence_id}{_memory_source_suffix(row)}, review: {review_ref})"
-    )
+    lines.append(_memory_entry_line(row=row, evidence_id=evidence_id, review_ref=review_ref))
 
     with memory_path.open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines).rstrip() + "\n")
@@ -382,20 +383,58 @@ def _append_workspace_memory(
 
 
 def _memory_header(workspace_id: str) -> list[str]:
-    return [f"# {workspace_id}", ""]
+    return [
+        "---",
+        "hks_type: workspace_memory",
+        "source_domain: coding_session",
+        f"workspace_id: {workspace_id}",
+        "generator: session2memory",
+        "schema_version: 1",
+        "---",
+        f"# {workspace_id}",
+        "",
+    ]
 
 
-def _memory_source_suffix(row: dict[str, Any]) -> str:
+def _add_workspace_frontmatter(existing: str, workspace_id: str) -> str:
+    header = "\n".join(_memory_header(workspace_id)).rstrip() + "\n"
+    if existing.startswith(f"# {workspace_id}\n"):
+        body = existing.split("\n", 1)[1]
+        return header + body.lstrip("\n")
+    return header + existing.lstrip("\n")
+
+
+def _memory_entry_line(
+    *, row: dict[str, Any], evidence_id: str, review_ref: str
+) -> str:
+    return (
+        f"- [{row['kind']}] {row['text']} "
+        f"{_memory_metadata(row=row, evidence_id=evidence_id, review_ref=review_ref)}"
+    )
+
+
+def _review_ref_exists(existing: str, review_ref: str) -> bool:
+    return f"review={review_ref}" in existing or f"review: {review_ref}" in existing
+
+
+def _memory_metadata(*, row: dict[str, Any], evidence_id: str, review_ref: str) -> str:
     source = row.get("source")
-    if not isinstance(source, dict):
-        return ""
-    tool = source.get("tool")
-    session_id = source.get("session_id")
-    message_start = source.get("message_start")
-    message_end = source.get("message_end")
-    if not tool or not session_id or not message_start or not message_end:
-        return ""
-    return f", source: {tool}, session: {session_id}, lines: {message_start}-{message_end}"
+    source = source if isinstance(source, dict) else {}
+    tool = source.get("tool", "unknown")
+    session_id = source.get("session_id", "unknown")
+    message_start = source.get("message_start", "unknown")
+    message_end = source.get("message_end", "unknown")
+    return (
+        "{"
+        f"workspace_id={row.get('workspace_id', '')} "
+        f"memory_kind={row.get('kind', '')} "
+        f"tool={tool} "
+        f"session_id={session_id} "
+        f"evidence_id={evidence_id} "
+        f"lines={message_start}-{message_end} "
+        f"review={review_ref}"
+        "}"
+    )
 
 
 def _promotion_key(row: dict[str, Any]) -> str:
@@ -414,6 +453,7 @@ def _update_manifest(
     *,
     manifest_path: Path,
     manifest: dict[str, Any],
+    date: str,
     memory_files: set[str],
     promoted_count: int,
 ) -> None:
@@ -427,6 +467,11 @@ def _update_manifest(
     counts = manifest.setdefault("counts", {})
     if isinstance(counts, dict):
         counts["durable_memories"] = int(counts.get("durable_memories", 0)) + promoted_count
+    manifest["hks"] = {
+        "source_type": "session_memory",
+        "primary_documents": [f"daily/{date}.md"],
+        "metadata_fields": ["date", "workspace_id", "tool", "memory_kind"],
+    }
 
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

@@ -90,6 +90,10 @@ def record(messages: list[SessionMessage]) -> SessionRecord:
     )
 
 
+def read_golden(name: str) -> str:
+    return (Path(__file__).parent / "golden" / name).read_text(encoding="utf-8")
+
+
 @dataclass(frozen=True)
 class FakeAdapter:
     sessions: list[SessionRecord]
@@ -126,8 +130,7 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     evidence = json.loads((output / "evidence" / "index.jsonl").read_text(encoding="utf-8").strip())
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
 
-    assert "P0 不用 LLM 摘要。" in daily
-    assert "source: codex, session: s1, lines: 2-2" in daily
+    assert daily == read_golden("daily_2026-05-22_single_entry.md")
     assert not list((output / "memories").glob("*.md"))
     assert len(review_rows) == 1
     review_row = review_rows[0]
@@ -154,6 +157,11 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     assert evidence["id"] == "e000001"
     assert evidence["evidence_id"] == "e000001"
     assert manifest["generator"] == "session2memory"
+    assert manifest["hks"] == {
+        "source_type": "session_memory",
+        "primary_documents": ["daily/2026-05-22.md"],
+        "metadata_fields": ["date", "workspace_id", "tool", "memory_kind"],
+    }
     assert manifest["version"] == "0.1.1"
     assert manifest["counts"]["sessions"] == 1
     assert manifest["counts"]["messages"] == 2
@@ -593,4 +601,7 @@ def test_pipeline_evidence_round_trips_to_raw_source_range_without_markdown_path
     assert evidence["message_end"] == 2
     assert evidence["digest"] == digest_text(extracted)
     assert source_path.as_posix() not in daily
-    assert "source: codex, session: codex-evidence, lines: 2-2" in daily
+    assert (
+        "memory_kind=decision tool=codex session_id=codex-evidence "
+        "evidence_id=e000001 lines=2-2"
+    ) in daily
