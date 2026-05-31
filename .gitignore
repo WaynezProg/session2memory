@@ -3,3 +3,7 @@ out/
 __pycache__/
 *.py[cod]
 src/*.egg-info/
+.DS_Store
+.codegraph/
+.cursor/
+logs/
