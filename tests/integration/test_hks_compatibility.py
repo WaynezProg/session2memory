@@ -145,15 +145,18 @@ def test_readme_documents_hks_safe_workflow() -> None:
     assert "--tool codex" in readme
     assert "--source-root" in readme
     assert "codex=" in readme
-    assert "export KS_ROOT=" in readme
-    assert "uv run ks ingest /path/to/out/session-memory" in readme
-    assert "uv run ks update /path/to/out/session-memory" in readme
-    assert "Do not ingest" in readme
+    assert "HKS MCP **agent profile**" in readme
+    assert "export HKS_SESSION2MEMORY_EXPORT_ROOT=" in readme
+    assert 'hks_workspace_ingest_session_memory(' in readme
+    assert 'hks_workspace_query(workspace_id="<workspace_id>", query="...", writeback=no)' in readme
+    assert "scripts/daily-session-memory-to-hks.sh" in readme
+    assert "ks ingest` / `ks update" in readme
+    assert "Do **not** ingest" in readme
     assert "`~/.codex/sessions`" in readme
     assert "`~/.claude/projects`" in readme
     assert "`~/.qwen`" in readme
     assert "OpenCode" in readme
-    assert "SQLite directly" in readme
+    assert "raw logs" in readme
     assert "uv run pytest -q" in readme
     assert "uv run ruff check ." in readme
     assert "uv run mypy src/session2memory" in readme
