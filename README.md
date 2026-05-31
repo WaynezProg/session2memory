@@ -112,26 +112,49 @@ uv run session2memory import \
   --output ./out/session-memory
 ```
 
-## HKS Ingest
+## HKS Ingest (agents)
+
+Agents should use the HKS MCP **agent profile** (`hks-mcp --profile agent`), not
+direct `ks ingest` on raw session stores.
+
+1. Import into the export tree:
 
 ```bash
-cd /Users/waynetu/claw_prog/projects/04-kurisu-github/hks
-export KS_ROOT=/path/to/ks
-export HKS_EMBEDDING_MODEL=simple
-uv run ks ingest /path/to/out/session-memory
-uv run ks update /path/to/out/session-memory
+export HKS_SESSION2MEMORY_EXPORT_ROOT="${HKS_SESSION2MEMORY_EXPORT_ROOT:-$HOME/session2memory/export}"
+workspace_id=repo-123   # session2memory id from manifest, or git basename if you named the folder that way
+
+uv run session2memory import \
+  --date 2026-05-22 \
+  --workspace "$PWD" \
+  --output "$HKS_SESSION2MEMORY_EXPORT_ROOT/$workspace_id"
 ```
 
-- `cd /Users/waynetu/claw_prog/projects/04-kurisu-github/hks`: move to the HKS repo.
-- `export KS_ROOT=/path/to/ks`: choose where HKS stores its runtime data.
-- `export HKS_EMBEDDING_MODEL=simple`: use the simple embedding backend.
-- `uv run ks ingest /path/to/out/session-memory`: read generated session docs into HKS.
-- `uv run ks update /path/to/out/session-memory`: refresh HKS from the same source folder.
+2. Review and promote (see below).
 
-The HKS source root is the generated `session-memory` folder. Do not ingest
-`~/.codex/sessions`, `~/.claude/projects`, `~/.qwen`, OpenCode SQLite directly,
-`~/.cursor/chats`, or `~/.cursor/projects`. HKS reads the generated output; it
-does not remove `./out/session-memory`.
+3. Ingest via MCP:
+
+```text
+hks_workspace_ingest_session_memory(
+  workspace_id="<workspace_id>",
+  path="daily/2026-05-22.md",
+)
+hks_workspace_query(workspace_id="<workspace_id>", query="...", writeback=no)
+```
+
+Configure `HKS_KS_ROOT_BASE`, `HKS_WORKSPACE_REGISTRY`, and `HKS_EMBEDDING_MODEL`
+per the HKS repo docs. The ingest `path` is relative to
+`$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`.
+
+Do **not** ingest `~/.codex/sessions`, `~/.claude/projects`, `~/.qwen`,
+OpenCode SQLite, `~/.cursor/chats`, `~/.cursor/projects`, or raw logs. HKS
+reads only generated Markdown from the export tree.
+
+## Operator / scheduled ingest
+
+Batch jobs on this machine may use `scripts/daily-session-memory-to-hks.sh`,
+which runs `ks ingest` / `ks update` against a combined local `./out/session-memory`
+tree and a dedicated `KS_ROOT`. That path is for operators and launchd, not for
+autonomous agents following the skill contract.
 
 ## Review And Promote
 

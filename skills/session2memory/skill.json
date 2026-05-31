@@ -29,15 +29,15 @@
   },
   "commands": {
     "discover": "uv run session2memory discover",
-    "import": "uv run session2memory import --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
-    "review_list": "uv run session2memory review list --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
-    "review_inspect": "uv run session2memory review inspect <review-id> --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
-    "review_promote": "uv run session2memory review promote --date <YYYY-MM-DD> --output ./out/session-memory/<YYYY-MM-DD>",
-    "hks_ingest": "KS_ROOT=<hks-repo>/.hks-runs/session-memory/ks uv run ks ingest <session2memory-repo>/out/session-memory",
-    "hks_update": "KS_ROOT=<hks-repo>/.hks-runs/session-memory/ks uv run ks update <session2memory-repo>/out/session-memory"
+    "import": "uv run session2memory import --date <YYYY-MM-DD> --workspace <project> --output $HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>",
+    "review_list": "uv run session2memory review list --date <YYYY-MM-DD> --output $HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>",
+    "review_inspect": "uv run session2memory review inspect <review-id> --date <YYYY-MM-DD> --output $HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>",
+    "review_promote": "uv run session2memory review promote --date <YYYY-MM-DD> --output $HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>",
+    "hks_ingest": "hks_workspace_ingest_session_memory(workspace_id=<workspace_id>, path=daily/<YYYY-MM-DD>.md)",
+    "hks_query": "hks_workspace_query(workspace_id=<workspace_id>, query=<question>, writeback=no)"
   },
   "outputs": {
-    "generated_source": "out/session-memory/<date>",
+    "generated_source": "$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>",
     "daily_log": "daily/<date>.md",
     "evidence_index": "evidence/index.jsonl",
     "review_queue": "review/<date>.jsonl",

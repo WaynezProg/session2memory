@@ -13,32 +13,59 @@ HKS-ingestable memory without importing raw transcripts.
 - Supported session stores: Codex, Claude Code, Qwen Code, OpenCode, Cursor GUI,
   Cursor CLI, OpenClaw logs, Hermes logs.
 - Optional agentic-os evidence index (`--agentic-os-root`, `--no-agentic-os`).
-- Output is a generated source folder, not HKS itself.
-- Do not ingest raw session stores into HKS.
-- Keep HKS session memory in a separate `KS_ROOT` unless the user explicitly wants it mixed with another knowledge base.
+- Output is a generated export tree under `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`, not HKS itself.
+- Human review is required before treating candidates as durable memory.
+- Agents use HKS MCP agent profile tools; operators may use batch `ks ingest` scripts.
 
 ## Import
 
-Run from the `session2memory` repo.
+Run from the `session2memory` repo. Set the export root once per machine:
 
-For one day:
+```bash
+export HKS_SESSION2MEMORY_EXPORT_ROOT="${HKS_SESSION2MEMORY_EXPORT_ROOT:-$HOME/session2memory/export}"
+mkdir -p "$HKS_SESSION2MEMORY_EXPORT_ROOT"
+```
+
+Resolve `workspace_id` before import:
+
+- **Default:** session2memory-generated id (for example `repo-123`) from
+  `manifest.json` or daily `###` headings after a dry-run or prior import.
+- **Alternate:** git repository directory basename only when the export directory
+  is intentionally named with that basename and registered the same way in HKS.
+
+For one project and one day (recommended for agent ingest):
 
 ```bash
 date=2026-05-22
-uv run session2memory import --date "$date" --output "./out/session-memory/$date"
+workspace_id=repo-123   # from manifest or prior import
+project=/absolute/path/to/repo
+
+uv run session2memory import \
+  --date "$date" \
+  --workspace "$project" \
+  --output "$HKS_SESSION2MEMORY_EXPORT_ROOT/$workspace_id"
 ```
 
-For several known dates:
+For several dates into the same workspace export tree, re-run import per date
+(same `--output`; managed files for that date are replaced):
 
 ```bash
+workspace_id=repo-123
+project=/absolute/path/to/repo
 for date in 2026-05-20 2026-05-21 2026-05-22; do
-  uv run session2memory import --date "$date" --output "./out/session-memory/$date"
+  uv run session2memory import \
+    --date "$date" \
+    --workspace "$project" \
+    --output "$HKS_SESSION2MEMORY_EXPORT_ROOT/$workspace_id"
 done
 ```
 
 Use `--tool codex`, `--tool claude`, `--tool qwen`, `--tool opencode`,
 `--tool cursor`, `--tool cursor-cli`, `--tool openclaw`, or `--tool hermes`
-to limit the source. Use `--workspace /absolute/path` to limit one project.
+to limit the source.
+
+Local dev may use `./out/session-memory` as a scratch export root, but agent
+docs and HKS ingest assume `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`.
 
 Check local supported stores:
 
@@ -48,11 +75,11 @@ uv run session2memory discover
 
 ## Review
 
-Review is per date-scoped output folder:
+Review uses the workspace export folder:
 
 ```bash
 date=2026-05-22
-output="./out/session-memory/$date"
+output="$HKS_SESSION2MEMORY_EXPORT_ROOT/$workspace_id"
 
 uv run session2memory review list --date "$date" --output "$output"
 uv run session2memory review inspect r000001 --date "$date" --output "$output"
@@ -67,42 +94,76 @@ Use `review promote --resolve keep-new` when `review conflicts` reports duplicat
 `review approve --durable` only when a daily-only candidate should become
 durable memory.
 
-## HKS Ingest
+## Security
 
-Run from the HKS repo and isolate this knowledge base:
+Agents must **not**:
+
+- Run `ks ingest`, `ks update`, `hks_ingest`, or `hks_workspace_ingest_session_memory`
+  on raw session stores: `~/.codex`, `~/.claude`, `~/.cursor`, `~/.qwen`,
+  OpenCode SQLite, OpenClaw/Hermes raw logs, or unreviewed transcripts.
+- Treat the session2memory repository `./out/` as an ingest target unless that
+  path is the registered `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/` tree.
+
+Agents **must**:
+
+- Import with `session2memory` into `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`.
+- Complete review (and promote when needed) before durable memory is trusted.
+- Ingest only generated Markdown via `hks_workspace_ingest_session_memory`.
+
+## HKS Ingest (agents)
+
+Use HKS MCP with the agent profile (`hks-mcp --profile agent`). Configure export
+and workspace runtime per HKS docs (`HKS_KS_ROOT_BASE`, `HKS_WORKSPACE_REGISTRY`,
+`HKS_EMBEDDING_MODEL`).
 
 ```bash
-cd /Users/waynetu/claw_prog/projects/04-kurisu-github/hks
-export KS_ROOT="$PWD/.hks-runs/session-memory/ks"
-
-uv run ks ingest /Users/waynetu/claw_prog/projects/04-kurisu-github/seesion2memory/out/session-memory
-uv run ks update /Users/waynetu/claw_prog/projects/04-kurisu-github/seesion2memory/out/session-memory
-uv run ks query "今天做了哪些驗證？"
+export HKS_SESSION2MEMORY_EXPORT_ROOT="${HKS_SESSION2MEMORY_EXPORT_ROOT:-$HOME/session2memory/export}"
+# Plus HKS_KS_ROOT_BASE, HKS_WORKSPACE_REGISTRY, HKS_EMBEDDING_MODEL per HKS setup
 ```
 
-`ks ingest` creates HKS documents for Markdown daily logs. `ks update`
-synchronizes later changes against the same source root. `ks query` reads from
-the selected `KS_ROOT`.
+After import and review, ingest the daily log for that workspace:
+
+```text
+hks_workspace_ingest_session_memory(
+  workspace_id="<workspace_id>",
+  path="daily/YYYY-MM-DD.md",
+)
+```
+
+Query with writeback disabled unless the user explicitly wants wiki updates:
+
+```text
+hks_workspace_query(
+  workspace_id="<workspace_id>",
+  query="今天做了哪些驗證？",
+  writeback=no,
+)
+```
+
+`path` is relative to `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`.
+Do not use direct `ks ingest` on session store paths as the agent default.
+
+## Operator batch ingest
+
+Scheduled or human batch jobs may use `scripts/daily-session-memory-to-hks.sh`,
+which runs `ks ingest` / `ks update` against a combined local output tree. That
+path is for operators, not autonomous agents. See the script and README for
+`KS_ROOT` and embedding settings.
 
 ## Expected Noise
 
 - `evidence/index.jsonl`, `review/*.jsonl`, and `manifest.json` may show as
-  `unsupported` in HKS. That is expected; HKS ingests the Markdown daily logs.
-- `missing` in `ks update` means old manifest entries are absent from the
-  current source root. Do not add `--prune` unless the user explicitly wants
-  removal.
-- If `mise` refuses the HKS config, run:
-
-```bash
-mise trust /Users/waynetu/claw_prog/projects/04-kurisu-github/hks/.mise.toml
-```
+  `unsupported` in HKS. That is expected; agent ingest targets Markdown daily logs.
+- Operator `ks update` may report `missing` when old manifest entries are absent.
+  Do not add `--prune` unless the user explicitly wants removal.
 
 ## Sanity Checks
 
 ```bash
-find ./out/session-memory -maxdepth 3 -type f | sort
-jq '.counts, .source_roots' ./out/session-memory/2026-05-22/manifest.json
-git -C /Users/waynetu/claw_prog/projects/04-kurisu-github/hks status --short
+export_root="${HKS_SESSION2MEMORY_EXPORT_ROOT:-$HOME/session2memory/export}"
+find "$export_root" -maxdepth 3 -type f | sort
+jq '.counts, .source_roots' "$export_root/$workspace_id/manifest.json"
+test -f "$export_root/$workspace_id/daily/2026-05-22.md"
 ```
 
-Do not commit generated `out/` data.
+Do not commit generated export data.
