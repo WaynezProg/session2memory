@@ -135,7 +135,7 @@ Query with writeback disabled unless the user explicitly wants wiki updates:
 ```text
 hks_workspace_query(
   workspace_id="<workspace_id>",
-  query="今天做了哪些驗證？",
+  question="今天做了哪些驗證？",
   writeback=no,
 )
 ```
