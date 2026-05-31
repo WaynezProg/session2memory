@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from session2memory.adapters.base import make_message
+from session2memory.adapters.base import make_message, timestamps_touch_date
 from session2memory.models import SessionMessage, SessionRecord
 
 
@@ -32,7 +32,8 @@ class OpenCodeAdapter:
             )
             for session_id, directory, time_created, time_updated, workspace_id in rows:
                 started_at = _datetime_from_millis(int(time_created))
-                if started_at.date().isoformat() != date:
+                updated_at = _datetime_from_millis(int(time_updated))
+                if not timestamps_touch_date(date, started_at, updated_at):
                     continue
 
                 yield self._read_session(
@@ -40,7 +41,7 @@ class OpenCodeAdapter:
                     session_id=str(session_id),
                     cwd=Path(str(directory)),
                     started_at=started_at,
-                    updated_at=_datetime_from_millis(int(time_updated)),
+                    updated_at=updated_at,
                     workspace_id=str(workspace_id) if workspace_id is not None else None,
                 )
         finally:

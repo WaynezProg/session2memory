@@ -4,6 +4,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.extraction import extract_candidates
 from session2memory.filtering import is_noise
 from session2memory.models import MemoryCandidate, SessionRecord, WorkspaceIdentity
@@ -24,6 +25,8 @@ def run_pipeline(
     source_roots: Mapping[str, Path],
     dry_run: bool,
     workspace: Path | None = None,
+    agentic_os_index: AgenticOsIndex | None = None,
+    agentic_os_sessions_only: bool = False,
 ) -> tuple[int, int]:
     session_count = 0
     message_count = 0
@@ -32,6 +35,9 @@ def run_pipeline(
     workspaces: dict[str, WorkspaceIdentity] = {}
     skipped: list[str] = []
     workspace_filter = workspace.resolve(strict=False) if workspace else None
+    registered_logs: set[Path] | None = None
+    if agentic_os_sessions_only and agentic_os_index is not None:
+        registered_logs = agentic_os_index.registered_log_paths_for_date(date)
 
     for tool, adapter in sorted(adapters.items()):
         source_root = source_roots.get(tool)
@@ -39,6 +45,10 @@ def run_pipeline(
             skipped.append(f"{tool}: missing source root: {source_root.as_posix()}")
             continue
         for record in adapter.iter_sessions(date):
+            if registered_logs is not None:
+                log_path = record.source_path.expanduser().resolve(strict=False)
+                if log_path not in registered_logs:
+                    continue
             resolved_workspace = resolve_workspace(record)
             if workspace_filter and not _matches_workspace(
                 record, resolved_workspace, workspace_filter
@@ -63,6 +73,7 @@ def run_pipeline(
         message_count=message_count,
         filtered_count=filtered_count,
         dry_run=dry_run,
+        agentic_os_index=agentic_os_index,
     )
     return session_count, len(candidates)
 

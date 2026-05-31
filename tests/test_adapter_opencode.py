@@ -80,6 +80,26 @@ def test_opencode_adapter_reads_sqlite_messages(tmp_path: Path) -> None:
     assert records[0].messages[0].raw_pointer.message_start == 1
 
 
+def test_opencode_adapter_includes_session_updated_on_requested_date(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "opencode.db"
+    create_opencode_db(db_path)
+    created_millis = int(datetime(2026, 5, 22, 1, 0, tzinfo=UTC).timestamp() * 1000)
+    updated_millis = int(datetime(2026, 5, 26, 1, 0, tzinfo=UTC).timestamp() * 1000)
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "update session set time_created = ?, time_updated = ? where id = ?",
+        (created_millis, updated_millis, "ses1"),
+    )
+    connection.commit()
+    connection.close()
+
+    records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-26"))
+
+    assert [record.session_id for record in records] == ["ses1"]
+
+
 def test_opencode_adapter_missing_db_returns_no_sessions(tmp_path: Path) -> None:
     records = list(OpenCodeAdapter(tmp_path / "missing.db").iter_sessions("2026-05-22"))
 

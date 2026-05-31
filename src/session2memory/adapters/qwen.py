@@ -4,6 +4,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from session2memory.adapters.base import (
+    file_session_touches_date,
+    jsonl_candidate_paths,
     make_message,
     parse_datetime,
     read_jsonl,
@@ -21,17 +23,17 @@ class QwenAdapter:
 
     def iter_sessions(self, date: str) -> Iterator[SessionRecord]:
         self.skipped.clear()
-        paths = {
-            *self.root.glob("project*/chats/*.jsonl"),
-            *self.root.glob("projects/*/chats/*.jsonl"),
-        }
-        for path in sorted(paths):
+        for path in jsonl_candidate_paths(
+            self.root,
+            date=date,
+            primary_patterns=("project*/chats/*.jsonl", "projects/*/chats/*.jsonl"),
+        ):
             try:
                 record = self._read_file(path)
             except (OSError, UnicodeError, ValueError) as exc:
                 self.skipped.append(skipped_file_reason(self.tool, path, exc))
                 continue
-            if record.started_at and record.started_at.date().isoformat() == date:
+            if file_session_touches_date(record, date):
                 yield record
 
     def _read_file(self, path: Path) -> SessionRecord:

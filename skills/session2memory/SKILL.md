@@ -10,7 +10,9 @@ HKS-ingestable memory without importing raw transcripts.
 
 ## Scope
 
-- Supported session stores: Codex, Claude Code, Qwen Code, OpenCode.
+- Supported session stores: Codex, Claude Code, Qwen Code, OpenCode, Cursor GUI,
+  Cursor CLI, OpenClaw logs, Hermes logs.
+- Optional agentic-os evidence index (`--agentic-os-root`, `--no-agentic-os`).
 - Output is a generated source folder, not HKS itself.
 - Do not ingest raw session stores into HKS.
 - Keep HKS session memory in a separate `KS_ROOT` unless the user explicitly wants it mixed with another knowledge base.
@@ -34,8 +36,15 @@ for date in 2026-05-20 2026-05-21 2026-05-22; do
 done
 ```
 
-Use `--tool codex`, `--tool claude`, `--tool qwen`, or `--tool opencode`
+Use `--tool codex`, `--tool claude`, `--tool qwen`, `--tool opencode`,
+`--tool cursor`, `--tool cursor-cli`, `--tool openclaw`, or `--tool hermes`
 to limit the source. Use `--workspace /absolute/path` to limit one project.
+
+Check local supported stores:
+
+```bash
+uv run session2memory discover
+```
 
 ## Review
 
@@ -49,9 +58,12 @@ uv run session2memory review list --date "$date" --output "$output"
 uv run session2memory review inspect r000001 --date "$date" --output "$output"
 uv run session2memory review approve r000001 --date "$date" --output "$output" --note "keep"
 uv run session2memory review promote --date "$date" --output "$output"
+uv run session2memory review approve-bulk --date "$date" --output "$output"
+uv run session2memory review conflicts --date "$date" --output "$output"
 ```
 
-Use `review reject` for local, noisy, or misleading candidates. Use
+Use `review reject` / `review reject-bulk` for local, noisy, or misleading candidates.
+Use `review promote --resolve keep-new` when `review conflicts` reports duplicates. Use
 `review approve --durable` only when a daily-only candidate should become
 durable memory.
 

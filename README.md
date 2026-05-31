@@ -18,6 +18,27 @@ evidence ids that point back to the original session.
 - Codex JSONL under `~/.codex/sessions`
 - Qwen Code JSONL under `~/.qwen`
 - OpenCode SQLite under `~/.local/share/opencode/opencode.db`
+- Cursor GUI SQLite stores under `~/.cursor/chats`
+- Cursor CLI JSONL transcripts under `~/.cursor/projects`
+- OpenClaw text logs under `~/.openclaw/logs`
+- Hermes text logs under `~/.hermes/logs`
+
+Optional **agentic-os evidence** enriches `evidence/index.jsonl` from
+`~/.agentic-os/agentic-os.db` (session + audit pointers). Harness logs remain
+the primary transcript source.
+
+File-based sources use their normal session paths plus any JSONL files modified
+on the import date, so reopened older sessions are still scanned.
+
+Check which supported local stores are present before importing:
+
+```bash
+uv run session2memory discover
+```
+
+Discovery reports supported source roots and known local executables. It does
+not claim arbitrary AI coding tools are ingestible until an adapter exists for
+their session format.
 
 ## Generate Memory Docs
 
@@ -28,7 +49,8 @@ uv run session2memory import --date 2026-05-22 --workspace "$PWD" --output ./out
 ```
 
 - `uv run session2memory import`: run the local CLI without installing it globally.
-- `--date 2026-05-22`: scan sessions that belong to this date.
+- `--date 2026-05-22`: scan sessions created or updated on this date. For file
+  sources, this also includes older session files whose mtime falls on this date.
 - `--workspace "$PWD"`: keep only sessions opened from the current repo.
 - `--output ./out/session-memory`: choose where generated docs would be written.
 - `--dry-run`: report counts only; do not write or replace files.
@@ -51,7 +73,8 @@ uv run session2memory import \
 ```
 
 - `uv run session2memory import \`: start an import command.
-- `--date 2026-05-22 \`: choose the session date.
+- `--date 2026-05-22 \`: choose the import date; reopened older sessions updated
+  on this date are included.
 - `--workspace "$PWD" \`: limit results to the current repo.
 - `--tool codex \`: scan only Codex sessions. Repeat `--tool` for more tools.
 - `--output ./out/session-memory`: write generated docs under this folder.
@@ -106,9 +129,9 @@ uv run ks update /path/to/out/session-memory
 - `uv run ks update /path/to/out/session-memory`: refresh HKS from the same source folder.
 
 The HKS source root is the generated `session-memory` folder. Do not ingest
-`~/.codex/sessions`, `~/.claude/projects`, `~/.qwen`, or OpenCode
-SQLite directly. HKS reads the generated output; it does not remove
-`./out/session-memory`.
+`~/.codex/sessions`, `~/.claude/projects`, `~/.qwen`, OpenCode SQLite directly,
+`~/.cursor/chats`, or `~/.cursor/projects`. HKS reads the generated output; it
+does not remove `./out/session-memory`.
 
 ## Review And Promote
 
@@ -197,8 +220,14 @@ entries stay in `daily/` plus `evidence/`.
 
 ## Roadmap
 
-The next important review workflow is bulk approval/rejection and conflict
-handling for repeated promotions.
+Bulk review and conflict-aware promote:
+
+```bash
+uv run session2memory review approve-bulk --date 2026-05-22 --output ./out/session-memory
+uv run session2memory review conflicts --date 2026-05-22 --output ./out/session-memory
+uv run session2memory review promote --date 2026-05-22 --output ./out/session-memory \
+  --resolve keep-new
+```
 
 ## Verification
 

@@ -7,6 +7,15 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
+from session2memory.adapters.cursor import cursor_clean_text, cursor_texts_from_content
+from session2memory.review_conflicts import (
+    ConflictResolve,
+    blocked_without_resolve,
+    find_conflicts,
+    winners_for_resolve,
+)
+from session2memory.review_normalize import normalize_review_text
+
 ReviewStatus = Literal["pending", "approved", "rejected", "promoted"]
 
 
@@ -14,6 +23,10 @@ ReviewStatus = Literal["pending", "approved", "rejected", "promoted"]
 class PromoteResult:
     reviewed: int
     promoted: int
+    conflicts: int = 0
+    skipped_duplicate: int = 0
+    skipped_conflict: int = 0
+    blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,7 +104,33 @@ def reject_review(
     )
 
 
-def promote_reviews(*, output_dir: Path, date: str) -> PromoteResult:
+def list_review_conflicts(*, output_dir: Path, date: str) -> list[dict[str, Any]]:
+    rows = _read_reviews(output_dir=output_dir, date=date)
+    eligible = [
+        row
+        for row in rows
+        if row.get("durable_suggestion") is True
+        and row.get("status") in {"pending", "approved"}
+    ]
+    return [
+        {
+            "conflict_id": group.conflict_id,
+            "workspace_id": group.workspace_id,
+            "kind": group.kind,
+            "normalized_text": group.normalized_text,
+            "review_ids": list(group.review_ids),
+            "evidence_ids": list(group.evidence_ids),
+        }
+        for group in find_conflicts(eligible)
+    ]
+
+
+def promote_reviews(
+    *,
+    output_dir: Path,
+    date: str,
+    resolve: ConflictResolve | None = None,
+) -> PromoteResult:
     review_path = _review_path(output_dir=output_dir, date=date)
     if not review_path.exists():
         return PromoteResult(reviewed=0, promoted=0)
@@ -105,30 +144,91 @@ def promote_reviews(*, output_dir: Path, date: str) -> PromoteResult:
     if not approved:
         return PromoteResult(reviewed=len(rows), promoted=0)
 
+    groups = find_conflicts(approved)
+    if blocked_without_resolve(groups, resolve):
+        return PromoteResult(
+            reviewed=len(rows),
+            promoted=0,
+            conflicts=len(groups),
+            blocked=True,
+        )
+
+    existing_memory = _existing_memory_corpus(output_dir)
+    winners = winners_for_resolve(
+        groups=groups,
+        rows=rows,
+        resolve=resolve or "keep-new",
+        existing_memory_text=existing_memory,
+    ) if groups else set()
+    conflict_review_ids = {review_id for group in groups for review_id in group.review_ids}
+
     manifest_path = output_dir / "manifest.json"
     manifest = _read_manifest(manifest_path)
     promoted_count = 0
+    skipped_duplicate = 0
+    skipped_conflict = 0
     touched_memory_files: set[str] = set()
+    planned_rows: list[tuple[dict[str, Any], str, bool]] = []
+
     for row in approved:
-        memory_relpath, created = _append_workspace_memory(
+        review_id = str(row.get("id", ""))
+        if review_id in conflict_review_ids and review_id not in winners:
+            skipped_conflict += 1
+            continue
+        memory_relpath, created, duplicate_kind = _plan_workspace_memory(
             output_dir=output_dir,
             date=date,
             row=row,
+            existing_memory=existing_memory,
+        )
+        if duplicate_kind == "exact":
+            row["status"] = "promoted"
+            skipped_duplicate += 1
+            continue
+        if duplicate_kind == "semantic":
+            row["status"] = "promoted"
+            skipped_duplicate += 1
+            continue
+        planned_rows.append((row, memory_relpath, created))
+
+    memory_contents: dict[str, str] = {}
+    for row, memory_relpath, created in planned_rows:
+        base = memory_contents.get(memory_relpath)
+        if base is None:
+            memory_path = output_dir / memory_relpath
+            base = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+        memory_contents[memory_relpath] = _render_workspace_memory_append(
+            base,
+            workspace_id=str(row["workspace_id"]),
+            row=row,
+            date=date,
         )
         touched_memory_files.add(memory_relpath)
         row["status"] = "promoted"
         if created:
             promoted_count += 1
 
-    _write_jsonl(review_path, rows)
-    _update_manifest(
-        manifest_path=manifest_path,
+    manifest_text = _render_manifest(
         manifest=manifest,
         date=date,
         memory_files=touched_memory_files,
         promoted_count=promoted_count,
+        skipped_duplicate=skipped_duplicate,
+        skipped_conflict=skipped_conflict,
     )
-    return PromoteResult(reviewed=len(rows), promoted=promoted_count)
+    writes: list[tuple[Path, str]] = [
+        (review_path, _format_review_jsonl(rows)),
+        (manifest_path, manifest_text),
+        *((output_dir / relpath, content) for relpath, content in memory_contents.items()),
+    ]
+    _atomic_replace_writes(writes)
+    return PromoteResult(
+        reviewed=len(rows),
+        promoted=promoted_count,
+        conflicts=len(groups),
+        skipped_duplicate=skipped_duplicate,
+        skipped_conflict=skipped_conflict,
+    )
 
 
 def _update_review_status(
@@ -196,6 +296,9 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
             end=end,
         )
         return _truncate(preview, limit)
+    if tool == "cursor":
+        preview = _cursor_sqlite_preview(source_path=source_path, start=start, end=end)
+        return _truncate(preview, limit)
     preview = _jsonl_preview(source_path=source_path, tool=tool, start=start, end=end)
     return _truncate(preview, limit)
 
@@ -236,6 +339,8 @@ def _event_preview_text(*, raw: str, tool: str) -> str:
         text = _claude_event_text(event)
     elif tool == "qwen":
         text = _qwen_event_text(event)
+    elif tool == "cursor-cli":
+        text = _cursor_cli_event_text(event)
     else:
         text = ""
     return text or raw.strip()
@@ -262,6 +367,13 @@ def _qwen_event_text(event: dict[str, Any]) -> str:
     if not isinstance(message, dict):
         return ""
     return _join_text_blocks(message.get("parts"))
+
+
+def _cursor_cli_event_text(event: dict[str, Any]) -> str:
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return ""
+    return "\n".join(cursor_texts_from_content(message.get("content"))).strip()
 
 
 def _join_text_blocks(value: Any) -> str:
@@ -320,6 +432,41 @@ def _opencode_preview(
         connection.close()
 
 
+def _cursor_sqlite_preview(*, source_path: Path, start: int, end: int) -> str:
+    try:
+        connection = sqlite3.connect(source_path)
+    except sqlite3.Error as exc:
+        return f"[source unreadable: {exc}]"
+    try:
+        rows = connection.execute("select rowid, data from blobs order by rowid")
+        preview_lines: list[str] = []
+        for rowid, data in rows:
+            row_index = int(rowid)
+            if row_index < start or row_index > end:
+                continue
+            raw = bytes(data) if isinstance(data, bytes | bytearray | memoryview) else b""
+            if not raw.startswith(b"{"):
+                continue
+            try:
+                loaded = json.loads(raw.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(loaded, dict):
+                continue
+            role = loaded.get("role")
+            if role == "system":
+                continue
+            texts = cursor_texts_from_content(loaded.get("content"))
+            text = "\n".join(cursor_clean_text(text) for text in texts if text).strip()
+            if text:
+                preview_lines.append(text)
+        return "\n".join(preview_lines).strip() or "[empty evidence preview]"
+    except sqlite3.Error as exc:
+        return f"[source unreadable: {exc}]"
+    finally:
+        connection.close()
+
+
 def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
@@ -355,31 +502,126 @@ def _read_manifest(path: Path) -> dict[str, Any]:
     return loaded
 
 
+def _existing_memory_corpus(output_dir: Path) -> str:
+    memories_dir = output_dir / "memories"
+    if not memories_dir.exists():
+        return ""
+    parts = [
+        path.read_text(encoding="utf-8")
+        for path in sorted(memories_dir.glob("*.md"))
+        if path.is_file()
+    ]
+    return "\n".join(parts)
+
+
+def _plan_workspace_memory(
+    *,
+    output_dir: Path,
+    date: str,
+    row: dict[str, Any],
+    existing_memory: str,
+) -> tuple[str, bool, str | None]:
+    workspace_id = str(row["workspace_id"])
+    memory_relpath = f"memories/{workspace_id}.md"
+    memory_path = output_dir / memory_relpath
+    existing = ""
+    if memory_path.exists():
+        existing = memory_path.read_text(encoding="utf-8")
+    review_ref = f"{date}/{_promotion_key(row)}"
+    if _review_ref_exists(existing, review_ref):
+        return memory_relpath, False, "exact"
+    normalized = normalize_review_text(str(row.get("text", "")))
+    if normalized and normalized in existing_memory:
+        return memory_relpath, False, "semantic"
+    return memory_relpath, True, None
+
+
+def _render_workspace_memory_append(
+    existing: str,
+    *,
+    workspace_id: str,
+    row: dict[str, Any],
+    date: str,
+) -> str:
+    content = existing
+    if content and not content.startswith("---\n"):
+        content = _add_workspace_frontmatter(content, workspace_id)
+    evidence_id = str(row["evidence_id"])
+    review_ref = f"{date}/{_promotion_key(row)}"
+    lines: list[str] = []
+    if not content:
+        lines.extend(_memory_header(workspace_id))
+    elif not content.endswith("\n"):
+        lines.append("")
+    lines.append(_memory_entry_line(row=row, evidence_id=evidence_id, review_ref=review_ref))
+    append_block = "\n".join(lines).rstrip() + "\n"
+    return content + append_block
+
+
+def _apply_workspace_memory_append(
+    *,
+    output_dir: Path,
+    date: str,
+    row: dict[str, Any],
+    memory_relpath: str,
+) -> None:
+    workspace_id = str(row["workspace_id"])
+    memory_path = output_dir / memory_relpath
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+    memory_path.write_text(
+        _render_workspace_memory_append(
+            existing,
+            workspace_id=workspace_id,
+            row=row,
+            date=date,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _format_review_jsonl(rows: list[dict[str, Any]]) -> str:
+    return (
+        "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows)
+        + ("\n" if rows else "")
+    )
+
+
+def _atomic_replace_writes(writes: list[tuple[Path, str]]) -> None:
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for destination, content in writes:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f"{destination.name}.tmp")
+            temporary.write_text(content, encoding="utf-8")
+            staged.append((temporary, destination))
+        for temporary, destination in staged:
+            temporary.replace(destination)
+    except Exception:
+        for temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
+        raise
+
+
 def _append_workspace_memory(
     *, output_dir: Path, date: str, row: dict[str, Any]
 ) -> tuple[str, bool]:
-    workspace_id = str(row["workspace_id"])
-    memory_path = output_dir / "memories" / f"{workspace_id}.md"
-    memory_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
-    if existing and not existing.startswith("---\n"):
-        existing = _add_workspace_frontmatter(existing, workspace_id)
-        memory_path.write_text(existing, encoding="utf-8")
-    evidence_id = str(row["evidence_id"])
-    review_ref = f"{date}/{_promotion_key(row)}"
-    if _review_ref_exists(existing, review_ref):
-        return memory_path.relative_to(output_dir).as_posix(), False
-
-    lines: list[str] = []
-    if not existing:
-        lines.extend(_memory_header(workspace_id))
-    elif not existing.endswith("\n"):
-        lines.append("")
-    lines.append(_memory_entry_line(row=row, evidence_id=evidence_id, review_ref=review_ref))
-
-    with memory_path.open("a", encoding="utf-8") as handle:
-        handle.write("\n".join(lines).rstrip() + "\n")
-    return memory_path.relative_to(output_dir).as_posix(), True
+    existing_memory = _existing_memory_corpus(output_dir)
+    memory_relpath, created, duplicate_kind = _plan_workspace_memory(
+        output_dir=output_dir,
+        date=date,
+        row=row,
+        existing_memory=existing_memory,
+    )
+    if duplicate_kind is not None:
+        return memory_relpath, False
+    _apply_workspace_memory_append(
+        output_dir=output_dir,
+        date=date,
+        row=row,
+        memory_relpath=memory_relpath,
+    )
+    return memory_relpath, created
 
 
 def _memory_header(workspace_id: str) -> list[str]:
@@ -449,14 +691,15 @@ def _promotion_key(row: dict[str, Any]) -> str:
     return "p" + sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _update_manifest(
+def _render_manifest(
     *,
-    manifest_path: Path,
     manifest: dict[str, Any],
     date: str,
     memory_files: set[str],
     promoted_count: int,
-) -> None:
+    skipped_duplicate: int = 0,
+    skipped_conflict: int = 0,
+) -> str:
     output_files = manifest.get("output_files", [])
     if not isinstance(output_files, list):
         output_files = []
@@ -467,13 +710,18 @@ def _update_manifest(
     counts = manifest.setdefault("counts", {})
     if isinstance(counts, dict):
         counts["durable_memories"] = int(counts.get("durable_memories", 0)) + promoted_count
+        if skipped_duplicate:
+            counts["promote_skipped_duplicate"] = (
+                int(counts.get("promote_skipped_duplicate", 0)) + skipped_duplicate
+            )
+        if skipped_conflict:
+            counts["promote_conflicts_skipped"] = (
+                int(counts.get("promote_conflicts_skipped", 0)) + skipped_conflict
+            )
     manifest["hks"] = {
         "source_type": "session_memory",
         "primary_documents": [f"daily/{date}.md"],
         "metadata_fields": ["date", "workspace_id", "tool", "memory_kind"],
     }
 
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    return json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"

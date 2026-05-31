@@ -86,7 +86,8 @@ def test_dry_run_scans_codex_fixture_without_writing_output(tmp_path: Path) -> N
     assert not output_dir.exists()
 
 
-def test_import_rejects_unsupported_tool(tmp_path: Path) -> None:
+def test_import_accepts_cursor_tool_with_missing_root(tmp_path: Path) -> None:
+    missing_root = tmp_path / "missing-cursor"
     result = CliRunner().invoke(
         app,
         [
@@ -95,13 +96,53 @@ def test_import_rejects_unsupported_tool(tmp_path: Path) -> None:
             "2026-05-22",
             "--tool",
             "cursor",
+            "--source-root",
+            f"cursor={missing_root}",
+            "--output",
+            str(tmp_path / "memory"),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert_summary(result.output, "date=2026-05-22 tools=1 sessions=0 written=0 candidates=0")
+
+
+def test_import_rejects_unsupported_tool(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "unknown-vibe",
             "--output",
             str(tmp_path / "memory"),
         ],
     )
 
     assert result.exit_code != 0
-    assert "Unsupported tool: cursor" in result.output
+    assert "Unsupported tool: unknown-vibe" in result.output
+
+
+def test_discover_reports_source_roots(tmp_path: Path) -> None:
+    cursor_root = tmp_path / "cursor"
+    cursor_root.mkdir()
+    result = CliRunner().invoke(
+        app,
+        [
+            "discover",
+            "--source-root",
+            f"cursor={cursor_root}",
+            "--source-root",
+            f"cursor-cli={tmp_path / 'missing-cursor-cli'}",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert f"cursor source=found root={cursor_root}" in result.output
+    assert "cursor-cli source=missing" in result.output
 
 
 def test_import_rejects_bad_date_with_cli_error(tmp_path: Path) -> None:

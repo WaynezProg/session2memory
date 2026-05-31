@@ -8,9 +8,19 @@ from pathlib import Path
 from typing import Any
 
 from session2memory import __version__
+from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.models import MemoryCandidate, WorkspaceIdentity
 
-P0_TOOL_ORDER = ("codex", "claude", "qwen", "opencode")
+P0_TOOL_ORDER = (
+    "codex",
+    "claude",
+    "qwen",
+    "opencode",
+    "cursor",
+    "cursor-cli",
+    "openclaw",
+    "hermes",
+)
 
 
 def write_output(
@@ -26,6 +36,7 @@ def write_output(
     message_count: int,
     filtered_count: int,
     dry_run: bool,
+    agentic_os_index: AgenticOsIndex | None = None,
 ) -> None:
     if dry_run:
         return
@@ -46,7 +57,11 @@ def write_output(
     )
     evidence_lines = [
         json.dumps(
-            _evidence_record(evidence_by_id[id(candidate)], candidate),
+            _evidence_record(
+                evidence_by_id[id(candidate)],
+                candidate,
+                agentic_os_index=agentic_os_index,
+            ),
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -227,7 +242,12 @@ def _group_by_workspace(
     return dict(sorted(grouped.items()))
 
 
-def _evidence_record(evidence_id: str, candidate: MemoryCandidate) -> dict[str, Any]:
+def _evidence_record(
+    evidence_id: str,
+    candidate: MemoryCandidate,
+    *,
+    agentic_os_index: AgenticOsIndex | None = None,
+) -> dict[str, Any]:
     record = candidate.evidence.to_json()
     record.update(
         {
@@ -238,6 +258,11 @@ def _evidence_record(evidence_id: str, candidate: MemoryCandidate) -> dict[str, 
             "durable": candidate.durable,
         }
     )
+    if agentic_os_index is not None:
+        record = agentic_os_index.enrich_evidence_record(
+            record,
+            source_path=candidate.evidence.source_path,
+        )
     return record
 
 

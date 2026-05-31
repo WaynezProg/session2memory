@@ -19,6 +19,11 @@ NEGATION_MARKERS = (
     "先別記",
 )
 
+OAI_MEMORY_CITATION_RE = re.compile(
+    r"<oai-mem-citation>.*?</oai-mem-citation>|</?oai-mem-citation>",
+    flags=re.DOTALL,
+)
+
 
 def extract_candidates(
     record: SessionRecord, workspace: WorkspaceIdentity
@@ -33,7 +38,7 @@ def extract_candidates(
             match = re.search(pattern, message.text, flags=re.MULTILINE)
             if not match:
                 continue
-            text = match.group(1).strip()
+            text = _clean_candidate_text(match.group(1))
             if not text:
                 continue
             candidates.append(
@@ -51,3 +56,7 @@ def extract_candidates(
 
 def _contains_negation(text: str) -> bool:
     return any(marker in text for marker in NEGATION_MARKERS)
+
+
+def _clean_candidate_text(text: str) -> str:
+    return OAI_MEMORY_CITATION_RE.sub("", text).strip()

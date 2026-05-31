@@ -6,6 +6,22 @@ from typer.testing import CliRunner
 from session2memory.cli import app
 
 
+def assert_promote_summary(
+    output: str,
+    *,
+    date: str,
+    reviewed: int,
+    promoted: int,
+    skipped_duplicate: int = 0,
+    skipped_conflict: int = 0,
+) -> None:
+    expected = (
+        f"date={date} reviewed={reviewed} promoted={promoted} "
+        f"skipped_duplicate={skipped_duplicate} skipped_conflict={skipped_conflict}\n"
+    )
+    assert output == expected
+
+
 def write_review_fixture(output: Path) -> None:
     (output / "review").mkdir(parents=True)
     (output / "evidence").mkdir(parents=True)
@@ -93,7 +109,7 @@ def test_promote_approved_review_entries_to_workspace_memories(tmp_path: Path) -
     )
 
     assert result.exit_code == 0
-    assert result.output == "date=2026-05-22 reviewed=1 promoted=1\n"
+    assert_promote_summary(result.output, date="2026-05-22", reviewed=1, promoted=1)
     memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
     review_row = json.loads((output / "review" / "2026-05-22.jsonl").read_text(encoding="utf-8"))
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
@@ -270,7 +286,7 @@ def test_review_reject_updates_status_and_note_without_promoting(tmp_path: Path)
         ["review", "promote", "--date", "2026-05-22", "--output", str(output)],
     )
     assert promote_result.exit_code == 0
-    assert promote_result.output == "date=2026-05-22 reviewed=1 promoted=0\n"
+    assert_promote_summary(promote_result.output, date="2026-05-22", reviewed=1, promoted=0)
     assert not list((output / "memories").glob("*.md"))
 
 
@@ -305,7 +321,7 @@ def test_review_approve_can_mark_candidate_as_durable_for_promotion(
 
     assert approved.exit_code == 0
     assert promoted.exit_code == 0
-    assert promoted.output == "date=2026-05-22 reviewed=1 promoted=1\n"
+    assert_promote_summary(promoted.output, date="2026-05-22", reviewed=1, promoted=1)
     review_row = json.loads(review_path.read_text(encoding="utf-8"))
     assert review_row["durable_suggestion"] is True
     assert review_row["status"] == "promoted"
@@ -346,7 +362,7 @@ def test_promote_pending_review_entries_does_not_write_memories(tmp_path: Path) 
     )
 
     assert result.exit_code == 0
-    assert result.output == "date=2026-05-22 reviewed=1 promoted=0\n"
+    assert_promote_summary(result.output, date="2026-05-22", reviewed=1, promoted=0)
     assert not list((output / "memories").glob("*.md"))
 
 
@@ -367,7 +383,7 @@ def test_promote_approved_non_durable_suggestion_stays_out_of_memories(
     )
 
     assert result.exit_code == 0
-    assert result.output == "date=2026-05-22 reviewed=1 promoted=0\n"
+    assert_promote_summary(result.output, date="2026-05-22", reviewed=1, promoted=0)
     assert not list((output / "memories").glob("*.md"))
 
 
@@ -432,7 +448,7 @@ def test_promote_same_workspace_same_evidence_id_on_different_dates(tmp_path: Pa
     )
 
     assert second.exit_code == 0
-    assert second.output == "date=2026-05-23 reviewed=1 promoted=1\n"
+    assert_promote_summary(second.output, date="2026-05-23", reviewed=1, promoted=1)
     memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
     assert "Use evidence-backed memory compiler." in memory
     assert "Second day durable memory." in memory
@@ -474,7 +490,7 @@ def test_promote_same_date_reimport_reordered_review_ids_do_not_drop_memory(
     )
 
     assert second.exit_code == 0
-    assert second.output == "date=2026-05-22 reviewed=1 promoted=1\n"
+    assert_promote_summary(second.output, date="2026-05-22", reviewed=1, promoted=1)
     memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
     assert "Use evidence-backed memory compiler." in memory
     assert "A memory inserted before the original candidate." in memory
@@ -490,7 +506,7 @@ def test_promote_exact_duplicate_repromotion_does_not_increment_durable_count(
         ["review", "promote", "--date", "2026-05-22", "--output", str(output)],
     )
     assert first.exit_code == 0
-    assert first.output == "date=2026-05-22 reviewed=1 promoted=1\n"
+    assert_promote_summary(first.output, date="2026-05-22", reviewed=1, promoted=1)
 
     review_path = output / "review" / "2026-05-22.jsonl"
     row = json.loads(review_path.read_text(encoding="utf-8"))
@@ -503,7 +519,13 @@ def test_promote_exact_duplicate_repromotion_does_not_increment_durable_count(
     )
 
     assert second.exit_code == 0
-    assert second.output == "date=2026-05-22 reviewed=1 promoted=0\n"
+    assert_promote_summary(
+        second.output,
+        date="2026-05-22",
+        reviewed=1,
+        promoted=0,
+        skipped_duplicate=1,
+    )
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     memory = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
     assert manifest["counts"]["durable_memories"] == 1

@@ -133,3 +133,24 @@ def test_extraction_skips_negated_decision_marker() -> None:
     workspace = resolve_workspace(session)
 
     assert extract_candidates(session, workspace) == []
+
+
+def test_extraction_removes_oai_memory_citation_tags_from_candidate_text() -> None:
+    session = record(
+        [
+            message(
+                1,
+                "assistant",
+                "驗證：ruff pass、mypy pass。<oai-mem-citation>\n"
+                "<citation_entries>\n"
+                "MEMORY.md:1-2|note=[example]\n"
+                "</citation_entries>\n"
+                "</oai-mem-citation>",
+            )
+        ]
+    )
+    workspace = resolve_workspace(session)
+
+    candidates = extract_candidates(session, workspace)
+
+    assert candidates[0].text == "ruff pass、mypy pass。"

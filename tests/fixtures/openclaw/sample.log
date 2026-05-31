@@ -1,0 +1,4 @@
+# Fixture: openclaw plain-text log (file-per-session v1). Real logs use ISO timestamps.
+2026-05-22T10:00:00+08:00 [plugins] session started
+2026-05-22T10:01:00+08:00 [user] Decision: use marker extraction only
+2026-05-22T10:02:00+08:00 [assistant] Done: shipped adapter stub

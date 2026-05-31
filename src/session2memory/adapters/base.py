@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -43,6 +43,49 @@ def read_jsonl(path: Path) -> Iterator[tuple[int, dict[str, object]]]:
 
 def skipped_file_reason(tool: str, path: Path, exc: Exception) -> str:
     return f"{tool}: skipped {path.as_posix()}: {exc}"
+
+
+def timestamps_touch_date(date: str, *values: datetime | None) -> bool:
+    return any(value is not None and value.date().isoformat() == date for value in values)
+
+
+def file_modified_on_date(path: Path, date: str) -> bool:
+    try:
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return False
+    return modified_at.date().isoformat() == date
+
+
+def file_session_touches_date(record: SessionRecord, date: str) -> bool:
+    return timestamps_touch_date(
+        date,
+        record.started_at,
+        record.updated_at,
+    ) or file_modified_on_date(record.source_path, date)
+
+
+def jsonl_candidate_paths(
+    root: Path,
+    *,
+    date: str,
+    primary_patterns: Sequence[str],
+    modified_patterns: Sequence[str] = ("**/*.jsonl",),
+    exclude: Callable[[Path], bool] | None = None,
+) -> list[Path]:
+    paths: set[Path] = set()
+    for pattern in primary_patterns:
+        paths.update(root.glob(pattern))
+
+    if root.exists():
+        for pattern in modified_patterns:
+            paths.update(
+                path for path in root.glob(pattern) if file_modified_on_date(path, date)
+            )
+
+    if exclude:
+        paths = {path for path in paths if not exclude(path)}
+    return sorted(paths)
 
 
 def normalize_role(role: str) -> Role:

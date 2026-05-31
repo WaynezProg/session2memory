@@ -49,3 +49,13 @@ def test_session2memory_skill_has_cross_agent_metadata() -> None:
     assert skill_json["hks_policy"]["default_ks_root"].endswith(
         ".hks-runs/session-memory/ks"
     )
+    assert set(skill_json["supported_tools"]) == {
+        "codex",
+        "claude",
+        "qwen",
+        "opencode",
+        "cursor",
+        "cursor-cli",
+        "openclaw",
+        "hermes",
+    }
