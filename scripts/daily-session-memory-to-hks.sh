@@ -11,9 +11,11 @@ Defaults:
   HKS repo: ../hks
   KS_ROOT: $HKS_REPO/.hks-runs/openai/ks
   HKS_EMBEDDING_MODEL: simple
+  SESSION2MEMORY_TOOLS: claude claude-desktop codex cursor cursor-cli opencode qwen
 
 Environment overrides:
   SESSION2MEMORY_OUTPUT_ROOT
+  SESSION2MEMORY_TOOLS
   HKS_REPO
   KS_ROOT
   HKS_EMBEDDING_MODEL
@@ -83,6 +85,7 @@ dated_output="$output_root/$target_date"
 hks_repo="${HKS_REPO:-"$repo_root/../hks"}"
 ks_root="${KS_ROOT:-"$hks_repo/.hks-runs/openai/ks"}"
 hks_embedding_model="${HKS_EMBEDDING_MODEL:-simple}"
+session2memory_tools="${SESSION2MEMORY_TOOLS:-claude claude-desktop codex cursor cursor-cli opencode qwen}"
 
 if [ ! -d "$hks_repo" ]; then
   echo "HKS_REPO does not exist: $hks_repo" >&2
@@ -96,10 +99,16 @@ echo "session2memory_output=$dated_output"
 echo "hks_source_root=$output_root"
 echo "hks_repo=$hks_repo"
 echo "KS_ROOT=$ks_root"
+echo "session2memory_tools=$session2memory_tools"
+
+tool_args=()
+for tool in $session2memory_tools; do
+  tool_args+=(--tool "$tool")
+done
 
 (
   cd "$repo_root"
-  uv run session2memory import --date "$target_date" --output "$dated_output" --dry-run
+  uv run session2memory import --date "$target_date" --output "$dated_output" "${tool_args[@]}" --dry-run
 )
 
 if [ "$dry_run" -eq 1 ]; then
@@ -113,7 +122,7 @@ fi
 
 (
   cd "$repo_root"
-  uv run session2memory import --date "$target_date" --output "$dated_output"
+  uv run session2memory import --date "$target_date" --output "$dated_output" "${tool_args[@]}"
 )
 
 (

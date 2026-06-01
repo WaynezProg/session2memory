@@ -10,8 +10,10 @@ HKS-ingestable memory without importing raw transcripts.
 
 ## Scope
 
-- Supported session stores: Codex, Claude Code, Qwen Code, OpenCode, Cursor GUI,
-  Cursor CLI, OpenClaw logs, Hermes logs.
+- Supported session stores: Codex, Claude Code, Claude Desktop local-agent,
+  Qwen Code, OpenCode, Cursor GUI, Cursor CLI, OpenClaw logs, Hermes logs.
+- Claude Desktop support does not parse the GUI chat cache in Chromium
+  IndexedDB/Local Storage.
 - Optional agentic-os evidence index (`--agentic-os-root`, `--no-agentic-os`).
 - Output is a generated export tree under `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`, not HKS itself.
 - Human review is required before treating candidates as durable memory.
@@ -60,9 +62,9 @@ for date in 2026-05-20 2026-05-21 2026-05-22; do
 done
 ```
 
-Use `--tool codex`, `--tool claude`, `--tool qwen`, `--tool opencode`,
-`--tool cursor`, `--tool cursor-cli`, `--tool openclaw`, or `--tool hermes`
-to limit the source.
+Use `--tool codex`, `--tool claude`, `--tool claude-desktop`, `--tool qwen`,
+`--tool opencode`, `--tool cursor`, `--tool cursor-cli`, `--tool openclaw`,
+or `--tool hermes` to limit the source.
 
 Local dev may use `./out/session-memory` as a scratch export root, but agent
 docs and HKS ingest assume `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`.
@@ -99,8 +101,9 @@ durable memory.
 Agents must **not**:
 
 - Run `ks ingest`, `ks update`, `hks_ingest`, or `hks_workspace_ingest_session_memory`
-  on raw session stores: `~/.codex`, `~/.claude`, `~/.cursor`, `~/.qwen`,
-  OpenCode SQLite, OpenClaw/Hermes raw logs, or unreviewed transcripts.
+  on raw session stores: `~/.codex`, `~/.claude`,
+  `~/Library/Application Support/Claude`, `~/.cursor`, `~/.qwen`, OpenCode
+  SQLite, OpenClaw/Hermes raw logs, or unreviewed transcripts.
 - Treat the session2memory repository `./out/` as an ingest target unless that
   path is the registered `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/` tree.
 

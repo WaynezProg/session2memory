@@ -14,6 +14,7 @@ from session2memory.models import MemoryCandidate, WorkspaceIdentity
 P0_TOOL_ORDER = (
     "codex",
     "claude",
+    "claude-desktop",
     "qwen",
     "opencode",
     "cursor",

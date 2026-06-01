@@ -139,6 +139,8 @@ def test_readme_documents_hks_safe_workflow() -> None:
 
     assert "## Supported P0 Sources" in readme
     assert "Claude Code JSONL under `~/.claude/projects`" in readme
+    assert "Claude Desktop local-agent JSONL under" in readme
+    assert "`~/Library/Application Support/Claude/**/.claude/projects`" in readme
     assert "Codex JSONL under `~/.codex/sessions`" in readme
     assert "Qwen Code JSONL under `~/.qwen`" in readme
     assert "OpenCode SQLite under `~/.local/share/opencode/opencode.db`" in readme
@@ -154,6 +156,7 @@ def test_readme_documents_hks_safe_workflow() -> None:
     assert "Do **not** ingest" in readme
     assert "`~/.codex/sessions`" in readme
     assert "`~/.claude/projects`" in readme
+    assert "`~/Library/Application Support/Claude`" in readme
     assert "`~/.qwen`" in readme
     assert "OpenCode" in readme
     assert "raw logs" in readme

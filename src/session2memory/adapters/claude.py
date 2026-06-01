@@ -14,8 +14,10 @@ from session2memory.adapters.base import (
 from session2memory.models import SessionMessage, SessionRecord
 
 
-class ClaudeAdapter:
+class _ClaudeJsonlAdapter:
     tool = "claude"
+    primary_patterns = ("**/*.jsonl",)
+    modified_patterns = ("**/*.jsonl",)
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -26,7 +28,8 @@ class ClaudeAdapter:
         for path in jsonl_candidate_paths(
             self.root,
             date=date,
-            primary_patterns=("**/*.jsonl",),
+            primary_patterns=self.primary_patterns,
+            modified_patterns=self.modified_patterns,
             exclude=_is_subagent_path,
         ):
             try:
@@ -92,3 +95,13 @@ class ClaudeAdapter:
 
 def _is_subagent_path(path: Path) -> bool:
     return "/subagents/" in path.as_posix()
+
+
+class ClaudeAdapter(_ClaudeJsonlAdapter):
+    tool = "claude"
+
+
+class ClaudeDesktopAdapter(_ClaudeJsonlAdapter):
+    tool = "claude-desktop"
+    primary_patterns = ("**/.claude/projects/**/*.jsonl",)
+    modified_patterns = primary_patterns

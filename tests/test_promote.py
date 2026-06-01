@@ -222,6 +222,66 @@ def test_review_inspect_prints_candidate_and_evidence_preview(tmp_path: Path) ->
     )
 
 
+def test_review_inspect_formats_claude_desktop_evidence_preview(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    write_review_fixture(output)
+    source_path = tmp_path / "Claude" / "local-agent" / ".claude" / "projects" / "s1.jsonl"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "sessionId": "desktop-s1",
+                        "timestamp": "2026-05-22T01:00:00Z",
+                        "type": "user",
+                        "cwd": "/tmp/repo",
+                        "message": {
+                            "role": "user",
+                            "content": "Decision: inspect desktop evidence clearly.",
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence_path = output / "evidence" / "index.jsonl"
+    evidence_row = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence_row.update(
+        {
+            "source_path": source_path.as_posix(),
+            "message_start": 1,
+            "message_end": 1,
+            "tool": "claude-desktop",
+            "session_id": "desktop-s1",
+        }
+    )
+    evidence_path.write_text(json.dumps(evidence_row, sort_keys=True) + "\n", encoding="utf-8")
+    review_path = output / "review" / "2026-05-22.jsonl"
+    review_row = json.loads(review_path.read_text(encoding="utf-8"))
+    review_row["source"].update(
+        {
+            "tool": "claude-desktop",
+            "session_id": "desktop-s1",
+            "message_start": 1,
+            "message_end": 1,
+        }
+    )
+    review_path.write_text(json.dumps(review_row, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        ["review", "inspect", "r000001", "--date", "2026-05-22", "--output", str(output)],
+    )
+
+    assert result.exit_code == 0
+    assert "tool=claude-desktop session=desktop-s1" in result.output
+    assert "preview:\nDecision: inspect desktop evidence clearly.\n" in result.output
+    assert '"sessionId": "desktop-s1"' not in result.output
+
+
 def test_review_approve_updates_status_and_note_without_manual_jsonl_edit(
     tmp_path: Path,
 ) -> None:

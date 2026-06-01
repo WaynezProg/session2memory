@@ -108,6 +108,83 @@ def test_import_accepts_cursor_tool_with_missing_root(tmp_path: Path) -> None:
     assert_summary(result.output, "date=2026-05-22 tools=1 sessions=0 written=0 candidates=0")
 
 
+def test_import_writes_claude_desktop_output_with_separate_tool_label(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "Claude"
+    transcript_path = (
+        source_root
+        / "local-agent-mode-sessions"
+        / "account-1"
+        / "project-1"
+        / "local_session"
+        / ".claude"
+        / "projects"
+        / "-tmp-repo"
+        / "desktop-cli-session.jsonl"
+    )
+    transcript_path.parent.mkdir(parents=True)
+    transcript_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "sessionId": "desktop-cli-session",
+                        "timestamp": "2026-05-22T01:00:00Z",
+                        "type": "user",
+                        "cwd": "/tmp/repo",
+                        "message": {
+                            "role": "user",
+                            "content": "Decision: Desktop sessions stay separate from Claude Code.",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "sessionId": "desktop-cli-session",
+                        "timestamp": "2026-05-22T01:01:00Z",
+                        "type": "assistant",
+                        "cwd": "/tmp/repo",
+                        "message": {
+                            "role": "assistant",
+                            "content": "Done: Desktop evidence uses its own tool label.",
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    subagent_path = transcript_path.parent / "subagents" / "agent.jsonl"
+    subagent_path.parent.mkdir()
+    subagent_path.write_text(transcript_path.read_text(encoding="utf-8"), encoding="utf-8")
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude-desktop",
+            "--source-root",
+            f"claude-desktop={source_root}",
+            "--output",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert_summary(result.output, "date=2026-05-22 tools=1 sessions=1 written=1 candidates=2")
+    daily = (output_dir / "daily" / "2026-05-22.md").read_text(encoding="utf-8")
+    assert "tool=claude-desktop" in daily
+    evidence = (output_dir / "evidence" / "index.jsonl").read_text(encoding="utf-8")
+    assert '"tool": "claude-desktop"' in evidence
+    assert "subagents/agent.jsonl" not in evidence
+
+
 def test_import_rejects_unsupported_tool(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         app,

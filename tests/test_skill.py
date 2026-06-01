@@ -67,6 +67,7 @@ def test_session2memory_skill_has_cross_agent_metadata() -> None:
     assert set(skill_json["supported_tools"]) == {
         "codex",
         "claude",
+        "claude-desktop",
         "qwen",
         "opencode",
         "cursor",

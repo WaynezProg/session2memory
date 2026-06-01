@@ -48,8 +48,18 @@ def test_daily_hks_script_uses_dated_output_and_parent_hks_root(tmp_path: Path) 
     assert result.returncode == 0, result.stderr
     log = log_path.read_text(encoding="utf-8")
     dated_output = output_root / "2026-05-28"
-    assert f"session2memory import --date 2026-05-28 --output {dated_output} --dry-run" in log
-    assert f"session2memory import --date 2026-05-28 --output {dated_output}" in log
+    tool_args = (
+        "--tool claude --tool claude-desktop --tool codex --tool cursor "
+        "--tool cursor-cli --tool opencode --tool qwen"
+    )
+    assert (
+        f"session2memory import --date 2026-05-28 --output {dated_output} "
+        f"{tool_args} --dry-run"
+    ) in log
+    assert (
+        f"session2memory import --date 2026-05-28 --output {dated_output} "
+        f"{tool_args}"
+    ) in log
     assert f"ks update {output_root}" in log
     assert "ks source list --relpath-query 2026-05-28" in log
     assert f"KS_ROOT={ks_root}" in log

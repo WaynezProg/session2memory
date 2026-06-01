@@ -335,7 +335,7 @@ def _event_preview_text(*, raw: str, tool: str) -> str:
 
     if tool == "codex":
         text = _codex_event_text(event)
-    elif tool == "claude":
+    elif tool in {"claude", "claude-desktop"}:
         text = _claude_event_text(event)
     elif tool == "qwen":
         text = _qwen_event_text(event)

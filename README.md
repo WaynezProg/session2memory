@@ -15,6 +15,8 @@ evidence ids that point back to the original session.
 ## Supported P0 Sources
 
 - Claude Code JSONL under `~/.claude/projects`
+- Claude Desktop local-agent JSONL under
+  `~/Library/Application Support/Claude/**/.claude/projects`
 - Codex JSONL under `~/.codex/sessions`
 - Qwen Code JSONL under `~/.qwen`
 - OpenCode SQLite under `~/.local/share/opencode/opencode.db`
@@ -29,6 +31,8 @@ the primary transcript source.
 
 File-based sources use their normal session paths plus any JSONL files modified
 on the import date, so reopened older sessions are still scanned.
+Claude Desktop support is scoped to local-agent JSONL transcripts; it does not
+parse the GUI chat cache stored in Chromium IndexedDB/Local Storage.
 
 Check which supported local stores are present before importing:
 
@@ -145,9 +149,10 @@ Configure `HKS_KS_ROOT_BASE`, `HKS_WORKSPACE_REGISTRY`, and `HKS_EMBEDDING_MODEL
 per the HKS repo docs. The ingest `path` is relative to
 `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`.
 
-Do **not** ingest `~/.codex/sessions`, `~/.claude/projects`, `~/.qwen`,
-OpenCode SQLite, `~/.cursor/chats`, `~/.cursor/projects`, or raw logs. HKS
-reads only generated Markdown from the export tree.
+Do **not** ingest `~/.codex/sessions`, `~/.claude/projects`,
+`~/Library/Application Support/Claude`, `~/.qwen`, OpenCode SQLite,
+`~/.cursor/chats`, `~/.cursor/projects`, or raw logs. HKS reads only generated
+Markdown from the export tree.
 
 ## Operator / scheduled ingest
 

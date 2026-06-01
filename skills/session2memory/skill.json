@@ -15,6 +15,7 @@
   "supported_tools": [
     "codex",
     "claude",
+    "claude-desktop",
     "qwen",
     "opencode",
     "cursor",

@@ -9,6 +9,7 @@ import typer
 
 from session2memory.adapters import (
     ClaudeAdapter,
+    ClaudeDesktopAdapter,
     CodexAdapter,
     CursorAdapter,
     CursorCliAdapter,
@@ -39,6 +40,7 @@ AdapterFactory = Callable[[Path], PipelineAdapter]
 P0_TOOLS = (
     "codex",
     "claude",
+    "claude-desktop",
     "qwen",
     "opencode",
     "cursor",
@@ -49,6 +51,7 @@ P0_TOOLS = (
 DEFAULT_SOURCE_ROOTS = {
     "codex": Path("~/.codex/sessions"),
     "claude": Path("~/.claude/projects"),
+    "claude-desktop": Path("~/Library/Application Support/Claude"),
     "qwen": Path("~/.qwen"),
     "opencode": Path("~/.local/share/opencode/opencode.db"),
     "cursor": Path("~/.cursor/chats"),
@@ -59,6 +62,7 @@ DEFAULT_SOURCE_ROOTS = {
 ADAPTERS: dict[str, AdapterFactory] = {
     "codex": CodexAdapter,
     "claude": ClaudeAdapter,
+    "claude-desktop": ClaudeDesktopAdapter,
     "qwen": QwenAdapter,
     "opencode": OpenCodeAdapter,
     "cursor": CursorAdapter,
@@ -69,6 +73,7 @@ ADAPTERS: dict[str, AdapterFactory] = {
 TOOL_EXECUTABLES = {
     "codex": ("codex",),
     "claude": ("claude",),
+    "claude-desktop": (),
     "qwen": ("qwen",),
     "opencode": ("opencode",),
     "cursor": ("cursor",),
