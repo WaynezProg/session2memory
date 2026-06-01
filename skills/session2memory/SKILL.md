@@ -10,10 +10,11 @@ HKS-ingestable memory without importing raw transcripts.
 
 ## Scope
 
-- Supported session stores: Codex, Claude Code, Claude Desktop local-agent,
-  Qwen Code, OpenCode, Cursor GUI, Cursor CLI, OpenClaw logs, Hermes logs.
+- Supported session stores: Codex, Claude Code, Claude Desktop local-agent
+  transcripts and metadata, Qwen Code, OpenCode, Cursor GUI, Cursor CLI,
+  OpenClaw logs, Hermes logs.
 - Claude Desktop support does not parse the GUI chat cache in Chromium
-  IndexedDB/Local Storage.
+  IndexedDB/Local Storage, and does not ingest local audit logs as transcripts.
 - Optional agentic-os evidence index (`--agentic-os-root`, `--no-agentic-os`).
 - Output is a generated export tree under `$HKS_SESSION2MEMORY_EXPORT_ROOT/<workspace_id>/`, not HKS itself.
 - Human review is required before treating candidates as durable memory.

@@ -139,8 +139,8 @@ def test_readme_documents_hks_safe_workflow() -> None:
 
     assert "## Supported P0 Sources" in readme
     assert "Claude Code JSONL under `~/.claude/projects`" in readme
-    assert "Claude Desktop local-agent JSONL under" in readme
-    assert "`~/Library/Application Support/Claude/**/.claude/projects`" in readme
+    assert "Claude Desktop local-agent JSONL and session metadata under" in readme
+    assert "`~/Library/Application Support/Claude`" in readme
     assert "Codex JSONL under `~/.codex/sessions`" in readme
     assert "Qwen Code JSONL under `~/.qwen`" in readme
     assert "OpenCode SQLite under `~/.local/share/opencode/opencode.db`" in readme

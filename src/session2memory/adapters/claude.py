@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+import json
+from collections.abc import Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from session2memory.adapters.base import (
@@ -16,8 +18,8 @@ from session2memory.models import SessionMessage, SessionRecord
 
 class _ClaudeJsonlAdapter:
     tool = "claude"
-    primary_patterns = ("**/*.jsonl",)
-    modified_patterns = ("**/*.jsonl",)
+    primary_patterns: Sequence[str] = ("**/*.jsonl",)
+    modified_patterns: Sequence[str] = ("**/*.jsonl",)
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -48,7 +50,7 @@ class _ClaudeJsonlAdapter:
         messages: list[SessionMessage] = []
         for line_number, event in read_jsonl(path):
             session_id = str(event.get("sessionId") or event.get("session_id") or session_id)
-            timestamp = event.get("timestamp")
+            timestamp = event.get("timestamp") or event.get("_audit_timestamp")
             event_time = parse_datetime(str(timestamp)) if timestamp else None
             started_at = started_at or event_time
             updated_at = event_time or updated_at
@@ -103,5 +105,62 @@ class ClaudeAdapter(_ClaudeJsonlAdapter):
 
 class ClaudeDesktopAdapter(_ClaudeJsonlAdapter):
     tool = "claude-desktop"
-    primary_patterns = ("**/.claude/projects/**/*.jsonl",)
+    primary_patterns = ("local-agent-mode-sessions/**/.claude/projects/**/*.jsonl",)
     modified_patterns = primary_patterns
+
+    def iter_sessions(self, date: str) -> Iterator[SessionRecord]:
+        yield from super().iter_sessions(date)
+        yield from self._iter_metadata_sessions(date)
+
+    def _iter_metadata_sessions(self, date: str) -> Iterator[SessionRecord]:
+        for path in sorted(self.root.glob("claude-code-sessions/**/*.json")):
+            try:
+                record = self._read_metadata_file(path)
+            except (OSError, UnicodeError, ValueError) as exc:
+                self.skipped.append(skipped_file_reason(self.tool, path, exc))
+                continue
+            if file_session_touches_date(record, date):
+                yield record
+
+    def _read_metadata_file(self, path: Path) -> SessionRecord:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"{path.as_posix()}: expected JSON object")
+
+        session_id = str(raw.get("sessionId") or path.stem)
+        started_at = _parse_epoch_ms(raw.get("createdAt"))
+        updated_at = _parse_epoch_ms(raw.get("lastActivityAt"))
+        cwd_value = raw.get("cwd") or raw.get("originCwd")
+        cwd = Path(str(cwd_value)) if cwd_value else None
+        title = str(raw.get("title") or "").strip()
+        messages: list[SessionMessage] = []
+        if title:
+            messages.append(
+                make_message(
+                    tool=self.tool,
+                    session_id=session_id,
+                    source_path=path,
+                    line_number=1,
+                    role="assistant",
+                    text=f"Done: {title}",
+                    timestamp=updated_at or started_at,
+                    cwd=cwd,
+                )
+            )
+        return SessionRecord(
+            tool=self.tool,
+            session_id=session_id,
+            source_path=path,
+            started_at=started_at,
+            updated_at=updated_at,
+            cwd=cwd,
+            repo_root=None,
+            tool_workspace_id=path.parent.name,
+            messages=messages,
+        )
+
+
+def _parse_epoch_ms(value: object) -> datetime | None:
+    if not isinstance(value, int | float):
+        return None
+    return datetime.fromtimestamp(value / 1000, tz=UTC)

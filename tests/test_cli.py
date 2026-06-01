@@ -159,6 +159,15 @@ def test_import_writes_claude_desktop_output_with_separate_tool_label(
     subagent_path = transcript_path.parent / "subagents" / "agent.jsonl"
     subagent_path.parent.mkdir()
     subagent_path.write_text(transcript_path.read_text(encoding="utf-8"), encoding="utf-8")
+    audit_path = (
+        source_root
+        / "local-agent-mode-sessions"
+        / "account-1"
+        / "project-1"
+        / "local_session"
+        / "audit.jsonl"
+    )
+    audit_path.write_text(transcript_path.read_text(encoding="utf-8"), encoding="utf-8")
     output_dir = tmp_path / "memory"
 
     result = CliRunner().invoke(
@@ -183,6 +192,55 @@ def test_import_writes_claude_desktop_output_with_separate_tool_label(
     evidence = (output_dir / "evidence" / "index.jsonl").read_text(encoding="utf-8")
     assert '"tool": "claude-desktop"' in evidence
     assert "subagents/agent.jsonl" not in evidence
+    assert "audit.jsonl" not in evidence
+
+
+def test_import_reads_claude_desktop_metadata_sessions(tmp_path: Path) -> None:
+    source_root = tmp_path / "Claude"
+    metadata_path = (
+        source_root
+        / "claude-code-sessions"
+        / "account-1"
+        / "project-1"
+        / "local_metadata-session.json"
+    )
+    metadata_path.parent.mkdir(parents=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "sessionId": "local_metadata-session",
+                "createdAt": 1775284519699,
+                "lastActivityAt": 1779498000000,
+                "cwd": "/tmp/repo",
+                "title": "HKS session memory ranking and synthesis",
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-23",
+            "--tool",
+            "claude-desktop",
+            "--source-root",
+            f"claude-desktop={source_root}",
+            "--output",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert_summary(result.output, "date=2026-05-23 tools=1 sessions=1 written=1 candidates=1")
+    daily = (output_dir / "daily" / "2026-05-23.md").read_text(encoding="utf-8")
+    assert "HKS session memory ranking and synthesis" in daily
+    evidence = (output_dir / "evidence" / "index.jsonl").read_text(encoding="utf-8")
+    assert '"tool": "claude-desktop"' in evidence
+    assert "local_metadata-session.json" in evidence
 
 
 def test_import_rejects_unsupported_tool(tmp_path: Path) -> None:

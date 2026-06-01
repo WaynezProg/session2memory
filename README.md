@@ -15,8 +15,8 @@ evidence ids that point back to the original session.
 ## Supported P0 Sources
 
 - Claude Code JSONL under `~/.claude/projects`
-- Claude Desktop local-agent JSONL under
-  `~/Library/Application Support/Claude/**/.claude/projects`
+- Claude Desktop local-agent JSONL and session metadata under
+  `~/Library/Application Support/Claude`
 - Codex JSONL under `~/.codex/sessions`
 - Qwen Code JSONL under `~/.qwen`
 - OpenCode SQLite under `~/.local/share/opencode/opencode.db`
@@ -31,8 +31,10 @@ the primary transcript source.
 
 File-based sources use their normal session paths plus any JSONL files modified
 on the import date, so reopened older sessions are still scanned.
-Claude Desktop support is scoped to local-agent JSONL transcripts; it does not
-parse the GUI chat cache stored in Chromium IndexedDB/Local Storage.
+Claude Desktop support is scoped to local-agent JSONL transcripts and
+`claude-code-sessions` metadata. It does not parse the GUI chat cache stored in
+Chromium IndexedDB/Local Storage, and it does not ingest local audit logs as
+transcripts.
 
 Check which supported local stores are present before importing:
 
