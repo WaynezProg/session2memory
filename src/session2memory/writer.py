@@ -10,6 +10,8 @@ from typing import Any
 from session2memory import __version__
 from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.models import MemoryCandidate, WorkspaceIdentity
+from session2memory.redaction import redact_text
+from session2memory.state.store import StoredCandidate
 
 P0_TOOL_ORDER = (
     "codex",
@@ -28,7 +30,8 @@ def write_output(
     *,
     output_dir: Path,
     date: str,
-    candidates: Sequence[MemoryCandidate],
+    candidates: Sequence[MemoryCandidate] | None = None,
+    stored_candidates: Sequence[StoredCandidate] | None = None,
     workspaces: Mapping[str, WorkspaceIdentity],
     scanned_tools: Sequence[str],
     source_roots: Mapping[str, Path],
@@ -38,12 +41,25 @@ def write_output(
     filtered_count: int,
     dry_run: bool,
     agentic_os_index: AgenticOsIndex | None = None,
+    redact_exports: bool = True,
 ) -> None:
     if dry_run:
         return
 
-    ordered = sorted(candidates, key=_candidate_sort_key)
-    evidence_by_id = {id(candidate): f"e{index:06d}" for index, candidate in enumerate(ordered, 1)}
+    home = Path.home()
+    if stored_candidates is not None:
+        ordered_stored = sorted(stored_candidates, key=lambda row: row.evidence_id)
+        ordered = [row.candidate for row in ordered_stored]
+        evidence_by_id = {id(row.candidate): row.evidence_id for row in ordered_stored}
+        review_rows = ordered_stored
+    else:
+        if candidates is None:
+            raise ValueError("candidates or stored_candidates is required")
+        ordered = sorted(candidates, key=_candidate_sort_key)
+        evidence_by_id = {
+            id(candidate): f"e{index:06d}" for index, candidate in enumerate(ordered, 1)
+        }
+        review_rows = None
 
     _clear_managed_output(output_dir)
     (output_dir / "daily").mkdir(parents=True, exist_ok=True)
@@ -53,7 +69,11 @@ def write_output(
 
     daily_path = output_dir / "daily" / f"{date}.md"
     daily_path.write_text(
-        _daily_markdown(date, ordered, evidence_by_id, workspaces, scanned_tools),
+        _maybe_redact(
+            _daily_markdown(date, ordered, evidence_by_id, workspaces, scanned_tools),
+            redact_exports=redact_exports,
+            home=home,
+        ),
         encoding="utf-8",
     )
     evidence_lines = [
@@ -74,14 +94,35 @@ def write_output(
         encoding="utf-8",
     )
     review_path = output_dir / "review" / f"{date}.jsonl"
-    review_lines = [
-        json.dumps(
-            _review_record(_review_id(candidate), evidence_by_id[id(candidate)], candidate),
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        for candidate in ordered
-    ]
+    review_lines = []
+    if review_rows is not None:
+        for stored in review_rows:
+            review_lines.append(
+                json.dumps(
+                    _review_record(
+                        stored.review_id,
+                        stored.evidence_id,
+                        stored.candidate,
+                        status=stored.review_status,
+                        review_note=stored.review_note,
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+    else:
+        review_lines = [
+            json.dumps(
+                _review_record(
+                    _review_id(candidate),
+                    evidence_by_id[id(candidate)],
+                    candidate,
+                ),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for candidate in ordered
+        ]
     review_path.write_text(
         "\n".join(review_lines) + ("\n" if review_lines else ""),
         encoding="utf-8",
@@ -106,11 +147,11 @@ def write_output(
             "sessions": session_count,
             "messages": message_count,
             "filtered": filtered_count,
-            "evidence_records": len(candidates),
+            "evidence_records": len(ordered),
             "durable_memories": 0,
-            "durable_suggestions": sum(1 for candidate in candidates if candidate.durable),
-            "daily_entries": len(candidates),
-            "review_entries": len(candidates),
+            "durable_suggestions": sum(1 for candidate in ordered if candidate.durable),
+            "daily_entries": len(ordered),
+            "review_entries": len(ordered),
         },
         "output_files": output_files,
         "scanned_tools": sorted(scanned_tools),
@@ -267,18 +308,37 @@ def _evidence_record(
     return record
 
 
-def _review_record(review_id: str, evidence_id: str, candidate: MemoryCandidate) -> dict[str, Any]:
-    return {
+def _maybe_redact(text: str, *, redact_exports: bool, home: Path) -> str:
+    if not redact_exports:
+        return text
+    return redact_text(text, home=home)
+
+
+def _review_record(
+    review_id: str,
+    evidence_id: str,
+    candidate: MemoryCandidate,
+    *,
+    status: str = "pending",
+    review_note: str = "",
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
         "id": review_id,
-        "status": "pending",
+        "status": status,
         "kind": candidate.kind,
         "text": candidate.text,
         "workspace_id": candidate.workspace_id,
         "evidence_id": evidence_id,
         "source": _source_record(candidate),
         "durable_suggestion": candidate.durable,
-        "review_note": "",
+        "review_note": review_note,
+        "extraction": candidate.extraction,
     }
+    if candidate.confidence is not None:
+        record["confidence"] = candidate.confidence
+    if candidate.evidence_quote:
+        record["evidence_quote"] = candidate.evidence_quote
+    return record
 
 
 def _source_record(candidate: MemoryCandidate) -> dict[str, str | int]:

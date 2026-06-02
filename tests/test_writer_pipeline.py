@@ -103,6 +103,40 @@ class FakeAdapter:
         yield from self.sessions
 
 
+def test_write_output_serializes_llm_review_fields(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    llm_candidate = candidate("decision", "Prefer uv.", "repo-123", durable=False)
+    llm_candidate = MemoryCandidate(
+        kind=llm_candidate.kind,
+        text=llm_candidate.text,
+        workspace_id=llm_candidate.workspace_id,
+        evidence=llm_candidate.evidence,
+        durable=llm_candidate.durable,
+        extraction="llm",
+        confidence=0.81,
+        evidence_quote="use uv",
+    )
+    write_output(
+        output_dir=output,
+        date="2026-05-22",
+        candidates=[llm_candidate],
+        workspaces={"repo-123": workspace("repo-123")},
+        scanned_tools=["codex"],
+        source_roots={"codex": Path("/tmp/raw")},
+        skipped=[],
+        session_count=1,
+        message_count=1,
+        filtered_count=0,
+        dry_run=False,
+    )
+    review_row = json.loads(
+        (output / "review" / "2026-05-22.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert review_row["extraction"] == "llm"
+    assert review_row["confidence"] == 0.81
+    assert review_row["evidence_quote"] == "use uv"
+
+
 def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_path: Path) -> None:
     output = tmp_path / "session-memory"
 
@@ -151,6 +185,7 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
         },
         "durable_suggestion": True,
         "review_note": "",
+        "extraction": "marker",
     }
     assert "/tmp/raw/session.jsonl" not in daily
     assert evidence["source_path"] == "/tmp/raw/session.jsonl"

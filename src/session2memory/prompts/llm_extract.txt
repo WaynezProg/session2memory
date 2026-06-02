@@ -1,0 +1,14 @@
+Extract durable project-memory candidates from this coding session transcript.
+Return ONLY a JSON array. Each item must use:
+- kind: decision|completed|pitfall|constraint|verification|daily
+- text: concise memory statement
+- evidence_quote: short verbatim quote from the transcript
+- confidence: number 0..1
+- durable_suggestion: boolean
+- message_index: integer line index from transcript
+
+Do not invent facts. Skip greetings, tool boilerplate, and instruction dumps.
+workspace_id={workspace_id}
+
+Transcript:
+{transcript}

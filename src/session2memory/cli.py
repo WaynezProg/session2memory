@@ -18,7 +18,15 @@ from session2memory.adapters import (
     OpenCodeAdapter,
     QwenAdapter,
 )
+from session2memory.adapters.registry import load_plugin_adapters
 from session2memory.agentic_os_index import AgenticOsIndex
+from session2memory.llm_extract import LlmInputMode, SubprocessLlmExtractBackend
+from session2memory.llm_extract_mock import MockLlmExtractBackend
+from session2memory.memory_lifecycle import (
+    MemoryLifecycleError,
+    revoke_memory,
+    supersede_memory,
+)
 from session2memory.pipeline import PipelineAdapter, run_pipeline
 from session2memory.review import (
     ReviewNotFoundError,
@@ -32,9 +40,12 @@ from session2memory.review import (
 )
 from session2memory.review_bulk import BulkFilter, bulk_update_reviews
 from session2memory.review_conflicts import ConflictResolve
+from session2memory.state.store import StateStore
+from session2memory.sync_back import SyncError, sync_workspace_memory
 
 app = typer.Typer(no_args_is_help=True)
 review_app = typer.Typer(no_args_is_help=True)
+memory_app = typer.Typer(no_args_is_help=True)
 
 AdapterFactory = Callable[[Path], PipelineAdapter]
 P0_TOOLS = (
@@ -90,6 +101,7 @@ def main() -> None:
 
 
 app.add_typer(review_app, name="review")
+app.add_typer(memory_app, name="memory")
 
 
 def _parse_source_root(raw: list[str]) -> dict[str, Path]:
@@ -113,6 +125,26 @@ def _selected_tools(requested_tools: list[str] | None, roots: dict[str, Path]) -
         if tool not in selected:
             selected.append(tool)
     return selected
+
+
+def _build_llm_backend(
+    name: str,
+    *,
+    command: str | None,
+    timeout_seconds: int,
+    input_mode: LlmInputMode,
+    strict: bool,
+) -> SubprocessLlmExtractBackend | MockLlmExtractBackend:
+    if name == "mock":
+        return MockLlmExtractBackend(items_payload=[])
+    if name == "subprocess":
+        return SubprocessLlmExtractBackend(
+            command=command,
+            timeout_seconds=timeout_seconds,
+            input_mode=input_mode,
+            strict=strict,
+        )
+    raise typer.BadParameter("Unsupported --llm-backend (use subprocess or mock)")
 
 
 def _parse_date(value: str) -> str:
@@ -147,7 +179,9 @@ def _open_agentic_os_index(
 
 
 def _build_adapters(tools: list[str], source_roots: dict[str, Path]) -> dict[str, PipelineAdapter]:
-    return {tool: ADAPTERS[tool](source_roots[tool]) for tool in tools}
+    factories = dict(ADAPTERS)
+    factories.update(load_plugin_adapters())
+    return {tool: factories[tool](source_roots[tool]) for tool in tools}
 
 
 @app.command("discover")
@@ -234,6 +268,50 @@ def import_sessions(
             help="Import only harness logs registered in agentic-os for this date.",
         ),
     ] = False,
+    llm_extract: Annotated[
+        bool,
+        typer.Option("--llm-extract", help="Add optional LLM-extracted review candidates."),
+    ] = False,
+    llm_backend: Annotated[
+        str,
+        typer.Option(
+            "--llm-backend",
+            help="LLM extractor backend (subprocess or mock).",
+        ),
+    ] = "subprocess",
+    llm_cmd: Annotated[
+        str | None,
+        typer.Option(
+            "--llm-cmd",
+            help=(
+                "Subprocess command for --llm-backend=subprocess. "
+                "Falls back to SESSION2MEMORY_LLM_CMD."
+            ),
+        ),
+    ] = None,
+    llm_timeout: Annotated[
+        int,
+        typer.Option("--llm-timeout", help="LLM subprocess timeout in seconds."),
+    ] = 120,
+    llm_input: Annotated[
+        LlmInputMode,
+        typer.Option("--llm-input", help="How to pass the prompt to the subprocess."),
+    ] = "argument",
+    strict_llm: Annotated[
+        bool,
+        typer.Option("--strict-llm", help="Fail import when LLM extraction fails."),
+    ] = False,
+    use_state: Annotated[
+        bool,
+        typer.Option(
+            "--use-state/--no-state",
+            help="Persist import state in session2memory.db (default: on).",
+        ),
+    ] = True,
+    state_db: Annotated[
+        Path | None,
+        typer.Option("--state-db", help="Override state database path."),
+    ] = None,
 ) -> None:
     parsed_date = _parse_date(date)
     overrides = _parse_source_root(source_root or [])
@@ -245,20 +323,97 @@ def import_sessions(
         root=agentic_os_root,
         enabled=not no_agentic_os,
     )
-    session_count, candidate_count = run_pipeline(
-        adapters=_build_adapters(selected_tools, source_roots),
-        output_dir=output,
-        date=parsed_date,
-        source_roots=selected_source_roots,
-        dry_run=dry_run,
-        workspace=workspace,
-        agentic_os_index=agentic_os_index,
-        agentic_os_sessions_only=agentic_os_sessions_only,
+    llm_backend_instance = (
+        _build_llm_backend(
+            llm_backend,
+            command=llm_cmd,
+            timeout_seconds=llm_timeout,
+            input_mode=llm_input,
+            strict=strict_llm,
+        )
+        if llm_extract
+        else None
     )
+    state_store: StateStore | None = None
+    if use_state and not dry_run:
+        db_path = (state_db or (output / "session2memory.db")).expanduser()
+        state_store = StateStore.open(db_path, output_dir=output)
+    try:
+        session_count, candidate_count = run_pipeline(
+            adapters=_build_adapters(selected_tools, source_roots),
+            output_dir=output,
+            date=parsed_date,
+            source_roots=selected_source_roots,
+            dry_run=dry_run,
+            workspace=workspace,
+            agentic_os_index=agentic_os_index,
+            agentic_os_sessions_only=agentic_os_sessions_only,
+            llm_backend=llm_backend_instance,
+            state_store=state_store,
+        )
+    finally:
+        if state_store is not None:
+            state_store.close()
     typer.echo(
         f"date={parsed_date} tools={len(selected_tools)} sessions={session_count} "
         f"written={0 if dry_run else 1} candidates={candidate_count}"
     )
+
+
+@app.command("sync", help="Write promoted memories back into harness context files.")
+def sync_back(
+    workspace: Annotated[
+        Path,
+        typer.Option("--workspace", help="Repo root to receive harness context updates."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Generated session-memory folder with memories/."),
+    ],
+    target: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--target",
+            help=(
+                "Harness target to update (repeatable). "
+                "Defaults: agents, claude, cursor. "
+                "Also: codex, openclaw, hermes."
+            ),
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report planned writes without changing files.")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Write even when sync body hash is unchanged.")
+    ] = False,
+    since_last_sync: Annotated[
+        bool,
+        typer.Option(
+            "--since-last-sync",
+            help="Skip targets whose rendered sync body hash is unchanged.",
+        ),
+    ] = False,
+) -> None:
+    try:
+        result = sync_workspace_memory(
+            output_dir=output,
+            workspace=workspace,
+            targets=target,
+            dry_run=dry_run,
+            force=force,
+            since_last_sync=since_last_sync,
+        )
+    except SyncError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    for write in result.writes:
+        action = "would_write" if dry_run else "wrote"
+        status = "created" if write.created else ("updated" if write.changed else "unchanged")
+        typer.echo(
+            f"workspace_id={result.workspace_id} target={write.target} "
+            f"path={write.path.as_posix()} entries={write.entry_count} "
+            f"{action}={status}"
+        )
 
 
 @app.command("promote", help="Legacy alias for `review promote`.")
@@ -290,11 +445,41 @@ def review_list(
     for row in list_reviews(output_dir=output, date=parsed_date, status=status):
         durable = "durable" if row.get("durable_suggestion") is True else "daily"
         source = _review_source_label(row)
+        extraction = row.get("extraction", "marker")
+        confidence = row.get("confidence")
+        conf = f" confidence={confidence}" if confidence is not None else ""
         typer.echo(
             f"{row.get('id', '')} {row.get('status', '')} {durable} "
+            f"extraction={extraction}{conf} "
             f"{row.get('kind', '')} {row.get('workspace_id', '')} "
             f"{row.get('evidence_id', '')} {source}{row.get('text', '')}"
         )
+
+
+@review_app.command("ui")
+def review_ui(
+    date: Annotated[str, typer.Option("--date", help="Date to review in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+) -> None:
+    parsed_date = _parse_date(date)
+    try:
+        from session2memory.review_ui import ReviewAppConfig, run_review_ui
+    except ImportError as exc:
+        raise typer.BadParameter("Install UI dependencies: uv sync --group ui") from exc
+    run_review_ui(ReviewAppConfig(output_dir=output, date=parsed_date))
+
+
+@review_app.command("web")
+def review_web(
+    date: Annotated[str, typer.Option("--date", help="Date to review in YYYY-MM-DD format.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+    host: Annotated[str, typer.Option("--host", help="HTTP bind host.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="HTTP bind port.")] = 8765,
+) -> None:
+    parsed_date = _parse_date(date)
+    from session2memory.review_web import ReviewWebConfig, run_review_web
+
+    run_review_web(ReviewWebConfig(output_dir=output, date=parsed_date), host=host, port=port)
 
 
 @review_app.command("inspect")
@@ -506,6 +691,39 @@ def review_promote(
         f"date={parsed_date} reviewed={result.reviewed} promoted={result.promoted} "
         f"skipped_duplicate={result.skipped_duplicate} "
         f"skipped_conflict={result.skipped_conflict}"
+    )
+
+
+@memory_app.command("revoke")
+def memory_revoke(
+    memory_entry_id: Annotated[str, typer.Argument(help="Memory entry id to revoke.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+) -> None:
+    try:
+        result = revoke_memory(output_dir=output, memory_entry_id=memory_entry_id)
+    except MemoryLifecycleError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        f"id={result.memory_entry_id} status={result.status} "
+        f"exported_workspaces={len(result.exported_workspaces)} "
+        f"synced_targets={result.synced_targets}"
+    )
+
+
+@memory_app.command("supersede")
+def memory_supersede(
+    old_id: Annotated[str, typer.Option("--old", help="Superseded memory entry id.")],
+    new_id: Annotated[str, typer.Option("--new", help="Replacement memory entry id.")],
+    output: Annotated[Path, typer.Option("--output", help="Generated session-memory folder.")],
+) -> None:
+    try:
+        result = supersede_memory(output_dir=output, old_id=old_id, new_id=new_id)
+    except MemoryLifecycleError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        f"id={result.memory_entry_id} status={result.status} "
+        f"exported_workspaces={len(result.exported_workspaces)} "
+        f"synced_targets={result.synced_targets}"
     )
 
 

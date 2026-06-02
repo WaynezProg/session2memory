@@ -7,7 +7,14 @@ from typing import Protocol
 from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.extraction import extract_candidates
 from session2memory.filtering import is_noise
+from session2memory.llm_extract import (
+    LlmExtractBackend,
+    items_to_candidates,
+    merge_llm_candidates,
+)
 from session2memory.models import MemoryCandidate, SessionRecord, WorkspaceIdentity
+from session2memory.state.fingerprint import source_file_fingerprint
+from session2memory.state.store import StateStore
 from session2memory.workspace import resolve_workspace
 from session2memory.writer import write_output
 
@@ -27,6 +34,8 @@ def run_pipeline(
     workspace: Path | None = None,
     agentic_os_index: AgenticOsIndex | None = None,
     agentic_os_sessions_only: bool = False,
+    llm_backend: LlmExtractBackend | None = None,
+    state_store: StateStore | None = None,
 ) -> tuple[int, int]:
     session_count = 0
     message_count = 0
@@ -54,28 +63,69 @@ def run_pipeline(
                 record, resolved_workspace, workspace_filter
             ):
                 continue
+            source_path = record.source_path.expanduser()
+            if state_store is not None:
+                digest, mtime_ns = source_file_fingerprint(source_path)
+                if digest and not state_store.upsert_source_file(
+                    tool=record.tool,
+                    path=source_path.as_posix(),
+                    digest=digest,
+                    mtime_ns=mtime_ns,
+                ):
+                    continue
+                state_store.upsert_workspace(resolved_workspace)
             session_count += 1
             message_count += len(record.messages)
             filtered_count += sum(1 for message in record.messages if is_noise(message))
             workspaces[resolved_workspace.workspace_id] = resolved_workspace
-            candidates.extend(extract_candidates(record, resolved_workspace))
+            marker_candidates = extract_candidates(record, resolved_workspace)
+            llm_candidates = _extract_llm_candidates(
+                record,
+                resolved_workspace,
+                llm_backend,
+            )
+            session_candidates = marker_candidates + merge_llm_candidates(
+                existing=marker_candidates,
+                llm_candidates=llm_candidates,
+            )
+            if state_store is not None:
+                for candidate in session_candidates:
+                    state_store.upsert_candidate(import_date=date, candidate=candidate)
+            else:
+                candidates.extend(session_candidates)
         skipped.extend(_adapter_skipped(adapter))
 
-    write_output(
-        output_dir=output_dir,
-        date=date,
-        candidates=candidates,
-        workspaces=workspaces,
-        scanned_tools=sorted(adapters),
-        source_roots=source_roots,
-        skipped=skipped,
-        session_count=session_count,
-        message_count=message_count,
-        filtered_count=filtered_count,
-        dry_run=dry_run,
-        agentic_os_index=agentic_os_index,
-    )
-    return session_count, len(candidates)
+    if state_store is not None:
+        if not dry_run:
+            state_store.export_output(
+                output_dir=output_dir,
+                import_date=date,
+                scanned_tools=sorted(adapters),
+                source_roots=dict(source_roots),
+                skipped=skipped,
+                session_count=session_count,
+                message_count=message_count,
+                filtered_count=filtered_count,
+                agentic_os_index=agentic_os_index,
+            )
+        candidate_count = len(state_store.list_candidates_for_date(date))
+    else:
+        write_output(
+            output_dir=output_dir,
+            date=date,
+            candidates=candidates,
+            workspaces=workspaces,
+            scanned_tools=sorted(adapters),
+            source_roots=source_roots,
+            skipped=skipped,
+            session_count=session_count,
+            message_count=message_count,
+            filtered_count=filtered_count,
+            dry_run=dry_run,
+            agentic_os_index=agentic_os_index,
+        )
+        candidate_count = len(candidates)
+    return session_count, candidate_count
 
 
 def _matches_workspace(
@@ -83,6 +133,24 @@ def _matches_workspace(
 ) -> bool:
     record_cwd = record.cwd.resolve(strict=False) if record.cwd else None
     return workspace_filter in {record_cwd, resolved_workspace.canonical_path}
+
+
+def _extract_llm_candidates(
+    record: SessionRecord,
+    workspace: WorkspaceIdentity,
+    llm_backend: LlmExtractBackend | None,
+) -> list[MemoryCandidate]:
+    if llm_backend is None:
+        return []
+    messages = [message for message in record.messages if not is_noise(message)]
+    if not messages:
+        return []
+    items = llm_backend.extract(messages=messages, workspace_id=workspace.workspace_id)
+    return items_to_candidates(
+        items=items,
+        messages=messages,
+        workspace_id=workspace.workspace_id,
+    )
 
 
 def _adapter_skipped(adapter: PipelineAdapter) -> list[str]:

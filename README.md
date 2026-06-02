@@ -167,6 +167,73 @@ autonomous agents following the skill contract.
 
 Durable project memory enters `memories/` only after review.
 
+After promote, push promoted memories back into harness context files:
+
+```bash
+uv run session2memory sync \
+  --workspace "$PWD" \
+  --output ./out/session-memory
+```
+
+By default this updates `AGENTS.md`, `CLAUDE.md`, and
+`.cursor/rules/session2memory-memory.mdc` using an idempotent managed block.
+Repeat `--target` for `codex` (also `AGENTS.md`), `openclaw`, or `hermes`
+(global memory under `~/.openclaw/memory` / `~/.hermes/memory`).
+
+Optional LLM extraction adds review candidates without auto-writing durable memory:
+
+```bash
+uv run session2memory import --date 2026-05-22 --output ./out/session-memory --llm-extract
+```
+
+Set `SESSION2MEMORY_LLM_CMD` for the subprocess backend, or pass `--llm-cmd`.
+By default the prompt is appended as the last argv; use `--llm-input stdin` for
+commands that read prompts from standard input.
+
+```bash
+uv run session2memory import \
+  --date 2026-05-22 \
+  --output ./out/session-memory \
+  --llm-extract \
+  --llm-cmd "acpx codex exec" \
+  --llm-timeout 180 \
+  --strict-llm
+```
+
+Use `--llm-backend mock` only for tests.
+
+Interactive review TUI (requires `uv sync --group ui`):
+
+```bash
+uv run session2memory review ui --date 2026-05-22 --output ./out/session-memory
+```
+
+Local web review UI (stdlib HTTP server):
+
+```bash
+uv run session2memory review web \
+  --date 2026-05-22 \
+  --output ./out/session-memory \
+  --host 127.0.0.1 \
+  --port 8765
+```
+
+Phase 2 state (default on import) keeps stable ids in `session2memory.db`, supports
+incremental re-import, redacted exports, memory revoke/supersede, and sync hash skip.
+`memory revoke` and `memory supersede` re-export active `memories/*.md` entries and
+resync any targets already recorded in `sync_targets`:
+
+```bash
+uv run session2memory import --date 2026-05-22 --output ./out/session-memory
+uv run session2memory memory revoke m_0123456789ab --output ./out/session-memory
+uv run session2memory memory supersede --old m_old --new m_new --output ./out/session-memory
+```
+
+Use `session2memory sync --since-last-sync` to skip manually requested sync writes
+whose rendered body hash is unchanged.
+
+Use `--no-state` for legacy file-only imports without the database.
+
 List candidates:
 
 ```bash

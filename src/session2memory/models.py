@@ -8,6 +8,7 @@ from typing import Literal
 
 Role = Literal["user", "assistant", "tool", "system", "unknown"]
 MemoryKind = Literal["decision", "completed", "pitfall", "constraint", "verification", "daily"]
+ExtractionSource = Literal["marker", "llm"]
 
 
 def digest_text(text: str) -> str:
@@ -77,3 +78,6 @@ class MemoryCandidate:
     workspace_id: str
     evidence: EvidencePointer
     durable: bool
+    extraction: ExtractionSource = "marker"
+    confidence: float | None = None
+    evidence_quote: str | None = None

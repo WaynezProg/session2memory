@@ -90,12 +90,25 @@ uv run session2memory review approve r000001 --date "$date" --output "$output" -
 uv run session2memory review promote --date "$date" --output "$output"
 uv run session2memory review approve-bulk --date "$date" --output "$output"
 uv run session2memory review conflicts --date "$date" --output "$output"
+uv run session2memory review web --date "$date" --output "$output" --host 127.0.0.1 --port 8765
 ```
 
 Use `review reject` / `review reject-bulk` for local, noisy, or misleading candidates.
 Use `review promote --resolve keep-new` when `review conflicts` reports duplicates. Use
 `review approve --durable` only when a daily-only candidate should become
 durable memory.
+
+Optional LLM extraction stays review-only. Configure it with `SESSION2MEMORY_LLM_CMD`
+or pass `--llm-cmd`; use `--llm-input stdin` for commands that read prompts from
+stdin and `--strict-llm` when extraction failure should fail the import.
+
+Lifecycle commands re-export active `memories/*.md` rows and resync previously
+recorded sync targets from `sync_targets`:
+
+```bash
+uv run session2memory memory revoke m_0123456789ab --output "$output"
+uv run session2memory memory supersede --old m_old --new m_new --output "$output"
+```
 
 ## Security
 

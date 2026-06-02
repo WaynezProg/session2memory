@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from session2memory.models import EvidencePointer, SessionMessage, digest_text
+from session2memory.models import EvidencePointer, MemoryCandidate, SessionMessage, digest_text
 
 
 def test_digest_text_is_stable_and_prefixed() -> None:
@@ -52,3 +52,27 @@ def test_session_message_text_is_stripped() -> None:
     )
 
     assert message.text == "hello"
+
+
+def test_memory_candidate_accepts_llm_metadata() -> None:
+    evidence = EvidencePointer(
+        tool="codex",
+        session_id="s1",
+        source_path=Path("/tmp/s.jsonl"),
+        message_start=1,
+        message_end=1,
+        workspace_path=Path("/tmp/repo"),
+        digest="sha256:abc",
+    )
+    candidate = MemoryCandidate(
+        kind="decision",
+        text="Prefer uv over pip",
+        workspace_id="repo-123",
+        evidence=evidence,
+        durable=False,
+        extraction="llm",
+        confidence=0.82,
+        evidence_quote="we should use uv",
+    )
+    assert candidate.extraction == "llm"
+    assert candidate.confidence == 0.82

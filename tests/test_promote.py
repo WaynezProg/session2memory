@@ -91,6 +91,7 @@ def write_review_fixture(output: Path) -> None:
                 },
                 "durable_suggestion": True,
                 "review_note": "approved by reviewer",
+                "extraction": "marker",
             },
             sort_keys=True,
         )
@@ -152,7 +153,7 @@ def test_review_list_prints_compact_candidate_rows(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert (
         result.output
-        == "r000001 approved durable decision repo-123 e000001 "
+        == "r000001 approved durable extraction=marker decision repo-123 e000001 "
         "source=codex session=s1 lines=2-2 Use evidence-backed memory compiler.\n"
     )
 

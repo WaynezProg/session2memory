@@ -21,6 +21,7 @@ dev = [
   "pytest",
   "ruff",
 ]
+ui = ["textual>=0.79,<1"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -30,7 +31,8 @@ where = ["src"]
 include = ["session2memory*"]
 
 [tool.setuptools.package-data]
-session2memory = ["py.typed"]
+session2memory = ["py.typed", "prompts/*.txt"]
+"session2memory.state" = ["schema.sql"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from session2memory.adapters.cursor import cursor_clean_text, cursor_texts_from_content
+from session2memory.memory_lifecycle import open_state_store
 from session2memory.review_conflicts import (
     ConflictResolve,
     blocked_without_resolve,
@@ -15,6 +16,7 @@ from session2memory.review_conflicts import (
     winners_for_resolve,
 )
 from session2memory.review_normalize import normalize_review_text
+from session2memory.state.store import StateStore
 
 ReviewStatus = Literal["pending", "approved", "rejected", "promoted"]
 
@@ -169,6 +171,7 @@ def promote_reviews(
     skipped_conflict = 0
     touched_memory_files: set[str] = set()
     planned_rows: list[tuple[dict[str, Any], str, bool]] = []
+    store = open_state_store(output_dir)
 
     for row in approved:
         review_id = str(row.get("id", ""))
@@ -183,6 +186,8 @@ def promote_reviews(
         )
         if duplicate_kind == "exact":
             row["status"] = "promoted"
+            if store is not None:
+                _insert_memory_entry_from_review(store=store, row=row, date=date)
             skipped_duplicate += 1
             continue
         if duplicate_kind == "semantic":
@@ -197,6 +202,10 @@ def promote_reviews(
         if base is None:
             memory_path = output_dir / memory_relpath
             base = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+        if store is not None:
+            memory_entry_id = _insert_memory_entry_from_review(store=store, row=row, date=date)
+            if memory_entry_id is not None:
+                row["memory_entry_id"] = memory_entry_id
         memory_contents[memory_relpath] = _render_workspace_memory_append(
             base,
             workspace_id=str(row["workspace_id"]),
@@ -207,6 +216,9 @@ def promote_reviews(
         row["status"] = "promoted"
         if created:
             promoted_count += 1
+
+    if store is not None:
+        store.close()
 
     manifest_text = _render_manifest(
         manifest=manifest,
@@ -250,6 +262,14 @@ def _update_review_status(
             row["review_note"] = note
         if durable is not None:
             row["durable_suggestion"] = durable
+        store = open_state_store(output_dir)
+        if store is not None:
+            store.update_review_status(
+                review_id=review_id,
+                status=status,
+                note=note if note is not None else row.get("review_note", ""),
+            )
+            store.close()
         _write_jsonl(review_path, rows)
         return ReviewUpdateResult(review_id=review_id, status=status)
     raise ReviewNotFoundError(f"Review id not found: {review_id}")
@@ -666,16 +686,46 @@ def _memory_metadata(*, row: dict[str, Any], evidence_id: str, review_ref: str) 
     session_id = source.get("session_id", "unknown")
     message_start = source.get("message_start", "unknown")
     message_end = source.get("message_end", "unknown")
-    return (
-        "{"
-        f"workspace_id={row.get('workspace_id', '')} "
-        f"memory_kind={row.get('kind', '')} "
-        f"tool={tool} "
-        f"session_id={session_id} "
-        f"evidence_id={evidence_id} "
-        f"lines={message_start}-{message_end} "
-        f"review={review_ref}"
-        "}"
+    metadata = [
+        f"workspace_id={row.get('workspace_id', '')}",
+        f"memory_kind={row.get('kind', '')}",
+        f"tool={tool}",
+        f"session_id={session_id}",
+        f"evidence_id={evidence_id}",
+        f"lines={message_start}-{message_end}",
+        f"review={review_ref}",
+    ]
+    memory_entry_id = row.get("memory_entry_id")
+    if memory_entry_id:
+        metadata.append(f"memory_id={memory_entry_id}")
+    supersedes = row.get("supersedes")
+    if supersedes:
+        metadata.append(f"supersedes={supersedes}")
+    return "{" + " ".join(metadata) + "}"
+
+
+def _insert_memory_entry_from_review(
+    *,
+    store: StateStore,
+    row: dict[str, Any],
+    date: str,
+) -> str | None:
+    stored = store.get_candidate_by_review_id(str(row.get("id", "")))
+    if stored is None:
+        return None
+    source = row.get("source")
+    source = source if isinstance(source, dict) else {}
+    return store.insert_memory_entry(
+        workspace_id=str(row["workspace_id"]),
+        candidate_id=stored.candidate_id,
+        kind=str(row.get("kind", "")),
+        text=str(row.get("text", "")),
+        evidence_id=str(row.get("evidence_id", stored.evidence_id)),
+        review_ref=f"{date}/{_promotion_key(row)}",
+        tool=str(source.get("tool", "unknown")),
+        session_id=str(source.get("session_id", "unknown")),
+        message_start=_positive_int(source.get("message_start")),
+        message_end=_positive_int(source.get("message_end")),
     )
 
 
