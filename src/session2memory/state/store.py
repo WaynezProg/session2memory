@@ -486,8 +486,42 @@ class StateStore:
             encoding="utf-8"
         )
         self._connection.executescript(schema)
+        self._drop_legacy_evidence_unique_index(schema)
         self._ensure_memory_entry_columns()
         self._connection.commit()
+
+    def _drop_legacy_evidence_unique_index(self, schema: str) -> None:
+        """Rebuild candidates if an old DB still has UNIQUE(evidence_id).
+
+        evidence_id is a pointer to a message range and is legitimately shared
+        across multiple candidates (e.g. a marker and an LLM candidate from the
+        same message), so the column must not be unique.
+        """
+        index_rows = self._connection.execute("PRAGMA index_list(candidates)").fetchall()
+        legacy_index = None
+        for row in index_rows:
+            if not int(row["unique"]):
+                continue
+            info = self._connection.execute(
+                f'PRAGMA index_info("{row["name"]}")'
+            ).fetchall()
+            if [str(col["name"]) for col in info] == ["evidence_id"]:
+                legacy_index = str(row["name"])
+                break
+        if legacy_index is None:
+            return
+        columns = [
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(candidates)").fetchall()
+        ]
+        column_list = ", ".join(columns)
+        self._connection.execute("ALTER TABLE candidates RENAME TO _candidates_legacy")
+        self._connection.executescript(schema)
+        self._connection.execute(
+            f"INSERT INTO candidates ({column_list}) "
+            f"SELECT {column_list} FROM _candidates_legacy"
+        )
+        self._connection.execute("DROP TABLE _candidates_legacy")
 
     def _ensure_memory_entry_columns(self) -> None:
         rows = self._connection.execute("PRAGMA table_info(memory_entries)").fetchall()

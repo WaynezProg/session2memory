@@ -246,7 +246,7 @@ def merge_marked_section(
 ) -> str:
     block = "\n".join((MARKER_START, body.rstrip(), MARKER_END))
     if _MARKER_BLOCK_RE.search(existing):
-        merged = _MARKER_BLOCK_RE.sub(block, existing, count=1)
+        merged = _MARKER_BLOCK_RE.sub(lambda _match: block, existing, count=1)
         return merged if merged.endswith("\n") else merged + "\n"
     section = "\n".join(
         (
@@ -280,7 +280,7 @@ def render_harness_memory_body(entries: Sequence[MemoryEntry]) -> str:
 def _merge_cursor_rule(existing: str, *, body: str) -> str:
     block = "\n".join((MARKER_START, body.rstrip(), MARKER_END))
     if existing and _MARKER_BLOCK_RE.search(existing):
-        merged = _MARKER_BLOCK_RE.sub(block, existing, count=1)
+        merged = _MARKER_BLOCK_RE.sub(lambda _match: block, existing, count=1)
         return merged if merged.endswith("\n") else merged + "\n"
     return (
         "---\n"

@@ -121,6 +121,25 @@ def test_sync_updates_existing_marker_block(tmp_path: Path) -> None:
     assert MARKER_END in updated
 
 
+def test_sync_updates_marker_block_with_backslash_body(tmp_path: Path) -> None:
+    existing = merge_marked_section(
+        "# Repo rules\n",
+        section_heading="## Session memory (session2memory)",
+        section_intro="intro",
+        body="old body",
+    )
+    body = r"- [constraint] use regex \d+ and group \1 to escape \\ here"
+    updated = merge_marked_section(
+        existing,
+        section_heading="## Session memory (session2memory)",
+        section_intro="intro",
+        body=body,
+    )
+    assert body in updated
+    assert "old body" not in updated
+    assert MARKER_START in updated
+
+
 def test_sync_requires_promoted_memory(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     workspace.mkdir()

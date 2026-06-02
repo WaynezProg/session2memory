@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     confidence REAL,
     evidence_quote TEXT,
     durable INTEGER NOT NULL,
-    evidence_id TEXT NOT NULL UNIQUE,
+    evidence_id TEXT NOT NULL,
     review_id TEXT NOT NULL UNIQUE,
     review_status TEXT NOT NULL DEFAULT 'pending',
     review_note TEXT NOT NULL DEFAULT '',
