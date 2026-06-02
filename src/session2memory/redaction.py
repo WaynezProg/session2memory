@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 _HOME_PREFIX_RE = re.compile(r"(?<![\w./~])/~")
-_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w./])(?:/[A-Za-z0-9._/-]+|/[A-Za-z0-9._/-]*)")
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w./])/[A-Za-z0-9._/-]+")
 _WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s]+")
 _TOKEN_RE = re.compile(r"\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b")
 _ENV_ASSIGN_RE = re.compile(
