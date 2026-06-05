@@ -39,7 +39,7 @@ def validate_distill(distill_dir: Path) -> ValidateResult:
     enriched_candidates: list[JSONDict] = []
 
     for candidate in merged_candidates:
-        validation = _validate_candidate(candidate, evidence_by_id)
+        validation = _validate_candidate(candidate, evidence_by_id, evidence)
         validation_rows.append(validation)
         enriched = dict(candidate)
         enriched.update(
@@ -105,7 +105,11 @@ def _merge_duplicates(candidates: list[JSONDict]) -> list[JSONDict]:
     return [grouped[key] for key in order]
 
 
-def _validate_candidate(candidate: JSONDict, evidence_by_id: dict[str, JSONDict]) -> JSONDict:
+def _validate_candidate(
+    candidate: JSONDict,
+    evidence_by_id: dict[str, JSONDict],
+    all_evidence_rows: list[JSONDict],
+) -> JSONDict:
     candidate_id = str(candidate.get("candidate_id", ""))
     evidence_ids = _unique_strings(candidate.get("evidence_ids"))
     evidence_rows = [
@@ -126,6 +130,10 @@ def _validate_candidate(candidate: JSONDict, evidence_by_id: dict[str, JSONDict]
         failures.append("invalid_candidate_type")
     if _missing_source_path_without_marker(evidence_rows):
         failures.append("missing_source_path")
+    missing_existing_source_paths = _missing_existing_source_paths(evidence_rows)
+    if missing_existing_source_paths:
+        failures.append("missing_source_path")
+        blocked_by.extend(missing_existing_source_paths)
     if _source_unavailable_without_reason(evidence_rows):
         failures.append("source_unavailable_without_reason")
     if _missing_source_record(evidence_rows):
@@ -134,7 +142,11 @@ def _validate_candidate(candidate: JSONDict, evidence_by_id: dict[str, JSONDict]
         failures.append("assistant_only_claim")
     if _mock_or_dry_run_real_completion(candidate, evidence_rows):
         failures.append("mock_or_dry_run_real_completion")
-    contradiction_ids = _contradicting_evidence_ids(candidate_id, evidence_rows)
+    contradiction_ids = _contradicting_evidence_ids(
+        candidate_id,
+        evidence_rows,
+        all_evidence_rows,
+    )
     if contradiction_ids:
         failures.append("newer_contradictory_evidence")
         blocked_by.extend(contradiction_ids)
@@ -202,6 +214,30 @@ def _missing_source_path_without_marker(evidence_rows: list[JSONDict]) -> bool:
     )
 
 
+def _missing_existing_source_paths(evidence_rows: list[JSONDict]) -> list[str]:
+    missing: list[str] = []
+    for row in evidence_rows:
+        if _source_explicitly_unavailable(row):
+            continue
+        source_path = row.get("source_path")
+        if not isinstance(source_path, str) or not source_path:
+            continue
+        try:
+            exists = Path(source_path).expanduser().exists()
+        except OSError:
+            exists = False
+        if not exists and isinstance(row.get("evidence_id"), str):
+            missing.append(row["evidence_id"])
+    return missing
+
+
+def _source_explicitly_unavailable(row: JSONDict) -> bool:
+    reason = row.get("source_unavailable_reason")
+    if row.get("source_available") is False and reason:
+        return True
+    return reason in {"unavailable", "permission_denied"}
+
+
 def _source_unavailable_without_reason(evidence_rows: list[JSONDict]) -> bool:
     return any(
         row.get("source_available") is False and not row.get("source_unavailable_reason")
@@ -231,16 +267,40 @@ def _mock_or_dry_run_real_completion(candidate: JSONDict, evidence_rows: list[JS
     return bool(modes) and modes <= MOCK_MODES
 
 
-def _contradicting_evidence_ids(candidate_id: str, evidence_rows: list[JSONDict]) -> list[str]:
+def _contradicting_evidence_ids(
+    candidate_id: str,
+    candidate_evidence_rows: list[JSONDict],
+    all_evidence_rows: list[JSONDict],
+) -> list[str]:
     contradicting: list[str] = []
-    for row in evidence_rows:
+    latest_candidate_timestamp = _latest_timestamp(candidate_evidence_rows)
+    for row in all_evidence_rows:
         ids = _unique_strings(row.get("contradicts_candidate_ids"))
         single = row.get("contradicts_candidate_id")
         if isinstance(single, str):
             ids.append(single)
         if candidate_id in ids and isinstance(row.get("evidence_id"), str):
-            contradicting.append(row["evidence_id"])
+            row_timestamp = row.get("timestamp")
+            is_user_correction = row.get("source_type") == "user_correction"
+            is_newer = (
+                isinstance(row_timestamp, str)
+                and (
+                    latest_candidate_timestamp is None
+                    or row_timestamp > latest_candidate_timestamp
+                )
+            )
+            if is_user_correction or is_newer:
+                contradicting.append(row["evidence_id"])
     return _unique_strings(contradicting)
+
+
+def _latest_timestamp(evidence_rows: list[JSONDict]) -> str | None:
+    timestamps: list[str] = []
+    for row in evidence_rows:
+        timestamp = row.get("timestamp")
+        if isinstance(timestamp, str):
+            timestamps.append(timestamp)
+    return max(timestamps) if timestamps else None
 
 
 def _report(validation_rows: list[JSONDict]) -> JSONDict:

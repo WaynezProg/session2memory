@@ -33,13 +33,14 @@ def evidence_row(
     actor_roles: list[str] | None = None,
     evidence_mode: str = "real",
     timestamp: str = "2026-05-22T09:00:00+00:00",
+    source_path: str | None = None,
     source_available: bool = True,
     source_unavailable_reason: str | None = None,
     contradicts_candidate_ids: list[str] | None = None,
 ) -> dict[str, object]:
     row: dict[str, object] = {
         "evidence_id": evidence_id,
-        "source_path": f"/tmp/{evidence_id}.jsonl",
+        "source_path": source_path or Path(__file__).as_posix(),
         "source_type": source_type,
         "timestamp": timestamp,
         "linked_session_id": f"s-{evidence_id}",
@@ -109,6 +110,27 @@ def test_validate_blocks_assistant_only_claim(tmp_path: Path) -> None:
     assert "assistant_only_claim" in validation[0]["hard_gate_failures"]
 
 
+def test_validate_blocks_existing_source_path_that_is_missing(tmp_path: Path) -> None:
+    distill_dir = tmp_path / "distill" / "2026-05-22"
+    write_distill(
+        distill_dir,
+        evidence=[
+            evidence_row(
+                "e1",
+                source_available=True,
+                source_path="/tmp/session2memory-definitely-missing-source.jsonl",
+            )
+        ],
+        candidates=[candidate("dc1")],
+    )
+
+    validate_distill(distill_dir)
+
+    validation = read_jsonl(distill_dir / "validation.jsonl")
+    assert validation[0]["validation_outcome"] != "pass"
+    assert "missing_source_path" in validation[0]["hard_gate_failures"]
+
+
 def test_validate_blocks_real_completion_supported_only_by_mock_or_dry_run(
     tmp_path: Path,
 ) -> None:
@@ -166,6 +188,32 @@ def test_validate_blocks_newer_contradictory_evidence(tmp_path: Path) -> None:
             ),
         ],
         candidates=[candidate("dc1", evidence_ids=["e1", "e2"])],
+    )
+
+    validate_distill(distill_dir)
+
+    validation = read_jsonl(distill_dir / "validation.jsonl")
+    assert validation[0]["validation_outcome"] == "blocked"
+    assert validation[0]["blocked_by"] == ["e2"]
+    assert "newer_contradictory_evidence" in validation[0]["hard_gate_failures"]
+
+
+def test_validate_blocks_newer_global_user_correction_not_in_candidate_evidence(
+    tmp_path: Path,
+) -> None:
+    distill_dir = tmp_path / "distill" / "2026-05-22"
+    write_distill(
+        distill_dir,
+        evidence=[
+            evidence_row("e1", timestamp="2026-05-22T09:00:00+00:00"),
+            evidence_row(
+                "e2",
+                source_type="user_correction",
+                timestamp="2026-05-22T10:00:00+00:00",
+                contradicts_candidate_ids=["dc1"],
+            ),
+        ],
+        candidates=[candidate("dc1", evidence_ids=["e1"])],
     )
 
     validate_distill(distill_dir)
