@@ -20,6 +20,7 @@ from session2memory.adapters import (
 )
 from session2memory.adapters.registry import load_plugin_adapters
 from session2memory.agentic_os_index import AgenticOsIndex
+from session2memory.distill import DistillError, distill_reviews
 from session2memory.llm_extract import LlmInputMode, SubprocessLlmExtractBackend
 from session2memory.llm_extract_mock import MockLlmExtractBackend
 from session2memory.memory_lifecycle import (
@@ -40,8 +41,10 @@ from session2memory.review import (
 )
 from session2memory.review_bulk import BulkFilter, bulk_update_reviews
 from session2memory.review_conflicts import ConflictResolve
+from session2memory.solidify import SolidifyError, solidify_distill
 from session2memory.state.store import StateStore
 from session2memory.sync_back import SyncError, sync_workspace_memory
+from session2memory.validate import ValidateError, validate_distill
 
 app = typer.Typer(no_args_is_help=True)
 review_app = typer.Typer(no_args_is_help=True)
@@ -429,6 +432,55 @@ def promote(
         f"date={parsed_date} reviewed={result.reviewed} promoted={result.promoted} "
         f"skipped_duplicate={result.skipped_duplicate} "
         f"skipped_conflict={result.skipped_conflict}"
+    )
+
+
+@app.command("distill")
+def distill(
+    date: Annotated[str, typer.Option("--date", help="Date to distill in YYYY-MM-DD format.")],
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Generated session-memory folder."),
+    ] = Path("./out/session-memory"),
+) -> None:
+    parsed_date = _parse_date(date)
+    try:
+        result = distill_reviews(output_dir=output, date=parsed_date)
+    except DistillError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        f"date={parsed_date} review_rows={result.review_rows} "
+        f"approved_reviews={result.approved_reviews} candidates={result.candidates} "
+        f"distill={result.distill_dir.as_posix()}"
+    )
+
+
+@app.command("validate")
+def validate_command(
+    distill: Annotated[Path, typer.Option("--distill", help="Distill output directory.")],
+) -> None:
+    try:
+        result = validate_distill(distill)
+    except ValidateError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        f"distill={result.distill_dir.as_posix()} validated={result.validated} "
+        f"pass={result.passed} needs_review={result.needs_review} blocked={result.blocked}"
+    )
+
+
+@app.command("solidify")
+def solidify(
+    distill: Annotated[Path, typer.Option("--distill", help="Distill output directory.")],
+) -> None:
+    try:
+        result = solidify_distill(distill)
+    except SolidifyError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(
+        f"distill={result.distill_dir.as_posix()} solidified={result.solidified} "
+        f"ready_for_review={result.ready_for_review} "
+        f"needs_human_review={result.needs_human_review} blocked={result.blocked}"
     )
 
 
