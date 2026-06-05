@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -142,14 +143,21 @@ def _validate_candidate(
         failures.append("assistant_only_claim")
     if _mock_or_dry_run_real_completion(candidate, evidence_rows):
         failures.append("mock_or_dry_run_real_completion")
+    invalid_timestamp_ids = _invalid_timestamp_evidence_ids(evidence_rows)
+    if invalid_timestamp_ids:
+        failures.append("invalid_timestamp")
+        blocked_by.extend(invalid_timestamp_ids)
     contradiction_ids = _contradicting_evidence_ids(
         candidate_id,
         evidence_rows,
         all_evidence_rows,
     )
-    if contradiction_ids:
+    if contradiction_ids.invalid_timestamp_ids:
+        failures.append("invalid_timestamp")
+        blocked_by.extend(contradiction_ids.invalid_timestamp_ids)
+    if contradiction_ids.contradicting_ids:
         failures.append("newer_contradictory_evidence")
-        blocked_by.extend(contradiction_ids)
+        blocked_by.extend(contradiction_ids.contradicting_ids)
 
     score = _score_candidate(candidate, evidence_ids=evidence_ids, evidence_rows=evidence_rows)
     if failures:
@@ -267,40 +275,76 @@ def _mock_or_dry_run_real_completion(candidate: JSONDict, evidence_rows: list[JS
     return bool(modes) and modes <= MOCK_MODES
 
 
+@dataclass(frozen=True)
+class ContradictionResult:
+    contradicting_ids: list[str]
+    invalid_timestamp_ids: list[str]
+
+
 def _contradicting_evidence_ids(
     candidate_id: str,
     candidate_evidence_rows: list[JSONDict],
     all_evidence_rows: list[JSONDict],
-) -> list[str]:
+) -> ContradictionResult:
     contradicting: list[str] = []
+    invalid_timestamp_ids: list[str] = []
     latest_candidate_timestamp = _latest_timestamp(candidate_evidence_rows)
     for row in all_evidence_rows:
         ids = _unique_strings(row.get("contradicts_candidate_ids"))
         single = row.get("contradicts_candidate_id")
         if isinstance(single, str):
             ids.append(single)
-        if candidate_id in ids and isinstance(row.get("evidence_id"), str):
-            row_timestamp = row.get("timestamp")
-            is_user_correction = row.get("source_type") == "user_correction"
-            is_newer = (
-                isinstance(row_timestamp, str)
-                and (
-                    latest_candidate_timestamp is None
-                    or row_timestamp > latest_candidate_timestamp
-                )
-            )
-            if is_user_correction or is_newer:
-                contradicting.append(row["evidence_id"])
-    return _unique_strings(contradicting)
+        evidence_id = row.get("evidence_id")
+        if candidate_id not in ids or not isinstance(evidence_id, str):
+            continue
+        parsed_timestamp = _parse_timestamp(row.get("timestamp"))
+        if parsed_timestamp is None:
+            invalid_timestamp_ids.append(evidence_id)
+            continue
+        is_user_correction = row.get("source_type") == "user_correction"
+        is_newer = (
+            latest_candidate_timestamp is None
+            or parsed_timestamp > latest_candidate_timestamp
+        )
+        if is_user_correction or is_newer:
+            contradicting.append(evidence_id)
+    return ContradictionResult(
+        contradicting_ids=_unique_strings(contradicting),
+        invalid_timestamp_ids=_unique_strings(invalid_timestamp_ids),
+    )
 
 
-def _latest_timestamp(evidence_rows: list[JSONDict]) -> str | None:
-    timestamps: list[str] = []
+def _invalid_timestamp_evidence_ids(evidence_rows: list[JSONDict]) -> list[str]:
+    invalid: list[str] = []
     for row in evidence_rows:
-        timestamp = row.get("timestamp")
-        if isinstance(timestamp, str):
+        if _parse_timestamp(row.get("timestamp")) is None and isinstance(
+            row.get("evidence_id"),
+            str,
+        ):
+            invalid.append(row["evidence_id"])
+    return invalid
+
+
+def _latest_timestamp(evidence_rows: list[JSONDict]) -> datetime | None:
+    timestamps: list[datetime] = []
+    for row in evidence_rows:
+        timestamp = _parse_timestamp(row.get("timestamp"))
+        if timestamp is not None:
             timestamps.append(timestamp)
     return max(timestamps) if timestamps else None
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _report(validation_rows: list[JSONDict]) -> JSONDict:

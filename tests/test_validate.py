@@ -224,6 +224,48 @@ def test_validate_blocks_newer_global_user_correction_not_in_candidate_evidence(
     assert "newer_contradictory_evidence" in validation[0]["hard_gate_failures"]
 
 
+def test_validate_uses_timezone_aware_timestamps_for_newer_contradiction(
+    tmp_path: Path,
+) -> None:
+    distill_dir = tmp_path / "distill" / "2026-05-22"
+    write_distill(
+        distill_dir,
+        evidence=[
+            evidence_row("e1", timestamp="2026-06-05T12:30:00+08:00"),
+            evidence_row(
+                "e2",
+                source_type="file_snapshot",
+                timestamp="2026-06-05T05:00:00Z",
+                contradicts_candidate_ids=["dc1"],
+            ),
+        ],
+        candidates=[candidate("dc1", evidence_ids=["e1"])],
+    )
+
+    validate_distill(distill_dir)
+
+    validation = read_jsonl(distill_dir / "validation.jsonl")
+    assert validation[0]["validation_outcome"] == "blocked"
+    assert validation[0]["blocked_by"] == ["e2"]
+    assert "newer_contradictory_evidence" in validation[0]["hard_gate_failures"]
+
+
+def test_validate_blocks_invalid_timestamp_on_candidate_evidence(tmp_path: Path) -> None:
+    distill_dir = tmp_path / "distill" / "2026-05-22"
+    write_distill(
+        distill_dir,
+        evidence=[evidence_row("e1", timestamp="not-a-timestamp")],
+        candidates=[candidate("dc1", evidence_ids=["e1"])],
+    )
+
+    validate_distill(distill_dir)
+
+    validation = read_jsonl(distill_dir / "validation.jsonl")
+    assert validation[0]["validation_outcome"] == "blocked"
+    assert validation[0]["blocked_by"] == ["e1"]
+    assert "invalid_timestamp" in validation[0]["hard_gate_failures"]
+
+
 def test_validate_user_correction_outweighs_assistant_summary(tmp_path: Path) -> None:
     distill_dir = tmp_path / "distill" / "2026-05-22"
     write_distill(
