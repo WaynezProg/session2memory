@@ -200,8 +200,14 @@ Field rules:
   known path and set `source_available=false` plus `source_unavailable_reason`.
 - `source_type` is one of `session_message`, `review_row`, `tool_output`,
   `user_correction`, `assistant_summary`, `test_result`, or `file_snapshot`.
-- `timestamp` must be ISO 8601 with timezone when available. If the source has no timestamp,
-  use the importing evidence timestamp and record that choice in `summary`.
+- `timestamp` must be ISO 8601. Validation accepts naive ISO
+  (`2026-06-05T12:30:00`), UTC `Z` (`2026-06-05T12:30:00Z`), and explicit timezone
+  offsets (`2026-06-05T12:30:00+08:00`).
+- Naive timestamps are interpreted as UTC during validation. Invalid timestamps on
+  safety-gate evidence block the candidate with `invalid_timestamp`; they must not be
+  silently ignored or treated as passing evidence.
+- If the source has no timestamp, use the importing evidence timestamp and record that
+  choice in `summary`.
 - `linked_session_id` is the local session id from the original evidence or review row.
 - `confidence` is an evidence quality score from `0.0` to `1.0`, not a truth score.
 - `evidence_mode` is one of `real`, `mock`, `dry_run`, or `unknown`.
@@ -294,6 +300,7 @@ A candidate is `blocked` when any hard gate fails:
 | Source availability | `source_available=false` without `source_unavailable_reason` |
 | Assistant-only | all supporting evidence is `assistant_summary` or actor role `assistant` |
 | Mock/dry-run | `claim_mode=real_completion` but all supporting evidence is `mock` or `dry_run` |
+| Timestamp | safety-gate evidence has an invalid or unparsable `timestamp` |
 | Duplicate | normalized duplicate exists and cannot be merged deterministically |
 | Contradiction | newer contradictory evidence exists |
 | User correction | a user correction contradicts the claim |
