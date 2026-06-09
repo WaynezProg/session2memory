@@ -1,7 +1,7 @@
 # session_worklog Design
 
 **Date:** 2026-06-09  
-**Status:** Approved  
+**Status:** Frozen (v1)  
 **Scope:** Deterministic worklog aggregation from `session2memory.db` for HKS ingest.
 
 ## Problem
