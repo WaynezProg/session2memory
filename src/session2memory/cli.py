@@ -45,7 +45,12 @@ from session2memory.solidify import SolidifyError, solidify_distill
 from session2memory.state.store import StateStore
 from session2memory.sync_back import SyncError, sync_workspace_memory
 from session2memory.validate import ValidateError, validate_distill
-from session2memory.worklog import generate_worklog, resolve_worklog_range
+from session2memory.worklog import (
+    format_missing_state_db_error,
+    generate_worklog,
+    resolve_state_db_path,
+    resolve_worklog_range,
+)
 
 app = typer.Typer(no_args_is_help=True)
 review_app = typer.Typer(no_args_is_help=True)
@@ -505,9 +510,17 @@ def worklog_command(
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    db_path = (state_db or (output / "session2memory.db")).expanduser()
+    db_path = resolve_state_db_path(output_dir=output, state_db=state_db)
     if not db_path.is_file():
-        raise typer.BadParameter(f"State database not found: {db_path.as_posix()}")
+        raise typer.BadParameter(
+            format_missing_state_db_error(
+                output_dir=output,
+                state_db=state_db,
+                period=period,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        )
     state_store = StateStore.open(db_path, output_dir=output)
     try:
         result = generate_worklog(

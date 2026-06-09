@@ -125,6 +125,12 @@ re-import replaces managed generated files and would drop older daily markdown f
 export tree. `worklog` aggregates `candidates` by `import_date` range and writes
 HKS-ingestable markdown under `worklogs/` with date-based filenames.
 
+`worklog` always reads state from `session2memory.db`. By default it looks for
+`<output>/session2memory.db`. If your import tree stores the database in a date
+subfolder (for example `./out/session-memory/2026-06-08/session2memory.db`), pass
+`--state-db` explicitly. Do not move or copy the database just to satisfy the default
+lookup path.
+
 ```bash
 uv run session2memory worklog yesterday --output ./out/session-memory
 uv run session2memory worklog last-week --output ./out/session-memory
@@ -132,10 +138,19 @@ uv run session2memory worklog last-month --output ./out/session-memory
 uv run session2memory worklog --from 2026-06-01 --to 2026-06-07 --output ./out/session-memory
 ```
 
+When the database is not at the `--output` root:
+
+```bash
+uv run session2memory worklog yesterday \
+  --output ./out/session-memory \
+  --state-db ./out/session-memory/2026-06-08/session2memory.db
+```
+
 - Period aliases (`yesterday`, `last-week`, `last-month`) only affect the resolved date
   range; output files are always named by ISO dates, for example `worklogs/2026-06-08.md`
   or `worklogs/2026-06-01_2026-06-07.md`.
-- Requires `session2memory.db` under `--output` (or `--state-db`). Run `import` first.
+- Run `import` first so `session2memory.db` exists. If lookup fails, the CLI prints the
+  path it checked and a suggested `--state-db` command when nearby databases are found.
 - Front matter uses `hks_type: session_worklog`. Body sections are Shipped, Verified,
   Decisions, Constraints, Pitfalls, and Notes. Every line keeps `evidence_id`, `tool`,
   `session_id`, and `lines` metadata.

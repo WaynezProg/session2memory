@@ -9,6 +9,7 @@ from session2memory.models import EvidencePointer, MemoryCandidate
 from session2memory.state.store import StateStore
 from session2memory.worklog import (
     WorklogRange,
+    format_missing_state_db_error,
     generate_worklog,
     render_worklog_markdown,
     resolve_worklog_range,
@@ -248,6 +249,39 @@ def test_worklog_matches_golden(tmp_path: Path) -> None:
         store.close()
     golden = read_golden("worklog_2026-06-01_2026-06-07.md")
     assert result.path.read_text(encoding="utf-8") == golden
+
+
+def test_missing_state_db_error_lists_lookup_and_suggestion(tmp_path: Path) -> None:
+    output_root = tmp_path / "session-memory"
+    dated = output_root / "2026-06-08"
+    dated.mkdir(parents=True)
+    StateStore.open(dated / "session2memory.db", output_dir=dated).close()
+    message = format_missing_state_db_error(
+        output_dir=output_root,
+        state_db=None,
+        period="yesterday",
+    )
+    assert "session-memory/session2memory.db" in message
+    assert "2026-06-08/session2memory.db" in message
+    assert "--state-db" in message
+    assert "uv run session2memory worklog yesterday" in message
+
+
+def test_cli_worklog_missing_db_shows_suggested_command(tmp_path: Path) -> None:
+    output_root = tmp_path / "session-memory"
+    dated = output_root / "2026-06-08"
+    dated.mkdir(parents=True)
+    StateStore.open(dated / "session2memory.db", output_dir=dated).close()
+    result = CliRunner().invoke(
+        app,
+        ["worklog", "yesterday", "--output", str(output_root)],
+    )
+    assert result.exit_code != 0
+    assert "session2memory.db" in result.output
+    assert "Nearby databases" in result.output
+    assert "2026-06-08" in result.output
+    assert "--state-db" in result.output
+    assert "Suggested command" in result.output
 
 
 def test_cli_worklog_yesterday(tmp_path: Path) -> None:

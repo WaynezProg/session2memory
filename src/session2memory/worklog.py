@@ -177,6 +177,83 @@ def _worklog_entry_line(*, import_date: str, stored: StoredCandidate) -> str:
     return f"- [{candidate.kind}] {candidate.text} {meta}"
 
 
+def resolve_state_db_path(*, output_dir: Path, state_db: Path | None) -> Path:
+    return (state_db or (output_dir / "session2memory.db")).expanduser()
+
+
+def format_missing_state_db_error(
+    *,
+    output_dir: Path,
+    state_db: Path | None,
+    period: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    looked_up = resolve_state_db_path(output_dir=output_dir, state_db=state_db)
+    lines = [
+        f"State database not found: {looked_up.as_posix()}",
+        (
+            "worklog reads candidates from session2memory.db "
+            "(default: <output>/session2memory.db)."
+        ),
+    ]
+    if state_db is not None:
+        lines.append(
+            "Pass a different --state-db path, or set --output to the folder that "
+            "contains session2memory.db."
+        )
+        return "\n".join(lines)
+
+    candidates = discover_state_db_candidates(output_dir)
+    if candidates:
+        lines.append("Nearby databases:")
+        lines.extend(f"  - {path.as_posix()}" for path in candidates)
+        lines.append("Suggested command:")
+        lines.append(
+            suggest_worklog_command(
+                output_dir=output_dir,
+                state_db=candidates[0],
+                period=period,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        )
+    else:
+        lines.append("Run import first, or pass --state-db <path/to/session2memory.db>.")
+    return "\n".join(lines)
+
+
+def discover_state_db_candidates(output_dir: Path, *, limit: int = 5) -> list[Path]:
+    if not output_dir.is_dir():
+        return []
+    matches = [
+        path
+        for path in output_dir.glob("*/session2memory.db")
+        if path.is_file()
+    ]
+    return sorted(matches, key=lambda path: path.parent.name, reverse=True)[:limit]
+
+
+def suggest_worklog_command(
+    *,
+    output_dir: Path,
+    state_db: Path,
+    period: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> str:
+    parts = ["uv run session2memory worklog"]
+    if period is not None:
+        parts.append(period)
+    if date_from is not None:
+        parts.extend(["--from", date_from])
+    if date_to is not None:
+        parts.extend(["--to", date_to])
+    parts.extend(["--output", output_dir.as_posix()])
+    parts.extend(["--state-db", state_db.as_posix()])
+    return " ".join(parts)
+
+
 def _output_name(date_from: date, date_to: date) -> str:
     if date_from == date_to:
         return f"{date_from.isoformat()}.md"
