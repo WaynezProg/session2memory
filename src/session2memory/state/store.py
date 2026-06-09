@@ -207,6 +207,27 @@ class StateStore:
         ).fetchall()
         return [self._row_to_stored(row) for row in rows if isinstance(row, sqlite3.Row)]
 
+    def list_candidates_in_range(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+    ) -> list[tuple[str, StoredCandidate]]:
+        rows = self._connection.execute(
+            """
+            SELECT * FROM candidates
+            WHERE import_date >= ? AND import_date <= ?
+            ORDER BY import_date, evidence_id, candidate_id
+            """,
+            (date_from, date_to),
+        ).fetchall()
+        result: list[tuple[str, StoredCandidate]] = []
+        for row in rows:
+            if not isinstance(row, sqlite3.Row):
+                continue
+            result.append((str(row["import_date"]), self._row_to_stored(row)))
+        return result
+
     def update_review_status(
         self,
         *,

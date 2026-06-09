@@ -45,6 +45,7 @@ from session2memory.solidify import SolidifyError, solidify_distill
 from session2memory.state.store import StateStore
 from session2memory.sync_back import SyncError, sync_workspace_memory
 from session2memory.validate import ValidateError, validate_distill
+from session2memory.worklog import generate_worklog, resolve_worklog_range
 
 app = typer.Typer(no_args_is_help=True)
 review_app = typer.Typer(no_args_is_help=True)
@@ -466,6 +467,60 @@ def validate_command(
     typer.echo(
         f"distill={result.distill_dir.as_posix()} validated={result.validated} "
         f"pass={result.passed} needs_review={result.needs_review} blocked={result.blocked}"
+    )
+
+
+@app.command("worklog")
+def worklog_command(
+    period: Annotated[
+        str | None,
+        typer.Argument(help="Aggregation period: yesterday, last-week, or last-month."),
+    ] = None,
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Generated session-memory folder with session2memory.db."),
+    ] = Path("./out/session-memory"),
+    date_from: Annotated[
+        str | None,
+        typer.Option("--from", help="Inclusive start date in YYYY-MM-DD format."),
+    ] = None,
+    date_to: Annotated[
+        str | None,
+        typer.Option("--to", help="Inclusive end date in YYYY-MM-DD format."),
+    ] = None,
+    state_db: Annotated[
+        Path | None,
+        typer.Option("--state-db", help="Override state database path."),
+    ] = None,
+) -> None:
+    if date_from is not None:
+        date_from = _parse_date(date_from)
+    if date_to is not None:
+        date_to = _parse_date(date_to)
+    try:
+        worklog_range = resolve_worklog_range(
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    db_path = (state_db or (output / "session2memory.db")).expanduser()
+    if not db_path.is_file():
+        raise typer.BadParameter(f"State database not found: {db_path.as_posix()}")
+    state_store = StateStore.open(db_path, output_dir=output)
+    try:
+        result = generate_worklog(
+            output_dir=output,
+            state_store=state_store,
+            worklog_range=worklog_range,
+        )
+    finally:
+        state_store.close()
+    typer.echo(
+        f"period={result.label} date_from={result.date_from} date_to={result.date_to} "
+        f"entries={result.entry_count} workspaces={result.workspace_count} "
+        f"worklog={result.path.as_posix()}"
     )
 
 

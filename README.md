@@ -87,7 +87,7 @@ uv run session2memory import \
 
 Re-running import with the same `--output` replaces the managed generated files:
 `daily/`, `evidence/`, `review/`, and `manifest.json`. It does not delete local
-raw session stores, and it does not delete HKS data under `KS_ROOT`.
+raw session stores, `worklogs/`, or HKS data under `KS_ROOT`.
 
 Import writes three layers:
 
@@ -117,6 +117,29 @@ uv run session2memory import \
   --source-root codex=/Users/waynetu/.codex/sessions \
   --output ./out/session-memory
 ```
+
+## Worklog Aggregation
+
+Weekly or monthly rollups must read `session2memory.db`, not `daily/*.md`, because
+re-import replaces managed generated files and would drop older daily markdown from the
+export tree. `worklog` aggregates `candidates` by `import_date` range and writes
+HKS-ingestable markdown under `worklogs/` with date-based filenames.
+
+```bash
+uv run session2memory worklog yesterday --output ./out/session-memory
+uv run session2memory worklog last-week --output ./out/session-memory
+uv run session2memory worklog last-month --output ./out/session-memory
+uv run session2memory worklog --from 2026-06-01 --to 2026-06-07 --output ./out/session-memory
+```
+
+- Period aliases (`yesterday`, `last-week`, `last-month`) only affect the resolved date
+  range; output files are always named by ISO dates, for example `worklogs/2026-06-08.md`
+  or `worklogs/2026-06-01_2026-06-07.md`.
+- Requires `session2memory.db` under `--output` (or `--state-db`). Run `import` first.
+- Front matter uses `hks_type: session_worklog`. Body sections are Shipped, Verified,
+  Decisions, Constraints, Pitfalls, and Notes. Every line keeps `evidence_id`, `tool`,
+  `session_id`, and `lines` metadata.
+- v1 is deterministic aggregation only; no LLM synthesis or external sources.
 
 ## HKS Ingest (agents)
 
