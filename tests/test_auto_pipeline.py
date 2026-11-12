@@ -1121,7 +1121,9 @@ def test_search_ranks_by_matched_terms_and_ignores_case(store: AutoStore) -> Non
     assert store.search("  冪等寫入   匯出增量化 ")[0][1] == refs["session"]
     # A whole sentence works too: it is matched by its words and character pairs.
     assert store.search("匯出格式要用 parquet 嗎")[0][1] in {refs["coding"], refs["agent"]}
-    assert store.search("parquet 完全不存在的詞語很多個字") == []
+    # Pieces found nowhere (the filler of a question) do not hide what the rest matches.
+    assert found(store.search("parquet 要注意什麼地方呢請問一下")) == found(hits)
+    assert store.search("完全不存在的詞語") == []
     assert store.search("") == [] and store.search("   ") == []
     assert len(store.search("parquet", limit=1)) == 1
 

@@ -13,6 +13,7 @@ scope ``openclaw``; anything a coding agent contributed to has scope ``coding``.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -550,9 +551,11 @@ class AutoStore:
         """Ranked keyword search over active memories and session summaries.
 
         Returns ``(kind, ref, project, text)``. The query may be a few keywords or a
-        sentence: it is split into words and, for CJK text, character pairs. A row must
-        contain at least half of them; rows containing more rank first, memories before
-        session summaries, newer before older.
+        sentence: it is split into words and, for CJK text, character pairs. Pieces that
+        occur nowhere (the filler of a question, pairs straddling two words) are ignored;
+        a row must contain two of the rest (one, when there is only one). Rows matching
+        more and rarer pieces rank first, then memories before session summaries, newer
+        before older.
         """
         tokens = search_tokens(query)
         if not tokens:
@@ -575,17 +578,27 @@ class AutoStore:
             session_sql += " AND project=?"
             memory_args.append(project)
             session_args.append(project)
-        scored: list[tuple[float, int, str, tuple[str, str, str | None, str]]] = []
+        rows: list[tuple[int, str, tuple[str, str, str | None, str], str]] = []
         for sql, args in ((memory_sql, memory_args), (session_sql, session_args)):
             for kind, ref, row_project, text, recency, order in self._connection.execute(sql, args):
-                haystack = str(text).lower()
-                matched = sum(1 for token in tokens if token in haystack)
-                if matched * 2 < len(tokens):
-                    continue
                 hit = (str(kind), str(ref), str(row_project) if row_project else None, str(text))
-                scored.append((matched / len(tokens), int(order), str(recency), hit))
+                rows.append((int(order), str(recency), hit, str(text).lower()))
+        frequency = {
+            token: sum(1 for _, _, _, haystack in rows if token in haystack) for token in tokens
+        }
+        known = [token for token in tokens if frequency[token]]
+        if not known:
+            return []
+        weight = {token: math.log(1 + len(rows) / frequency[token]) for token in known}
+        needed = min(2, len(known))
+        scored: list[tuple[float, int, str, tuple[str, str, str | None, str]]] = []
+        for order, recency, hit, haystack in rows:
+            matched = [token for token in known if token in haystack]
+            if len(matched) < needed:
+                continue
+            scored.append((sum(weight[token] for token in matched), order, recency, hit))
         scored.sort(key=lambda item: item[2], reverse=True)  # newest first
-        scored.sort(key=lambda item: (-item[0], item[1]))  # then coverage, memories first
+        scored.sort(key=lambda item: (-round(item[0], 6), item[1]))  # rarer matches first
         return [hit for _, _, _, hit in scored[:limit]]
 
     # ---- runs and file actions -----------------------------------------------
