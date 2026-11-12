@@ -350,6 +350,12 @@ def _reader_preview(
         return f"[source unreadable: {exc}]"
     if record is None:
         return "[source range unavailable]"
+    digest = evidence.get("digest")
+    if isinstance(digest, str) and digest:
+        # The stable identity of the evidence is its content digest; an index can be
+        # renumbered when the source rewrites itself.
+        texts = [m.text for m in record.messages if m.raw_pointer.digest == digest]
+        return texts[0] if texts else "[source unavailable: evidence no longer in source]"
     texts = [m.text for m in record.messages if start <= m.index <= end]
     return "\n".join(texts) if texts else "[source range unavailable]"
 

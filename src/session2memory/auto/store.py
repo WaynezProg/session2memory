@@ -417,6 +417,9 @@ class AutoStore:
         now: datetime | None = None,
     ) -> tuple[str, bool]:
         """Insert a memory, or confirm the identical one. Returns ``(id, created)``."""
+        # Scrub first: the id, the stored text and the normalised index all come from
+        # the same cleaned text.
+        text = scrub_secrets(text.strip())
         memory_id = memory_id_for(project, kind, text)
         stamp = now_iso(now)
         existing = self.get_memory(memory_id)
@@ -441,7 +444,7 @@ class AutoStore:
                 project,
                 scope,
                 kind,
-                scrub_secrets(text.strip()),
+                text,
                 normalize(text),
                 ACTIVE,
                 stamp,

@@ -529,3 +529,92 @@ def test_review_preview_reads_openclaw_native_and_muse_through_their_adapters(
     assert _evidence_preview({**evidence, "message_start": 9999, "message_end": 9999}) == (
         "[source range unavailable]"
     )
+
+
+# ---- fourth review round -----------------------------------------------------------------
+
+
+def test_older_copy_in_another_home_does_not_become_the_current_version(tmp_path: Path) -> None:
+    main = tmp_path / "home" / ".codex" / "sessions"
+    nested = tmp_path / "agents" / "kurisu" / "agent" / "codex-home" / "sessions"
+    longer = [*TURNS, ("user", "再加上重試機制"), ("assistant", "完成: 已加上重試")]
+    write_rollout(main, S1, rollout_lines(S1, "/proj/alpha-etl", longer))
+    write_rollout(nested, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))  # an earlier snapshot
+    state = StateStore.open(tmp_path / "state.db")
+    full = CodexAdapter(main).read_file(next(main.rglob("*.jsonl")))
+    partial = CodexAdapter(nested).read_file(next(nested.rglob("*.jsonl")))
+
+    first = state.sources.observe(full, workspace_id=None)
+    second = state.sources.observe(partial, workspace_id=None)
+
+    assert (first.reason, second.reason) == ("first-seen", "older-copy")
+    assert not second.has_new_content
+    assert state.sources.versions(f"codex:{S1}") == [(1, "first-seen")]
+    assert len(state.sources.locations(f"codex:{S1}")) == 2
+
+
+def test_memory_normalised_text_is_built_from_scrubbed_text(store: AutoStore) -> None:
+    memory_id, _ = store.add_memory(
+        project="/proj/alpha",
+        scope="coding",
+        kind="fact",
+        text=f"部署金鑰 {TOKEN}",
+        evidence=["codex:t9"],
+        run_id=None,
+    )
+
+    row = store._connection.execute(
+        "SELECT text, text_norm FROM auto_memories WHERE memory_id=?", (memory_id,)
+    ).fetchone()
+    assert TOKEN not in row[0] and TOKEN.lower() not in row[1]
+    again, created = store.add_memory(
+        project="/proj/alpha",
+        scope="coding",
+        kind="fact",
+        text=f"部署金鑰 {TOKEN}",
+        evidence=["codex:t9"],
+        run_id=None,
+    )
+    assert (again, created) == (memory_id, False)
+
+
+def test_review_preview_matches_evidence_by_digest_not_by_renumbered_index(
+    tmp_path: Path,
+) -> None:
+    from session2memory.review import _evidence_preview
+
+    path = tmp_path / "2026" / "11" / "10" / MUSE_ID / "session.jsonl"
+    path.parent.mkdir(parents=True)
+
+    def turn(sequence: int, text: str) -> dict[str, object]:
+        event: dict[str, object] = {"kind": "assistant_message_committed", "text": text}
+        return muse_record(sequence, "runtime.session", {"kind": "run", "event": event})
+
+    filler = json.dumps(muse_record(1, "runtime.session", {"kind": "x"}))
+    path.write_text(
+        "\n".join(
+            [filler, json.dumps(turn(2, "決定: 用 Parquet")), json.dumps(turn(3, "決定: 改用 ORC"))]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    target = MuseAdapter(tmp_path).read_file(path).messages[0]
+    evidence = {
+        "tool": "muse",
+        "session_id": MUSE_ID,
+        "source_path": path.as_posix(),
+        "message_start": target.index,
+        "message_end": target.index,
+        "digest": target.raw_pointer.digest,
+    }
+    assert _evidence_preview(evidence) == "決定: 用 Parquet"
+
+    # Muse drops the leading record: every index shifts down by one.
+    path.write_text(
+        "\n".join([json.dumps(turn(2, "決定: 用 Parquet")), json.dumps(turn(3, "決定: 改用 ORC"))])
+        + "\n",
+        encoding="utf-8",
+    )
+    assert _evidence_preview(evidence) == "決定: 用 Parquet"
+    path.write_text(json.dumps(turn(3, "決定: 改用 ORC")) + "\n", encoding="utf-8")
+    assert _evidence_preview(evidence).startswith("[source unavailable")

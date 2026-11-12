@@ -19,7 +19,9 @@ from typing import Literal
 
 from session2memory.models import SessionMessage, SessionRecord, SourceHome
 
-ObservationReason = Literal["first-seen", "unchanged", "alias", "append", "rewrite"]
+ObservationReason = Literal[
+    "first-seen", "unchanged", "alias", "append", "rewrite", "older-copy"
+]
 # Re-reads one session from a location: ``(path, session_id) -> record`` (``None`` when the
 # container no longer holds that session, e.g. rows deleted from a sqlite store).
 SessionReader = Callable[[Path, str], SessionRecord | None]
@@ -146,14 +148,22 @@ class SourceRegistry:
                     locator in current and current[locator][2] == digest
                     for locator, digest in existing.items()
                 )
-                reason = "append" if kept else "rewrite"
-                version_no = int(row[0]) + 1
-                new_locators = frozenset(changed)
-                self._connection.execute(
-                    "UPDATE sources SET version_no=? WHERE source_key=?", (version_no, key)
-                )
-                self._insert_version(key, version_no, record, reason, now)
-                self._write_messages(key, current, changed, version_no)
+                if not changed and len(current) < len(existing):
+                    # Nothing new, and less than we already hold: an older snapshot of the
+                    # session kept somewhere else, not a rewrite. It is recorded as a
+                    # location (version 0) and must not become the current version.
+                    reason = "older-copy"
+                    version_no = 0
+                    new_locators = frozenset()
+                else:
+                    reason = "append" if kept else "rewrite"
+                    version_no = int(row[0]) + 1
+                    new_locators = frozenset(changed)
+                    self._connection.execute(
+                        "UPDATE sources SET version_no=? WHERE source_key=?", (version_no, key)
+                    )
+                    self._insert_version(key, version_no, record, reason, now)
+                    self._write_messages(key, current, changed, version_no)
         self._upsert_location(record, version_no, now)
         self._refresh_location_states(key)
         self._connection.commit()
