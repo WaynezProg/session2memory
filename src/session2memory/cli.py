@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sys
 from collections.abc import Callable
 from datetime import date as Date
 from pathlib import Path
@@ -44,6 +45,7 @@ from session2memory.handoff_find import (
     select_session,
     split_session_spec,
 )
+from session2memory.hook_install import update_settings
 from session2memory.llm_extract import LlmInputMode, SubprocessLlmExtractBackend
 from session2memory.llm_extract_mock import MockLlmExtractBackend
 from session2memory.memory_lifecycle import (
@@ -65,6 +67,12 @@ from session2memory.review import (
 )
 from session2memory.review_bulk import BulkFilter, bulk_update_reviews
 from session2memory.review_conflicts import ConflictResolve
+from session2memory.session_start import (
+    DEFAULT_MAX_AGE_HOURS,
+    HookConfig,
+    hook_output,
+    run_hook,
+)
 from session2memory.solidify import SolidifyError, solidify_distill
 from session2memory.state.store import StateStore
 from session2memory.sync_back import SyncError, sync_workspace_memory
@@ -231,6 +239,104 @@ def _handoff_roots(tools: list[str] | None, source_root: list[str] | None) -> di
                 f"handoff does not support tool: {tool} (supported: {', '.join(sorted(FINDERS))})"
             )
     return {tool: source_roots[tool] for tool in selected}
+
+
+DEFAULT_HANDOFF_LEDGER = Path("~/.local/share/session2memory/handoff-ledger.json")
+DEFAULT_CODEX_MEMORY_ROOT = Path("~/.codex/memories_v2")
+DEFAULT_HOOK_MAX_CHARS = 3000
+
+
+@app.command(
+    "session-start-hook",
+    help="SessionStart hook: add other agents' memory index and a one-time handoff.",
+)
+def session_start_hook(
+    agent: Annotated[
+        str, typer.Option("--agent", help="Agent this hook runs in (claude or codex).")
+    ] = "claude",
+    max_chars: Annotated[
+        int, typer.Option("--max-chars", help="Upper bound on the injected text.")
+    ] = DEFAULT_HOOK_MAX_CHARS,
+    max_age_hours: Annotated[
+        float,
+        typer.Option("--max-age-hours", help="Ignore a previous session older than this."),
+    ] = DEFAULT_MAX_AGE_HOURS,
+    include_automated: Annotated[
+        bool,
+        typer.Option(
+            "--include-automated",
+            help="Also run for headless (SDK) sessions and temporary directories.",
+        ),
+    ] = False,
+    memory: Annotated[
+        bool, typer.Option("--memory/--no-memory", help="Add the memory index.")
+    ] = True,
+    handoff: Annotated[
+        bool, typer.Option("--handoff/--no-handoff", help="Add the one-time handoff.")
+    ] = True,
+    ledger: Annotated[
+        Path, typer.Option("--ledger", help="File recording which handoffs were delivered.")
+    ] = DEFAULT_HANDOFF_LEDGER,
+    codex_memory_root: Annotated[
+        Path, typer.Option("--codex-memory-root", help="Codex memory directory.")
+    ] = DEFAULT_CODEX_MEMORY_ROOT,
+    source_root: Annotated[
+        list[str] | None, typer.Option("--source-root", help="Override source root as tool=path.")
+    ] = None,
+    explain: Annotated[
+        bool, typer.Option("--explain", help="Print the decision notes to stderr.")
+    ] = False,
+) -> None:
+    """Reads the hook payload on stdin and prints the hook JSON. Never fails the session."""
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+        source_roots = _default_source_roots()
+        source_roots.update(_parse_source_root(source_root or []))
+        config = HookConfig(
+            agent=agent,
+            session_roots={tool: source_roots[tool] for tool in ("claude", "codex", "grok")},
+            codex_memory_root=codex_memory_root.expanduser(),
+            claude_projects_root=source_roots["claude"],
+            ledger_path=ledger.expanduser(),
+            max_chars=max_chars,
+            max_age_hours=max_age_hours,
+            include_automated=include_automated,
+            memory=memory,
+            handoff=handoff,
+        )
+        result = run_hook(config, payload if isinstance(payload, dict) else {}, os.environ)
+    except Exception as exc:  # noqa: BLE001 - a hook must never break the session
+        if explain:
+            typer.echo(f"session-start-hook: {type(exc).__name__}: {exc}", err=True)
+        typer.echo("{}")
+        return
+    if explain:
+        for note in result.notes:
+            typer.echo(note, err=True)
+    typer.echo(hook_output(result.context))
+
+
+@app.command("hook-install", help="Add or remove the SessionStart hook in Claude settings.")
+def hook_install(
+    settings: Annotated[
+        Path, typer.Option("--settings", help="Claude Code settings.json to change.")
+    ] = Path("~/.claude/settings.json"),
+    remove: Annotated[bool, typer.Option("--remove", help="Remove the hook instead.")] = False,
+    apply: Annotated[
+        bool, typer.Option("--apply", help="Write the change. Without it only the plan is shown.")
+    ] = False,
+) -> None:
+    try:
+        plan = update_settings(settings.expanduser(), remove=remove, apply=apply)
+    except (ValueError, OSError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"settings: {plan.settings_path.as_posix()}")
+    typer.echo(f"action: {plan.action}" + ("" if apply or plan.action == "none" else " (dry run)"))
+    typer.echo(f"command: {plan.command}")
+    if plan.backup_path is not None:
+        typer.echo(f"backup: {plan.backup_path.as_posix()}")
 
 
 @app.callback()

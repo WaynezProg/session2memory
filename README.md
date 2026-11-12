@@ -438,3 +438,36 @@ requests unless the session has nothing else.
 
 `openclaw-native` is searched only with `--from-tool openclaw-native`.
 
+## SessionStart hook (passive)
+
+```bash
+uv run session2memory hook-install            # show what would change
+uv run session2memory hook-install --apply    # add the hook to ~/.claude/settings.json
+uv run session2memory hook-install --remove --apply
+```
+
+`hook-install` adds one `SessionStart` entry to Claude Code's settings, leaves every other
+hook as it is, and writes a timestamped backup (`settings.json.bak-session2memory-…`)
+before changing the file. The entry runs `session2memory session-start-hook`, which adds
+two things to a new session of a workspace:
+
+- **Memory index, every time** (`startup` and `clear`): titles and file paths of the memory
+  *other* agents keep for this workspace: Codex's own rollout summaries and memory
+  overview for a Claude session, Claude Code's `memory/MEMORY.md` entries for a Codex
+  session. Only titles and paths are injected; the agent reads a file when it needs it.
+- **Handoff, once** (`startup` only): the previous session of the workspace across codex,
+  claude and grok, delivered once per state of that session and only if it was active in
+  the last 72 hours. When Codex wrote its own summary for that session and it is not older
+  than the session, the summary is used; otherwise the rule-based packet is.
+
+It stays silent for headless sessions (entrypoint `sdk-*`, which is how orchestrators and
+`claude -p` start Claude), temporary directories, the home directory and resumed sessions.
+A session larger than 40 MB is not parsed inside the hook; a pointer to `handoff --session`
+is given instead. The text is capped (`--max-chars`, default 3000) and is labelled as
+reference material, not instructions. Nothing is written to any agent's store; the only
+state is the delivery ledger at `~/.local/share/session2memory/handoff-ledger.json`. Any
+error results in no injection, never in a failed session.
+
+No embeddings or reranking are involved: at session start there is no query yet, so the
+index is selected by workspace and recency.
+
