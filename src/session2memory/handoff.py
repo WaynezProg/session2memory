@@ -96,7 +96,8 @@ def user_request(text: str) -> str | None:
             break
     while True:
         match = _OPEN_TAG.match(remaining)
-        if match is None:
+        if match is None or not _is_injected_tag(match.group(1)):
+            # A tag the user typed themselves (``<task>…</task>``) is their request.
             break
         closing = re.compile(rf"</{re.escape(match.group(1))}(?:\s[^>]*)?>")
         end = closing.search(remaining, match.end())

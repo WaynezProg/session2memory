@@ -39,6 +39,8 @@ DEFAULT_MAX_AGE_HOURS = 72.0
 DEFAULT_MEMORY_ITEMS = 8
 # Sessions larger than this are not parsed inside a hook; they get a pointer instead.
 MAX_PARSE_BYTES = 40_000_000
+# Below this a handoff cannot carry its essentials, so it is held back, not truncated.
+MIN_HANDOFF_CHARS = 600
 LEDGER_KEEP_DAYS = 30
 # Headless runs (SDK, `claude -p`, orchestrators) report these entrypoints.
 AUTOMATED_ENTRYPOINT_PREFIX = "sdk"
@@ -481,7 +483,7 @@ def _handoff_section(
             notes.append(f"handoff: {candidate.source_key} has no conversation, trying older")
             continue
         notes.append(f"handoff: rule-based packet for {candidate.source_key}")
-        packet = build_packet(record, native_summary(record), max_chars=max(budget, 600))
+        packet = build_packet(record, native_summary(record), max_chars=budget)
         return packet, candidate.source_key, marker
     return None
 
@@ -540,16 +542,28 @@ def run_hook(
     delivery: tuple[str, str] | None = None
     if config.handoff and source in HANDOFF_SOURCES:
         used = len(PREAMBLE) + sum(len(section) for section in sections) + 80
-        handoff = _handoff_section(
-            config, workspace, session_id, now, config.max_chars - used, result.notes
-        )
-        if handoff is not None:
-            text, source_key, marker = handoff
-            sections.append(f"## 上一個 Session 的交接（只提供這一次）\n{text}")
-            delivery = (source_key, marker)
+        room = config.max_chars - used
+        if room < MIN_HANDOFF_CHARS:
+            # Not enough left to say anything useful: keep the handoff for a session that
+            # has room for it instead of marking a stub as delivered.
+            result.notes.append("handoff: no room left in this session's budget; not delivered")
+        else:
+            handoff = _handoff_section(config, workspace, session_id, now, room, result.notes)
+            if handoff is not None:
+                text, source_key, marker = handoff
+                sections.append(f"## 上一個 Session 的交接（只提供這一次）\n{text}")
+                delivery = (source_key, marker)
     if not sections:
         return result
     context = "\n\n".join([PREAMBLE, *sections])
+    if len(context) > config.max_chars and delivery is not None:
+        # The handoff would be cut: drop it whole and leave it undelivered.
+        sections.pop()
+        delivery = None
+        result.notes.append("handoff: did not fit; not delivered")
+        context = "\n\n".join([PREAMBLE, *sections])
+    if len(sections) == 0:
+        return result
     if len(context) > config.max_chars:
         context = context[: config.max_chars - 1] + "…"
     result.context = context

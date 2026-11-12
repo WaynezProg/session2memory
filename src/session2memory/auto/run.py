@@ -117,14 +117,19 @@ def run_auto(
 ) -> dict[str, object]:
     """Run the configured steps once and return the report (also stored in the database)."""
     now = now or datetime.now(UTC)
-    # The store holds digests, summaries and archived transcripts: owner only.
-    config.store_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(config.store_dir, 0o700)
     report: dict[str, object] = {"started_at": now_iso(now), "dry_run": config.dry_run}
-    lock = (config.store_dir / ".lock").open("w")
+    if config.dry_run:
+        # A rehearsal leaves the store exactly as it is: no directory, mode or lock change.
+        lock = open(os.devnull, "w")  # noqa: SIM115 - closed in the finally below
+    else:
+        # The store holds digests, summaries and archived transcripts: owner only.
+        config.store_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(config.store_dir, 0o700)
+        lock = (config.store_dir / ".lock").open("w")
     try:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not config.dry_run:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             report["skipped"] = "another run holds the lock"
             return report

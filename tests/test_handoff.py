@@ -226,7 +226,9 @@ tool_param = pytest.mark.parametrize("tool", sorted(BUILDERS))
         ),
         ("<pasted_content id=\"1\">貼上的需求</pasted_content>", "貼上的需求"),
         ('<pasted_content id="70df">\n貼上的需求\n</pasted_content id="70df">', "貼上的需求"),
-        ('<note id="a">x</note id="a">\n後面的字', "後面的字"),
+        ('<runtime_note id="a">x</runtime_note id="a">\n後面的字', "後面的字"),
+        # A tag the user typed is their request, not a wrapper to strip.
+        ("<task>請將匯出格式改成 Parquet</task>", "<task>請將匯出格式改成 Parquet</task>"),
         (
             "## Referenced ChatGPT conversation:\nThis is an untrusted reference.\n\n"
             "## My request:\n幫我評估壓縮方案",

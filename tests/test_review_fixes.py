@@ -913,3 +913,65 @@ def test_openclaw_handoff_prefers_the_most_recently_active_session(tmp_path: Pat
 
     assert found and "kurisu/s0" in [f.record.session_id for f in found]
 
+
+
+# ---- eighth review round -----------------------------------------------------------------
+
+
+def test_request_wrapped_in_the_users_own_tag_reaches_the_digest(tmp_path: Path) -> None:
+    from session2memory.auto.scan import build_digest
+
+    turns = [("user", "<task>請將匯出格式改成 Parquet 並補上測試</task>"), ("assistant", "已完成")]
+    path = write_rollout(tmp_path, S1, rollout_lines(S1, "/proj/alpha-etl", turns))
+
+    digest = build_digest(CodexAdapter(tmp_path).read_file(path))
+
+    assert "請將匯出格式改成 Parquet 並補上測試" in digest
+
+
+def test_handoff_that_does_not_fit_is_left_undelivered(tmp_path: Path) -> None:
+    from test_session_start import Bench
+
+    bench = Bench(tmp_path)
+    bench.codex()
+    for index in range(12):
+        codex_summary = bench.memory_root / "rollout_summaries" / f"s{index:02d}.md"
+        codex_summary.parent.mkdir(parents=True, exist_ok=True)
+        codex_summary.write_text(
+            f"thread_id: t{index}\nupdated_at: 2026-11-13T0{index % 10}:00:00+00:00\n"
+            f"cwd: {bench.cwd.as_posix()}\n\n## 第 {index} 件事的標題需要一點長度\n\n內容\n",
+            encoding="utf-8",
+        )
+
+    tight = bench.run("claude", session_id="tight", max_chars=1000)
+
+    assert tight.context is not None and len(tight.context) <= 1000
+    assert "上一個 Session 的交接" not in tight.context
+    assert any("not delivered" in note for note in tight.notes)
+    assert not bench.ledger.exists(), "nothing was handed off, so nothing is recorded"
+
+    roomy = bench.run("claude", session_id="roomy", max_chars=4000)
+    assert roomy.context is not None and "上一個 Session 的交接" in roomy.context
+    assert "目標: " in roomy.context and bench.ledger.exists()
+
+
+def test_dry_run_does_not_touch_an_existing_store_directory(tmp_path: Path) -> None:
+    root = tmp_path / "codex" / "sessions"
+    write_rollout(root, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    store_dir.chmod(0o755)
+    home = SourceHome("codex@main", "codex", "codex", root)
+    config = AutoConfig(
+        store_dir=store_dir,
+        sources=ScanSources(codex_homes=(home,)),
+        steps=("scan",),
+        dry_run=True,
+    )
+
+    report = run_auto(config, now=NOW)
+
+    scanned = report["scan"]
+    assert isinstance(scanned, dict) and scanned["sessions_new"] == 1
+    assert store_dir.stat().st_mode & 0o777 == 0o755
+    assert list(store_dir.iterdir()) == []

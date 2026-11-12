@@ -1649,7 +1649,7 @@ def test_dry_run_creates_no_memory_archive_or_holding_and_makes_no_llm_call(
     assert not (machine.store_dir / "archive").exists() and not config.holding_dir.exists()
     assert {root: snapshot(root) for root in before} == before
     # A rehearsal works on an in-memory copy: not even the database is created.
-    assert sorted(path.name for path in machine.store_dir.iterdir()) == [".lock"]
+    assert not machine.store_dir.exists(), "a rehearsal does not even create the store"
     scanned = report["scan"]
     assert isinstance(scanned, dict) and scanned["sessions_new"] == 5
     compressed, archived = report["compress"], report["archive"]
@@ -1964,7 +1964,7 @@ def test_cli_dry_run_scan_reads_only_the_redirected_home(machine: Machine) -> No
         "openclaw-native": 1,
     }
     # Nothing of a rehearsal is kept, so there is still no store to report on.
-    assert sorted(path.name for path in machine.store_dir.iterdir()) == [".lock"]
+    assert not machine.store_dir.exists(), "a rehearsal does not even create the store"
     assert cli("status", "--store", store)[0] == 1
 
 
