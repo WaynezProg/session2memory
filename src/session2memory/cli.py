@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from collections.abc import Callable
 from datetime import date as Date
@@ -18,6 +19,7 @@ from session2memory.adapters import (
     OpenCodeAdapter,
     QwenAdapter,
 )
+from session2memory.adapters.codex import discover_codex_homes
 from session2memory.adapters.registry import load_plugin_adapters
 from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.distill import DistillError, distill_reviews
@@ -28,6 +30,7 @@ from session2memory.memory_lifecycle import (
     revoke_memory,
     supersede_memory,
 )
+from session2memory.models import SourceHome
 from session2memory.pipeline import PipelineAdapter, run_pipeline
 from session2memory.review import (
     ReviewNotFoundError,
@@ -158,8 +161,21 @@ def _parse_date(value: str) -> str:
         raise typer.BadParameter("--date must use YYYY-MM-DD") from exc
 
 
+def _openclaw_state_dir() -> Path:
+    return Path(
+        os.environ.get("OPENCLAW_STATE_DIR", "~/.openclaw")
+    ).expanduser()
+
+
 def _default_source_roots() -> dict[str, Path]:
     return {tool: path.expanduser() for tool, path in DEFAULT_SOURCE_ROOTS.items()}
+
+
+def _codex_homes(source_roots: dict[str, Path], *, include_openclaw: bool) -> list[SourceHome]:
+    return discover_codex_homes(
+        source_roots["codex"],
+        openclaw_state_dir=_openclaw_state_dir() if include_openclaw else None,
+    )
 
 
 def _agentic_os_db_path(root: Path) -> Path:
@@ -182,10 +198,18 @@ def _open_agentic_os_index(
         return None, f"agentic-os evidence=unreadable db={db_path.as_posix()} error={exc}"
 
 
-def _build_adapters(tools: list[str], source_roots: dict[str, Path]) -> dict[str, PipelineAdapter]:
+def _build_adapters(
+    tools: list[str],
+    source_roots: dict[str, Path],
+    *,
+    codex_homes: list[SourceHome] | None = None,
+) -> dict[str, PipelineAdapter]:
     factories = dict(ADAPTERS)
     factories.update(load_plugin_adapters())
-    return {tool: factories[tool](source_roots[tool]) for tool in tools}
+    adapters = {tool: factories[tool](source_roots[tool]) for tool in tools}
+    if codex_homes is not None and "codex" in adapters and factories["codex"] is CodexAdapter:
+        adapters["codex"] = CodexAdapter(source_roots["codex"], homes=codex_homes)
+    return adapters
 
 
 @app.command("discover")
@@ -205,11 +229,23 @@ def discover_sources(
     no_agentic_os: Annotated[
         bool, typer.Option("--no-agentic-os", help="Skip agentic-os evidence discovery.")
     ] = False,
+    include_openclaw_codex_homes: Annotated[
+        bool,
+        typer.Option(
+            "--include-openclaw-codex-homes",
+            help="Also list each OpenClaw agent's own codex-home under OPENCLAW_STATE_DIR.",
+        ),
+    ] = False,
 ) -> None:
     overrides = _parse_source_root(source_root or [])
     source_roots = _default_source_roots()
     source_roots.update(overrides)
     selected_tools = _selected_tools(tool, source_roots)
+    codex_homes = (
+        _codex_homes(source_roots, include_openclaw=True)
+        if include_openclaw_codex_homes and "codex" in selected_tools
+        else []
+    )
     _, agentic_os_status = _open_agentic_os_index(root=agentic_os_root, enabled=not no_agentic_os)
     rows: list[dict[str, str | bool | list[str]]] = []
     for tool_name in selected_tools:
@@ -227,6 +263,11 @@ def discover_sources(
         )
     if json_output:
         payload: dict[str, object] = {"tools": rows}
+        if codex_homes:
+            payload["codex_homes"] = [
+                {"home_id": home.home_id, "agent": home.agent, "root": home.root.as_posix()}
+                for home in codex_homes
+            ]
         if agentic_os_status:
             payload["agentic_os"] = agentic_os_status
         typer.echo(json.dumps(payload, ensure_ascii=False))
@@ -241,6 +282,8 @@ def discover_sources(
             f"{row['tool']} source={source_status} root={row['source_root']} "
             f"executable={executable_status} supported={str(row['supported']).lower()}"
         )
+    for home in codex_homes:
+        typer.echo(f"codex-home id={home.home_id} agent={home.agent} root={home.root.as_posix()}")
 
 
 @app.command("import")
@@ -316,6 +359,16 @@ def import_sessions(
         Path | None,
         typer.Option("--state-db", help="Override state database path."),
     ] = None,
+    include_openclaw_codex_homes: Annotated[
+        bool,
+        typer.Option(
+            "--include-openclaw-codex-homes",
+            help=(
+                "Also import each OpenClaw agent's own codex-home under OPENCLAW_STATE_DIR. "
+                "Off by default: agent-private sessions then flow into the shared output."
+            ),
+        ),
+    ] = False,
 ) -> None:
     parsed_date = _parse_date(date)
     overrides = _parse_source_root(source_root or [])
@@ -342,9 +395,17 @@ def import_sessions(
     if use_state and not dry_run:
         db_path = (state_db or (output / "session2memory.db")).expanduser()
         state_store = StateStore.open(db_path, output_dir=output)
+    codex_homes = (
+        _codex_homes(source_roots, include_openclaw=include_openclaw_codex_homes)
+        if "codex" in selected_tools
+        else None
+    )
+    if state_store is not None:
+        for home in codex_homes or []:
+            state_store.sources.register_home(home)
     try:
         session_count, candidate_count = run_pipeline(
-            adapters=_build_adapters(selected_tools, source_roots),
+            adapters=_build_adapters(selected_tools, source_roots, codex_homes=codex_homes),
             output_dir=output,
             date=parsed_date,
             source_roots=selected_source_roots,

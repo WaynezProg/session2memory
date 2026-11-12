@@ -14,6 +14,7 @@ from session2memory.llm_extract import (
 )
 from session2memory.models import MemoryCandidate, SessionRecord, WorkspaceIdentity
 from session2memory.state.fingerprint import source_file_fingerprint
+from session2memory.state.sources import SourceObservation, message_locator
 from session2memory.state.store import StateStore
 from session2memory.workspace import resolve_workspace
 from session2memory.writer import write_output
@@ -74,6 +75,15 @@ def run_pipeline(
                 ):
                     continue
                 state_store.upsert_workspace(resolved_workspace)
+            observation: SourceObservation | None = None
+            if state_store is not None and record.content_digest:
+                observation = state_store.sources.observe(
+                    record, workspace_id=resolved_workspace.workspace_id
+                )
+                if not observation.has_new_content:
+                    # Same session content under another path: its compressed form, an
+                    # archived copy, or a copy in another home. Nothing new to extract.
+                    continue
             session_count += 1
             message_count += len(record.messages)
             filtered_count += sum(1 for message in record.messages if is_noise(message))
@@ -89,8 +99,19 @@ def run_pipeline(
                 llm_candidates=llm_candidates,
             )
             if state_store is not None:
+                locators = {
+                    message.index: message_locator(message) for message in record.messages
+                }
                 for candidate in session_candidates:
-                    state_store.upsert_candidate(import_date=date, candidate=candidate)
+                    stored = state_store.upsert_candidate(import_date=date, candidate=candidate)
+                    locator = locators.get(candidate.evidence.message_start)
+                    if observation is not None and locator is not None:
+                        state_store.sources.link_candidate(
+                            candidate_id=stored.candidate_id,
+                            source_key=observation.source_key,
+                            locator=locator,
+                            message_digest=candidate.evidence.digest,
+                        )
             else:
                 candidates.extend(session_candidates)
         skipped.extend(_adapter_skipped(adapter))

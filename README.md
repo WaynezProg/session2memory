@@ -357,3 +357,24 @@ uv run pytest -q
 uv run ruff check .
 uv run mypy src/session2memory
 ```
+
+## Source registry (stable session identity)
+
+With the state DB enabled, adapters that report a content digest (currently Codex) are
+tracked in a source registry inside `session2memory.db`:
+
+- A session is `tool:native_session_id`; a message is addressed by a native locator
+  (Codex rollout `ordinal`), not by file path or line number.
+- Every on-disk copy is a *location* of that source. When Codex natively compresses
+  `rollout-….jsonl` to `rollout-….jsonl.zst`, or the same thread also exists under another
+  home, it is registered as another location and is not imported again.
+- `StateStore.sources.resolve_candidate(...)` finds the exact source message in any location
+  that is still present and verifies its digest; it reports a failure when none is left.
+
+Reading `.jsonl.zst` needs the `zstd` executable on `PATH`; files are streamed, never
+unpacked to disk.
+
+By default only the main Codex home (`--source-root codex=…`) is scanned. Pass
+`--include-openclaw-codex-homes` to `import` or `discover` to also scan every
+`$OPENCLAW_STATE_DIR/agents/<agent>/agent/codex-home/sessions`. It is opt-in because those
+sessions are agent-private and would otherwise flow into the shared output.
