@@ -140,8 +140,18 @@ def find_openclaw_native(root: Path, workspace: Path, limit: int) -> Iterator[Fo
             connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
             try:
                 connection.execute("PRAGMA query_only=1")
+                columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(session_windows)")
+                }
+                # Most recently active first: a session created long ago may be the one
+                # that was just resumed.
+                recency = (
+                    "COALESCE(transcript_updated_at, created_at)"
+                    if "transcript_updated_at" in columns
+                    else "created_at"
+                )
                 rows = connection.execute(
-                    "SELECT session_id FROM session_windows ORDER BY created_at DESC LIMIT ?",
+                    f"SELECT session_id FROM session_windows ORDER BY {recency} DESC LIMIT ?",
                     (per_agent,),
                 ).fetchall()
             finally:

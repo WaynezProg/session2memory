@@ -118,7 +118,8 @@ class SourceRegistry:
             self._write_messages(key, current, set(current), 1)
         else:
             known = self._connection.execute(
-                "SELECT version_no FROM source_versions WHERE source_key=? AND content_digest=?",
+                "SELECT version_no FROM source_versions WHERE source_key=? AND content_digest=? "
+                "ORDER BY version_no DESC LIMIT 1",
                 (key, record.content_digest),
             ).fetchone()
             if known is not None:

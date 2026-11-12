@@ -312,6 +312,10 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
         replacement = compressed if compressed.exists() else _registered_copy(source_path)
         if replacement is None:
             return f"[source unavailable: {source_path.as_posix()}]"
+        if replacement != compressed and not _copy_holds_evidence(replacement, evidence):
+            # An archive taken before the session changed: showing it would present the
+            # wrong text as the evidence.
+            return f"[source unavailable: {source_path.as_posix()}]"
         source_path = replacement
 
     tool = str(evidence.get("tool", ""))
@@ -372,6 +376,23 @@ def _registered_copy(source_path: Path) -> Path | None:
     finally:
         connection.close()
     return None
+
+
+def _copy_holds_evidence(path: Path, evidence: dict[str, Any]) -> bool:
+    """True when ``path`` still contains the message the evidence points at."""
+    digest = evidence.get("digest")
+    if not isinstance(digest, str) or not digest:
+        return False  # nothing to check against: do not vouch for another copy
+    from session2memory.source_readers import default_readers
+
+    reader = default_readers().get(str(evidence.get("tool", "")))
+    if reader is None:
+        return False
+    try:
+        record = reader(path, str(evidence.get("session_id", "")))
+    except (OSError, UnicodeError, ValueError, sqlite3.Error):
+        return False
+    return record is not None and any(m.raw_pointer.digest == digest for m in record.messages)
 
 
 # Sources whose evidence index is not a physical line of a JSONL file.

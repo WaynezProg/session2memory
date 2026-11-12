@@ -835,12 +835,81 @@ def test_review_preview_uses_the_archive_once_claude_deleted_the_original(
     opened = AutoStore.open(store_dir / "session2memory.db")
     archive_claude(opened, projects, store_dir / "archive" / "claude", now=NOW, min_age_days=10)
     opened.close()
-    evidence = {"tool": "claude", "source_path": source.as_posix(), "message_start": 1}
+    from session2memory.adapters.claude import ClaudeAdapter
+
+    record = ClaudeAdapter(projects)._read_file(source)
+    message = record.messages[0]
+    evidence = {
+        "tool": "claude",
+        "session_id": record.session_id,
+        "source_path": source.as_posix(),
+        "message_start": message.index,
+        "digest": message.raw_pointer.digest,
+    }
     before = _evidence_preview(evidence)
     source.unlink()  # Claude Code's own cleanup
     monkeypatch.setenv("SESSION2MEMORY_AUTO_STORE", store_dir.as_posix())
 
     assert _evidence_preview(evidence) == before and "[source" not in before
 
+    # Evidence of a later version of the session is not in that archive: say so rather
+    # than show the older text as if it were the evidence.
+    newer = {**evidence, "digest": "sha256:" + "0" * 64}
+    assert _evidence_preview(newer).startswith("[source unavailable")
+
     monkeypatch.setenv("SESSION2MEMORY_AUTO_STORE", (tmp_path / "elsewhere").as_posix())
     assert _evidence_preview(evidence).startswith("[source unavailable")
+
+
+# ---- seventh review round ----------------------------------------------------------------
+
+
+def test_returning_to_a_version_twice_keeps_the_latest_matching_version(tmp_path: Path) -> None:
+    longer = [*TURNS, ("user", "再加上重試機制"), ("assistant", "完成: 已加上重試")]
+    first = "\n".join(rollout_lines(S1, "/proj/alpha-etl", TURNS)) + "\n"
+    second = "\n".join(rollout_lines(S1, "/proj/alpha-etl", longer)) + "\n"
+    path = write_rollout(tmp_path, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))
+    state = StateStore.open(tmp_path / "state.db")
+    adapter = CodexAdapter(tmp_path)
+
+    def observe(content: str) -> str:
+        path.write_text(content, encoding="utf-8")
+        return state.sources.observe(adapter.read_file(path), workspace_id=None).reason
+
+    reasons = [observe(first), observe(second), observe(first), observe(first), observe(second)]
+
+    # A, B, back to A (rewrite), A again (unchanged), then B again must be new content.
+    assert reasons == ["first-seen", "append", "rewrite", "unchanged", "rewrite"]
+
+
+def test_openclaw_handoff_prefers_the_most_recently_active_session(tmp_path: Path) -> None:
+    import sqlite3
+
+    from test_registry_adapters import openclaw_write
+
+    from session2memory.handoff_find import recent_sessions
+
+    work = tmp_path / "work" / "alpha"
+    work.mkdir(parents=True)
+    agents = tmp_path / "agents"
+    for index in range(6):
+        database = openclaw_write(agents, TURNS, session_id=f"s{index}")
+    connection = sqlite3.connect(database)
+    session_event = json.dumps({"type": "session", "id": "ev-session", "cwd": work.as_posix()})
+    connection.execute("UPDATE transcript_events SET event_json=? WHERE seq=0", (session_event,))
+    for index in range(6):
+        connection.execute(
+            "UPDATE session_windows SET created_at=?, transcript_updated_at=? WHERE session_id=?",
+            (1000 + index, 1000 + index, f"s{index}"),
+        )
+    # The oldest session is the one that was resumed last.
+    connection.execute(
+        "UPDATE session_windows SET transcript_updated_at=9999 WHERE session_id='s0'"
+    )
+    connection.commit()
+    connection.close()
+
+    found = recent_sessions("openclaw-native", agents, work, limit=10)
+
+    assert found and "kurisu/s0" in [f.record.session_id for f in found]
+
