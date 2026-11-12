@@ -20,6 +20,7 @@ from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
 from session2memory.adapters.muse import SESSION_FILE, MuseAdapter
 from session2memory.adapters.openclaw_native import OpenClawNativeAdapter
 from session2memory.auto.scope import forced_reader, openclaw_roots, within
+from session2memory.auto.secrets import scrub_secrets
 from session2memory.auto.store import AutoStore, Scope
 from session2memory.filtering import is_noise
 from session2memory.handoff import _clip, continuation_summary, is_substantive, user_request
@@ -55,6 +56,7 @@ class ScanReport:
     sessions_new: int = 0
     sessions_updated: int = 0
     sessions_unchanged: int = 0
+    native_summaries_adopted: int = 0
     by_tool: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
@@ -106,13 +108,15 @@ def build_digest(record: SessionRecord, *, max_chars: int = DIGEST_CHARS) -> str
 
     def render(turn: tuple[str, str]) -> str:
         user, assistant = turn
-        answer = f"\nA: {_clip(assistant, REPLY_CHARS)}" if assistant.strip() else ""
-        return f"U: {_clip(user, REQUEST_CHARS)}{answer}"
+        # Scrub before clipping, so a cut can never strand part of a credential.
+        reply_text = _clip(scrub_secrets(assistant), REPLY_CHARS)
+        answer = f"\nA: {reply_text}" if assistant.strip() else ""
+        return f"U: {_clip(scrub_secrets(user), REQUEST_CHARS)}{answer}"
 
     head = render(turns[0])
     blocks = [head]
     if carried:
-        blocks.insert(0, f"(接續摘要) {_clip(carried, 600)}")
+        blocks.insert(0, f"(接續摘要) {_clip(scrub_secrets(carried), 600)}")
     room = max_chars - sum(len(block) + 1 for block in blocks)
     tail: list[str] = []
     # When turns have to be left out, the note saying so counts against the cap as well.
@@ -292,6 +296,19 @@ def scan(
             last_activity=last_activity,
             native_summary=_clip(codex_summary.body, 1500) if codex_summary else None,
         )
+    # Codex writes its own summary some time after a session ends, when the transcript no
+    # longer changes: adopt those too, whether or not the session was read this run.
+    for thread_id, summary in native.items():
+        known = store.get_session(f"codex:{thread_id}")
+        if known is None or summary.updated_at is None:
+            continue
+        stamp = summary.updated_at.astimezone(UTC).isoformat(timespec="seconds")
+        if known.last_activity and stamp < known.last_activity[:19] + "+00:00":
+            continue  # written before the session's latest activity
+        if store.apply_native_summary(
+            known.source_key, title=summary.title, summary=_clip(summary.body, 1500)
+        ):
+            report.native_summaries_adopted += 1
     return report
 
 

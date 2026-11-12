@@ -17,6 +17,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -1433,6 +1434,12 @@ def test_restore_puts_the_original_back(machine: Machine) -> None:
 # ---- export ------------------------------------------------------------------------------
 
 
+def exported_name(session_id: str) -> str:
+    """File name of an exported Codex session: readable id plus a hash of its source key."""
+    unique = sha256(f"codex:{session_id}".encode()).hexdigest()[:8]
+    return f"codex--{session_id}-{unique}.md"
+
+
 def exportable(store: AutoStore) -> dict[str, str]:
     refs = {
         "coding": remember(store, PARQUET, now=NOW),
@@ -1467,8 +1474,8 @@ def test_export_writes_project_and_session_markdown_with_front_matter(
     assert sorted(snapshot(root)) == [
         f"projects/{project_slug(ALPHA)}.md",
         f"projects/{project_slug(BETA)}.md",
-        "sessions/2026-11/codex--s1.md",
-        "sessions/2026-11/codex--s2.md",
+        f"sessions/2026-11/{exported_name('s1')}",
+        f"sessions/2026-11/{exported_name('s2')}",
     ]
     assert re.fullmatch(r"proj-alpha-etl-[0-9a-f]{8}", project_slug(ALPHA))
     project = (root / "projects" / f"{project_slug(ALPHA)}.md").read_text(encoding="utf-8")
@@ -1484,7 +1491,7 @@ def test_export_writes_project_and_session_markdown_with_front_matter(
     assert "## 決定" in project and "## 做法" in project
     assert f"- {PARQUET}（{refs['coding']}；確認於 2026-11-13；來源 codex:earlier）" in project
     assert AGENT_NOTE in project and "CSV" not in project and BETA_NOTE not in project
-    session = (root / "sessions" / "2026-11" / "codex--s1.md").read_text(encoding="utf-8")
+    session = (root / "sessions" / "2026-11" / exported_name("s1")).read_text(encoding="utf-8")
     assert session.splitlines() == [
         "---",
         "type: session_summary",
@@ -1500,7 +1507,7 @@ def test_export_writes_project_and_session_markdown_with_front_matter(
         "",
         "改成冪等寫入，剩重試測試",
     ]
-    untitled = (root / "sessions" / "2026-11" / "codex--s2.md").read_text(encoding="utf-8")
+    untitled = (root / "sessions" / "2026-11" / exported_name("s2")).read_text(encoding="utf-8")
     assert "scope: openclaw" in untitled and "# codex session s2" in untitled
 
 
@@ -1530,7 +1537,7 @@ def test_openclaw_reader_exports_only_openclaw_content(store: AutoStore, tmp_pat
     assert (report.projects, report.sessions, report.files_written) == (1, 1, 2)
     assert sorted(snapshot(root)) == [
         f"projects/{project_slug(ALPHA)}.md",
-        "sessions/2026-11/codex--s2.md",
+        f"sessions/2026-11/{exported_name('s2')}",
     ]
     everything = "\n".join(path.read_text(encoding="utf-8") for path in root.rglob("*.md"))
     assert AGENT_NOTE in everything and "memories: 1" in everything

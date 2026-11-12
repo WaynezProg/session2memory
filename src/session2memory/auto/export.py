@@ -110,8 +110,10 @@ def render_session(session: SessionRow) -> str:
 
 def session_path(root: Path, session: SessionRow) -> Path:
     month = (session.last_activity or "unknown")[:7]
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", session.session_id)[:120]
-    return root / "sessions" / month / f"{session.tool}--{safe}.md"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", session.session_id)[:80]
+    # The readable part can collide after sanitising or truncating; the hash cannot.
+    unique = sha256(session.source_key.encode("utf-8")).hexdigest()[:8]
+    return root / "sessions" / month / f"{session.tool}--{safe}-{unique}.md"
 
 
 def export(

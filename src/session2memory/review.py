@@ -313,6 +313,9 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
         source_path = compressed
 
     tool = str(evidence.get("tool", ""))
+    if tool in LOCATOR_PREVIEW_TOOLS:
+        preview = _reader_preview(evidence=evidence, source_path=source_path, start=start, end=end)
+        return _truncate(preview, limit)
     if tool == "opencode":
         preview = _opencode_preview(
             source_path=source_path,
@@ -326,6 +329,29 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
         return _truncate(preview, limit)
     preview = _jsonl_preview(source_path=source_path, tool=tool, start=start, end=end)
     return _truncate(preview, limit)
+
+
+# Sources whose evidence index is not a physical line of a JSONL file.
+LOCATOR_PREVIEW_TOOLS = ("openclaw-native", "muse")
+
+
+def _reader_preview(
+    *, evidence: dict[str, Any], source_path: Path, start: int, end: int
+) -> str:
+    """Preview through the adapter that wrote the evidence, matching by message index."""
+    from session2memory.source_readers import default_readers
+
+    reader = default_readers().get(str(evidence.get("tool", "")))
+    if reader is None:
+        return "[source unreadable: no reader]"
+    try:
+        record = reader(source_path, str(evidence.get("session_id", "")))
+    except (OSError, UnicodeError, ValueError, sqlite3.Error) as exc:
+        return f"[source unreadable: {exc}]"
+    if record is None:
+        return "[source range unavailable]"
+    texts = [m.text for m in record.messages if start <= m.index <= end]
+    return "\n".join(texts) if texts else "[source range unavailable]"
 
 
 def _positive_int(value: Any) -> int | None:

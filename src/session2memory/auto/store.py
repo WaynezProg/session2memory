@@ -212,7 +212,11 @@ class AutoStore:
             "INSERT INTO auto_sessions (source_key, tool, session_id, agent, scope, project, "
             "title, summary, summary_origin, digest, digest_version, last_activity, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(source_key) DO UPDATE SET agent=excluded.agent, scope=excluded.scope, "
+            "ON CONFLICT(source_key) DO UPDATE SET agent=excluded.agent, "
+            # Once a coding session, always one: a copy that later turns up in an agent's
+            # home must not make its summary readable by OpenClaw.
+            "scope=CASE WHEN auto_sessions.scope='coding' THEN 'coding' "
+            "ELSE excluded.scope END, "
             "project=excluded.project, title=COALESCE(excluded.title, auto_sessions.title), "
             "summary=COALESCE(excluded.summary, auto_sessions.summary), "
             # A native summary written before the session went on no longer covers it.
@@ -240,6 +244,23 @@ class AutoStore:
             ),
         )
         self._connection.commit()
+
+    def apply_native_summary(self, source_key: str, *, title: str | None, summary: str) -> bool:
+        """Adopt a summary the agent itself wrote after the session was last scanned."""
+        cursor = self._connection.execute(
+            "UPDATE auto_sessions SET summary=?, summary_origin='native', "
+            "title=COALESCE(?, title), updated_at=? "
+            "WHERE source_key=? AND (summary IS NOT ? OR summary_origin IS NOT 'native')",
+            (
+                scrub_secrets(summary),
+                scrub_secrets(title) if title else None,
+                now_iso(),
+                source_key,
+                scrub_secrets(summary),
+            ),
+        )
+        self._connection.commit()
+        return bool(cursor.rowcount)
 
     def _session(self, row: tuple[object, ...]) -> SessionRow:
         return SessionRow(

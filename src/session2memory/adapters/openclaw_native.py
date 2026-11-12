@@ -75,8 +75,7 @@ class OpenClawNativeAdapter:
         agent, _, native_id = session_id.partition("/")
         connection = _connect_read_only(path)
         try:
-            windows = {row[0]: row for row in _session_windows(connection)}
-            row = windows.get(native_id)
+            row = next(iter(_session_windows(connection, native_id)), None)
             if row is None:
                 return None
             return _read_session(
@@ -110,14 +109,16 @@ def _from_millis(value: object) -> datetime | None:
 
 
 def _session_windows(
-    connection: sqlite3.Connection,
+    connection: sqlite3.Connection, session_id: str | None = None
 ) -> list[tuple[str, datetime | None, datetime | None]]:
     columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(session_windows)")}
     started = "created_at" if "created_at" in columns else "NULL"
     updated = "transcript_updated_at" if "transcript_updated_at" in columns else started
-    rows = connection.execute(
-        f"SELECT session_id, {started}, {updated} FROM session_windows ORDER BY session_id"
-    ).fetchall()
+    query = f"SELECT session_id, {started}, {updated} FROM session_windows"
+    if session_id is None:
+        rows = connection.execute(query + " ORDER BY session_id").fetchall()
+    else:
+        rows = connection.execute(query + " WHERE session_id=?", (session_id,)).fetchall()
     return [
         (str(row[0]), _from_millis(row[1]), _from_millis(row[2]) or _from_millis(row[1]))
         for row in rows

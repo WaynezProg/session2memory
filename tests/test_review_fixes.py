@@ -393,3 +393,139 @@ def test_muse_framed_and_plain_records_never_share_an_index(tmp_path: Path) -> N
 
     assert [m.text for m in messages] == ["決定: 框內", "決定: 第一千零二行"]
     assert [m.index for m in messages] == [1, 1002]
+
+
+# ---- third review round ------------------------------------------------------------------
+
+
+def test_session_scope_never_narrows_from_coding_to_openclaw(store: AutoStore) -> None:
+    key = seed(store, "shared")  # first seen as a coding session
+    store.mark_curated(key, 1, summary="coding 工作的摘要")
+    row = store.get_session(key)
+    assert row is not None
+    store.upsert_session(
+        source_key=key,
+        tool=row.tool,
+        session_id=row.session_id,
+        agent="openclaw/kurisu",
+        scope="openclaw",  # the same session later turns up in an agent's home
+        project=row.project,
+        title=None,
+        digest="U: 追加的內容\nA: 回覆",
+        version_no=2,
+        last_activity=NOW.isoformat(timespec="seconds"),
+    )
+
+    assert store.get_session(key).scope == "coding"  # type: ignore[union-attr]
+    assert store.search("coding 工作的摘要", reader="openclaw") == []
+    assert store.sessions(reader="openclaw") == []
+
+
+def test_whole_private_key_block_is_scrubbed_even_when_cut_short() -> None:
+    from session2memory.auto.secrets import scrub_secrets
+
+    body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC" * 3
+    block = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n-----END OPENSSH PRIVATE KEY-----"
+
+    whole = scrub_secrets(f"金鑰如下：\n{block}\n之後的說明")
+    cut = scrub_secrets(f"金鑰如下：\n{block[:90]}")
+
+    assert body not in whole and "END OPENSSH" not in whole and "之後的說明" in whole
+    assert "MIIEvQ" not in cut and cut.startswith("金鑰如下：")
+
+
+def test_digest_scrubs_before_clipping(tmp_path: Path) -> None:
+    from session2memory.auto.scan import build_digest
+
+    body = "QUJDREVGR0g=" * 200
+    key = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"
+    turns = [("user", f"把這把金鑰裝到伺服器上，內容是 {key} 麻煩了"), ("assistant", "已處理")]
+    path = write_rollout(tmp_path, S1, rollout_lines(S1, "/proj/alpha-etl", turns))
+
+    digest = build_digest(CodexAdapter(tmp_path).read_file(path))
+
+    assert "QUJDREVGR0g" not in digest and "[REDACTED]" in digest
+
+
+def test_exported_session_files_do_not_collide(store: AutoStore, tmp_path: Path) -> None:
+    from session2memory.auto.export import export
+
+    for native in ("a/b_c", "a_b/c"):
+        store.upsert_session(
+            source_key=f"openclaw-native:{native}",
+            tool="openclaw-native",
+            session_id=native,
+            agent="openclaw/a",
+            scope="openclaw",
+            project="/proj/alpha",
+            title=None,
+            digest="U: x",
+            version_no=1,
+            last_activity=NOW.isoformat(timespec="seconds"),
+        )
+        store.mark_curated(f"openclaw-native:{native}", 1, summary=f"摘要 {native}")
+
+    report = export(store, tmp_path / "memory")
+
+    written = sorted((tmp_path / "memory" / "sessions").rglob("*.md"))
+    assert report.sessions == 2 and len(written) == 2
+    assert {"摘要 a/b_c", "摘要 a_b/c"} == {
+        next(line for line in p.read_text(encoding="utf-8").splitlines() if line.startswith("摘要"))
+        for p in written
+    }
+
+
+def test_native_summary_written_after_the_scan_is_adopted_later(tmp_path: Path) -> None:
+    from test_session_start import codex_summary_file
+
+    root = tmp_path / "codex" / "sessions"
+    memory_root = tmp_path / "codex" / "memories_v2"
+    path = write_rollout(root, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))
+    age(path, 2)
+    home = SourceHome("codex@main", "codex", "codex", root)
+    config = AutoConfig(
+        store_dir=tmp_path / "store",
+        sources=ScanSources(codex_homes=(home,), codex_memory_root=memory_root),
+        steps=("scan",),
+    )
+    run_auto(config, now=NOW)
+    # Codex writes its summary a day later; the transcript itself does not change.
+    codex_summary_file(
+        memory_root, S1, Path("/proj/alpha-etl"), "匯出增量化", hours_ago=1, name="s"
+    )
+
+    report = run_auto(config, now=NOW + timedelta(days=3))
+
+    scanned = report["scan"]
+    assert isinstance(scanned, dict) and scanned["native_summaries_adopted"] == 1
+    opened = AutoStore.open(config.db_path)
+    row = opened.get_session(f"codex:{S1}")
+    opened.close()
+    assert row is not None and row.summary_origin == "native" and row.title == "匯出增量化"
+
+
+def test_review_preview_reads_openclaw_native_and_muse_through_their_adapters(
+    tmp_path: Path,
+) -> None:
+    from test_registry_adapters import OPENCLAW_NATIVE_ID, openclaw_write
+    from test_registry_adapters import TURNS as NATIVE_TURNS
+
+    from session2memory.adapters.openclaw_native import OpenClawNativeAdapter
+    from session2memory.review import _evidence_preview
+
+    database = openclaw_write(tmp_path / "agents", NATIVE_TURNS)
+    record = next(iter(OpenClawNativeAdapter(tmp_path / "agents").iter_sessions(DATE)))
+    message = record.messages[1]
+    evidence = {
+        "tool": "openclaw-native",
+        "session_id": record.session_id,
+        "source_path": database.as_posix(),
+        "message_start": message.index,
+        "message_end": message.index,
+    }
+
+    assert record.session_id == f"kurisu/{OPENCLAW_NATIVE_ID}"
+    assert _evidence_preview(evidence) == message.text
+    assert _evidence_preview({**evidence, "message_start": 9999, "message_end": 9999}) == (
+        "[source range unavailable]"
+    )
