@@ -17,7 +17,6 @@ from session2memory.adapters.base import (
 from session2memory.models import SessionMessage, SessionRecord
 
 SESSION_FILE = "session.jsonl"
-FRAME_INDEX_BASE = 1000
 HOME_ID = "muse@main"
 
 
@@ -61,12 +60,12 @@ class MuseAdapter:
         updated_at: datetime | None = None
         digest = ContentDigest()
         pending: list[tuple[int, str, str, datetime | None, str]] = []
-        for line_number, line in read_jsonl(path, on_line=digest.add):
-            framed = "retained_frame" in line
-            for child, record in enumerate(_unwrap(line), start=1):
-                # Records wrapped in one frame share a physical line; give each its own
-                # index so that evidence links stay one-to-one.
-                index = line_number * FRAME_INDEX_BASE + child if framed else line_number
+        index = 0
+        for _line_number, line in read_jsonl(path, on_line=digest.add):
+            for record in _unwrap(line):
+                # Records wrapped in one frame share a physical line, so the index is the
+                # record's position in the unwrapped stream, unique for every record.
+                index += 1
                 recorded_at = _time(record.get("recorded_at"))
                 started_at = started_at or recorded_at
                 updated_at = recorded_at or updated_at

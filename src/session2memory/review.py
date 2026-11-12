@@ -7,6 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
+from session2memory.adapters.base import iter_text_lines
 from session2memory.adapters.cursor import cursor_clean_text, cursor_texts_from_content
 from session2memory.memory_lifecycle import open_state_store
 from session2memory.review_conflicts import (
@@ -305,7 +306,11 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
     if end is None or end < start:
         end = start
     if not source_path.exists():
-        return f"[source unavailable: {source_path.as_posix()}]"
+        # A rollout compressed in place keeps its name plus ``.zst``.
+        compressed = source_path.with_name(source_path.name + ".zst")
+        if not compressed.exists():
+            return f"[source unavailable: {source_path.as_posix()}]"
+        source_path = compressed
 
     tool = str(evidence.get("tool", ""))
     if tool == "opencode":
@@ -333,8 +338,8 @@ def _positive_int(value: Any) -> int | None:
 
 def _jsonl_preview(*, source_path: Path, tool: str, start: int, end: int) -> str:
     try:
-        lines = source_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
+        lines = [line.rstrip("\n") for line in iter_text_lines(source_path)]
+    except (OSError, UnicodeError, ValueError) as exc:
         return f"[source unreadable: {exc}]"
     if start > len(lines):
         return "[source range unavailable]"

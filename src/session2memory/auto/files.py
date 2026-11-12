@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat as stat_module
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -86,14 +87,20 @@ def compress_verified(source: Path, target: Path, *, level: int, zstd: str) -> t
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(target.name + ".s2m-tmp")
+    # Owner-only from the first byte, then exactly the source's mode: a copy must never
+    # be readable by anyone who could not read the original.
+    mode = stat_module.S_IMODE(source.stat().st_mode)
+    temporary.unlink(missing_ok=True)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with source.open("rb") as handle, temporary.open("wb") as output:
+        with source.open("rb") as handle, os.fdopen(descriptor, "wb") as output:
             subprocess.run(
                 [zstd, "-q", f"-{level}", "-T0", "-c"], stdin=handle, stdout=output, check=True
             )
         original = _sha256_file(source)
         if _sha256_of_decompressed(temporary, zstd) != original:
             raise ValueError("compressed copy does not match the original")
+        os.chmod(temporary, mode)
         temporary.replace(target)
     finally:
         temporary.unlink(missing_ok=True)

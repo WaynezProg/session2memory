@@ -348,6 +348,22 @@ def previous_sessions(
     return sorted(found, key=lambda candidate: candidate.recency, reverse=True)
 
 
+def _claude_cwd(path: Path, *, lines: int = 200) -> str | None:
+    """The cwd a Claude transcript records, from its first lines only."""
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for _, raw in zip(range(lines), handle, strict=False):
+                try:
+                    cwd = json.loads(raw).get("cwd")
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except (OSError, UnicodeError):
+        return None
+    return None
+
+
 def _read_candidate(candidate: Candidate) -> SessionRecord | None:
     readers: Mapping[str, Callable[[Path], SessionRecord]] = {
         "claude": ClaudeAdapter(candidate.path.parent)._read_file,
@@ -444,6 +460,10 @@ def _handoff_section(
                 f"{_clip(summary.body, max(budget - 200, 200))}"
             )
             return text, candidate.source_key, marker
+        if candidate.tool == "claude" and not _same(_claude_cwd(candidate.path), workspace):
+            # Claude's directory name is not one-to-one with the workspace path.
+            notes.append(f"handoff: {candidate.source_key} belongs to another workspace")
+            continue
         if candidate.size > MAX_PARSE_BYTES:
             notes.append(f"handoff: {candidate.source_key} too large to parse in a hook")
             megabytes = candidate.size // 1_000_000
@@ -454,6 +474,9 @@ def _handoff_section(
             )
             return text, candidate.source_key, marker
         record = _read_candidate(candidate)
+        if record is not None and not _same(record.cwd, workspace):
+            notes.append(f"handoff: {candidate.source_key} belongs to another workspace")
+            continue
         if record is None or not has_conversation(record):
             notes.append(f"handoff: {candidate.source_key} has no conversation, trying older")
             continue

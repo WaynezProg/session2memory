@@ -64,7 +64,10 @@ def find_claude(root: Path, workspace: Path, limit: int) -> Iterator[FoundSessio
     """Claude Code keeps one directory per workspace, named after the path."""
     encoded = re.sub(r"[^A-Za-z0-9]", "-", workspace.resolve(strict=False).as_posix())
     adapter = ClaudeAdapter(root)
-    yield from _read_each(_newest((root / encoded).glob("*.jsonl"), limit), adapter._read_file)
+    # ``foo-bar`` and ``foo/bar`` share a directory name, so the cwd decides.
+    for found in _read_each(_newest((root / encoded).glob("*.jsonl"), limit), adapter._read_file):
+        if _same_path(found.record.cwd, workspace):
+            yield found
 
 
 def _codex_thread_paths(root: Path, workspace: Path, limit: int) -> list[Path] | None:

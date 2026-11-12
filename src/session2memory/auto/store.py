@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 from session2memory.auto.scope import Reader
+from session2memory.auto.secrets import scrub_secrets
 
 Scope = Literal["coding", "openclaw"]
 MEMORY_KINDS = ("decision", "constraint", "pitfall", "fact", "preference", "procedure")
@@ -229,10 +230,10 @@ class AutoStore:
                 agent,
                 scope,
                 project,
-                title,
-                native_summary,
+                scrub_secrets(title) if title else title,
+                scrub_secrets(native_summary) if native_summary else native_summary,
                 "native" if native_summary else None,
-                digest,
+                scrub_secrets(digest) if digest else digest,
                 version_no,
                 last_activity,
                 now_iso(),
@@ -310,7 +311,14 @@ class AutoStore:
             "summary_origin=CASE WHEN summary_origin='native' THEN 'native' "
             "WHEN ? IS NOT NULL THEN 'llm' ELSE summary_origin END, updated_at=? "
             "WHERE source_key=?",
-            (version_no, title, summary, summary, now_iso(), source_key),
+            (
+                version_no,
+                scrub_secrets(title) if title else title,
+                scrub_secrets(summary) if summary else summary,
+                summary,
+                now_iso(),
+                source_key,
+            ),
         )
         self._connection.commit()
 
@@ -412,7 +420,7 @@ class AutoStore:
                 project,
                 scope,
                 kind,
-                text.strip(),
+                scrub_secrets(text.strip()),
                 normalize(text),
                 ACTIVE,
                 stamp,

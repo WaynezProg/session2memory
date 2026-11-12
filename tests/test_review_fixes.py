@@ -281,3 +281,115 @@ def test_import_reads_agent_homes_even_when_the_main_home_is_absent(tmp_path: Pa
     )
 
     assert sessions == 1
+
+
+# ---- second review round -----------------------------------------------------------------
+
+TOKEN = "ghp_" + "a1B2" * 6
+
+
+def test_secrets_are_scrubbed_before_anything_is_stored_or_sent(store: AutoStore) -> None:
+    store.upsert_session(
+        source_key="codex:t9",
+        tool="codex",
+        session_id="t9",
+        agent="codex",
+        scope="coding",
+        project="/proj/alpha",
+        title=f"deploy with {TOKEN}",
+        digest=f"U: 用 {TOKEN} 部署\nA: 已部署",
+        version_no=1,
+        last_activity=NOW.isoformat(timespec="seconds"),
+        native_summary=f"Codex 摘要：token 是 {TOKEN}",
+    )
+
+    row = store.get_session("codex:t9")
+    assert row is not None
+    for value in (row.title, row.digest, row.summary):
+        assert value is not None and TOKEN not in value and "[REDACTED]" in value
+    assert TOKEN not in build_prompt("/proj/alpha", [], [row])
+    memory_id, _ = store.add_memory(
+        project="/proj/alpha",
+        scope="coding",
+        kind="fact",
+        text=f"金鑰 {TOKEN}",
+        evidence=["codex:t9"],
+        run_id=None,
+    )
+    assert TOKEN not in store.get_memory(memory_id).text  # type: ignore[union-attr]
+
+
+@needs_zstd
+def test_compressed_copy_is_never_more_readable_than_its_source(tmp_path: Path) -> None:
+    from session2memory.auto.files import archive_claude
+
+    projects = tmp_path / "claude"
+    source = projects / "-proj-alpha" / "c1.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text('{"type": "user"}\n', encoding="utf-8")
+    source.chmod(0o600)
+    age(source, 30)
+    opened = AutoStore.open(tmp_path / "state.db")
+    previous = os.umask(0o022)
+    try:
+        report = archive_claude(opened, projects, tmp_path / "archive", now=NOW, min_age_days=10)
+    finally:
+        os.umask(previous)
+        opened.close()
+
+    archived = tmp_path / "archive" / "-proj-alpha" / "c1.jsonl.zst"
+    assert report.done == 1
+    assert archived.stat().st_mode & 0o777 == 0o600
+
+
+@needs_zstd
+def test_review_preview_follows_a_rollout_compressed_in_place(tmp_path: Path) -> None:
+    import subprocess
+
+    from session2memory.review import _evidence_preview
+
+    path = write_rollout(tmp_path, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))
+    evidence = {"tool": "codex", "source_path": path.as_posix(), "message_start": 3}
+    plain = _evidence_preview(evidence)
+    subprocess.run(["zstd", "-q", "--rm", str(path)], check=True)
+
+    assert not path.exists()
+    assert _evidence_preview(evidence) == plain and PARQUET in plain
+
+
+def test_claude_sessions_of_a_lookalike_directory_are_not_handed_off(tmp_path: Path) -> None:
+    from test_handoff import claude_session
+
+    from session2memory.handoff_find import recent_sessions
+
+    root = tmp_path / "claude"
+    real = (tmp_path / "work" / "foo" / "bar").resolve()
+    lookalike = (tmp_path / "work" / "foo-bar").resolve()
+    real.mkdir(parents=True)
+    lookalike.mkdir(parents=True)
+    claude_session(root, real)  # both paths encode to the same directory name
+
+    assert [f.record.cwd for f in recent_sessions("claude", root, real)] == [real]
+    assert recent_sessions("claude", root, lookalike) == []
+
+
+def test_muse_framed_and_plain_records_never_share_an_index(tmp_path: Path) -> None:
+    path = tmp_path / "2026" / "11" / "10" / MUSE_ID / "session.jsonl"
+    path.parent.mkdir(parents=True)
+
+    def turn(sequence: int, text: str) -> dict[str, object]:
+        event: dict[str, object] = {"kind": "assistant_message_committed", "text": text}
+        return muse_record(sequence, "runtime.session", {"kind": "run", "event": event})
+
+    frame = {
+        "retained_frame": "x",
+        "children": [{"child_index": 0, "record_json": json.dumps(turn(1, "決定: 框內"))}],
+    }
+    filler = [json.dumps(muse_record(i, "runtime.session", {"kind": "x"})) for i in range(2, 1002)]
+    lines = [json.dumps(frame), *filler, json.dumps(turn(2000, "決定: 第一千零二行"))]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    messages = MuseAdapter(tmp_path).read_file(path).messages
+
+    assert [m.text for m in messages] == ["決定: 框內", "決定: 第一千零二行"]
+    assert [m.index for m in messages] == [1, 1002]
