@@ -217,6 +217,48 @@ class SourceRegistry:
                     (actual, key, raw_path),
                 )
 
+    def add_copy(self, original: Path, copy: Path, *, original_gone: bool) -> int:
+        """Register ``copy`` as a location of every source located at ``original``.
+
+        Used when a session file is compressed in place (``original_gone``) or archived
+        next to an untouched original, so evidence keeps resolving without a rescan.
+        """
+        rows = self._connection.execute(
+            "SELECT source_key, home_id, content_digest, version_no FROM source_locations "
+            "WHERE path=?",
+            (original.as_posix(),),
+        ).fetchall()
+        try:
+            stat = copy.stat()
+            size, mtime_ns = stat.st_size, stat.st_mtime_ns
+        except OSError:
+            size, mtime_ns = 0, 0
+        now = datetime.now(UTC).isoformat()
+        for source_key, home_id, content_digest, version_no in rows:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO source_locations (source_key, path, home_id, encoding, "
+                "state, content_digest, version_no, bytes, mtime_ns, observed_at) "
+                "VALUES (?, ?, ?, ?, 'present', ?, ?, ?, ?, ?)",
+                (
+                    source_key,
+                    copy.as_posix(),
+                    home_id,
+                    _encoding_for(copy),
+                    content_digest,
+                    version_no,
+                    size,
+                    mtime_ns,
+                    now,
+                ),
+            )
+            if original_gone:
+                self._connection.execute(
+                    "UPDATE source_locations SET state='missing' WHERE source_key=? AND path=?",
+                    (source_key, original.as_posix()),
+                )
+        self._connection.commit()
+        return len(rows)
+
     # ---- candidates and refs -------------------------------------------------
     def link_candidate(
         self, *, candidate_id: str, source_key: str, locator: str, message_digest: str

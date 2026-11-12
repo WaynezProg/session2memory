@@ -214,7 +214,12 @@ class AutoStore:
             "ON CONFLICT(source_key) DO UPDATE SET agent=excluded.agent, scope=excluded.scope, "
             "project=excluded.project, title=COALESCE(excluded.title, auto_sessions.title), "
             "summary=COALESCE(excluded.summary, auto_sessions.summary), "
-            "summary_origin=COALESCE(excluded.summary_origin, auto_sessions.summary_origin), "
+            # A native summary written before the session went on no longer covers it.
+            "summary_origin=CASE WHEN excluded.summary_origin IS NOT NULL "
+            "THEN excluded.summary_origin "
+            "WHEN auto_sessions.summary_origin='native' "
+            "AND excluded.digest_version > auto_sessions.digest_version THEN 'stale' "
+            "ELSE auto_sessions.summary_origin END, "
             "digest=excluded.digest, digest_version=excluded.digest_version, "
             "last_activity=excluded.last_activity, updated_at=excluded.updated_at",
             (
@@ -440,16 +445,19 @@ class AutoStore:
         evidence: list[str],
         run_id: str | None,
         now: datetime | None = None,
+        scope: Scope | None = None,
     ) -> bool:
         existing = self.get_memory(memory_id)
         if existing is None or existing.status != ACTIVE:
             return False
         merged = sorted({*existing.evidence, *evidence})
         stamp = now_iso(now)
+        # Scope only ever widens: coding evidence makes the memory a coding memory.
+        widened = "coding" if "coding" in (existing.scope, scope) else existing.scope
         self._connection.execute(
-            "UPDATE auto_memories SET last_confirmed_at=?, updated_at=?, evidence_json=? "
+            "UPDATE auto_memories SET last_confirmed_at=?, updated_at=?, evidence_json=?, scope=? "
             "WHERE memory_id=?",
-            (stamp, stamp, json.dumps(merged), memory_id),
+            (stamp, stamp, json.dumps(merged), widened, memory_id),
         )
         self._event(memory_id, "confirm", {"evidence": evidence}, run_id)
         self._connection.commit()

@@ -47,6 +47,8 @@ class AutoConfig:
     hold_days: float = 3.0
     archive_min_age_days: float = 10.0
     stale_after_days: int = 120
+    # Sessions that waited longer than this for curation are dropped from the queue.
+    curate_max_age_days: float = 21.0
     index_command: Sequence[str] = ()
     index_env: dict[str, str] = field(default_factory=dict)
     dry_run: bool = False
@@ -166,7 +168,9 @@ def _run_step(
             state.sources, store, config.sources, since=since, max_bytes=config.max_file_bytes
         ).as_dict()
         result["since"] = now_iso(since)
-        if not config.dry_run:
+        # A source that could not be read keeps its chance: the next run starts from the
+        # same point again (bounded by since_days).
+        if not config.dry_run and not result.get("read_errors"):
             store.set_meta(LAST_SCAN_KEY, now_iso(now))
         return result
     if step == "compress":
@@ -177,6 +181,7 @@ def _run_step(
             now=now,
             min_age_days=config.compress_min_age_days,
             dry_run=config.dry_run,
+            registry=state.sources,
         ).as_dict()
         done["purge"] = purge_holding(
             store, now=now, hold_days=config.hold_days, dry_run=config.dry_run
@@ -192,6 +197,7 @@ def _run_step(
             now=now,
             min_age_days=config.archive_min_age_days,
             dry_run=config.dry_run,
+            registry=state.sources,
         ).as_dict()
     if step == "curate":
         if config.dry_run:
@@ -202,6 +208,7 @@ def _run_step(
             max_calls=config.max_llm_calls,
             run_id=run_id,
             now=now,
+            max_age_days=config.curate_max_age_days,
         ).as_dict()
         result["memories_stale"] = store.mark_stale(
             older_than_days=config.stale_after_days, run_id=run_id, now=now

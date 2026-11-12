@@ -17,6 +17,7 @@ from session2memory.adapters.base import (
 from session2memory.models import SessionMessage, SessionRecord
 
 SESSION_FILE = "session.jsonl"
+FRAME_INDEX_BASE = 1000
 HOME_ID = "muse@main"
 
 
@@ -61,7 +62,11 @@ class MuseAdapter:
         digest = ContentDigest()
         pending: list[tuple[int, str, str, datetime | None, str]] = []
         for line_number, line in read_jsonl(path, on_line=digest.add):
-            for record in _unwrap(line):
+            framed = "retained_frame" in line
+            for child, record in enumerate(_unwrap(line), start=1):
+                # Records wrapped in one frame share a physical line; give each its own
+                # index so that evidence links stay one-to-one.
+                index = line_number * FRAME_INDEX_BASE + child if framed else line_number
                 recorded_at = _time(record.get("recorded_at"))
                 started_at = started_at or recorded_at
                 updated_at = recorded_at or updated_at
@@ -76,7 +81,7 @@ class MuseAdapter:
                 record_id = record.get("id")
                 if turn is None or not isinstance(record_id, str):
                     continue
-                pending.append((line_number, turn[0], turn[1], recorded_at, f"rec:{record_id}"))
+                pending.append((index, turn[0], turn[1], recorded_at, f"rec:{record_id}"))
         messages: list[SessionMessage] = [
             make_message(
                 tool=self.tool,

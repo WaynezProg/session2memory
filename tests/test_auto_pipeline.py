@@ -266,6 +266,16 @@ class FakeRunner:
             raise reply
         if callable(reply):
             reply = reply(prompt)
+        if isinstance(reply, dict) and "sessions" not in reply:
+            # A canned reply about memory only still summarises every session, as a real
+            # model does; pass a JSON string to simulate a model that skips sessions.
+            reply = {
+                **reply,
+                "sessions": [
+                    {"ref": ref, "title": f"標題 {ref}", "summary": f"摘要 {ref}"}
+                    for ref in refs_in(prompt)
+                ],
+            }
         text = reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False)
         return LlmReply(text=text, input_tokens=100, output_tokens=20, cost_usd=0.001)
 
@@ -2048,3 +2058,20 @@ def test_reply_to_a_bare_acknowledgement_does_not_replace_the_real_reply(
 
     assert "已改成冪等寫入，還缺重試測試" in digest
     assert "已 commit 到分支" not in digest and "Commit" not in digest
+
+
+def test_sessions_waiting_too_long_leave_the_queue_without_a_call(store: AutoStore) -> None:
+    fresh = seed(store, "fresh", minute=5)
+    old = seed(store, "old", minute=1)
+    store._connection.execute(
+        "UPDATE auto_sessions SET last_activity=? WHERE source_key=?",
+        ((NOW - timedelta(days=40)).isoformat(timespec="seconds"), old),
+    )
+    runner = FakeRunner(default=summarise)
+
+    report = curate(store, runner, max_calls=5, now=NOW, max_age_days=21)
+
+    assert (report.sessions_expired, report.sessions_curated, report.llm_calls) == (1, 1, 1)
+    assert [session.source_key for session in store.pending_sessions()] == []
+    assert fresh in runner.prompts[0] or "S1" in runner.prompts[0]
+    assert store.get_session(old).summary is None  # type: ignore[union-attr]

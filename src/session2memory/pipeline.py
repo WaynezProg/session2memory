@@ -53,7 +53,8 @@ def run_pipeline(
         source_root = source_roots.get(tool)
         if source_root is not None and not source_root.exists():
             skipped.append(f"{tool}: missing source root: {source_root.as_posix()}")
-            continue
+            if not _has_other_roots(adapter, source_root):
+                continue
         for record in adapter.iter_sessions(date):
             if registered_logs is not None:
                 log_path = record.source_path.expanduser().resolve(strict=False)
@@ -175,6 +176,18 @@ def _extract_llm_candidates(
         messages=messages,
         workspace_id=workspace.workspace_id,
     )
+
+
+def _has_other_roots(adapter: PipelineAdapter, source_root: Path) -> bool:
+    """True when a multi-home adapter still has an existing home besides ``source_root``."""
+    homes: object = getattr(adapter, "homes", ())
+    if not isinstance(homes, Sequence):
+        return False
+    for home in homes:
+        root = getattr(home, "root", None)
+        if isinstance(root, Path) and root != source_root and root.exists():
+            return True
+    return False
 
 
 def _adapter_skipped(adapter: PipelineAdapter) -> list[str]:

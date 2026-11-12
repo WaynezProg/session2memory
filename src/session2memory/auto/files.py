@@ -27,6 +27,7 @@ from pathlib import Path
 
 from session2memory.auto.store import AutoStore, now_iso
 from session2memory.models import SourceHome
+from session2memory.state.sources import SourceRegistry
 
 CHUNK = 1 << 20
 ARCHIVE_ACTION = "archive"
@@ -112,6 +113,7 @@ def archive_claude(
     min_age_days: float,
     level: int = 10,
     dry_run: bool = False,
+    registry: SourceRegistry | None = None,
 ) -> FilesReport:
     """Copy cold Claude transcripts (including subagent ones) into a compressed archive."""
     report = FilesReport()
@@ -146,6 +148,8 @@ def archive_claude(
                 content_sha256=digest,
                 now=now,
             )
+            if registry is not None:
+                registry.add_copy(path, target, original_gone=False)
             report.done += 1
             report.source_bytes += stat.st_size
             report.target_bytes += size
@@ -171,6 +175,7 @@ def compress_codex_rollouts(
     min_age_days: float,
     level: int = 3,
     dry_run: bool = False,
+    registry: SourceRegistry | None = None,
 ) -> FilesReport:
     """Compress cold ``.jsonl`` rollouts in place, keeping each original in holding."""
     report = FilesReport()
@@ -216,6 +221,8 @@ def compress_codex_rollouts(
                     content_sha256=digest,
                     now=now,
                 )
+                if registry is not None:
+                    registry.add_copy(path, target, original_gone=True)
                 report.done += 1
                 report.source_bytes += stat.st_size
                 report.target_bytes += size

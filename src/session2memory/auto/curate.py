@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from session2memory.auto.store import (
@@ -120,6 +120,8 @@ class CurateReport:
     sessions_curated: int = 0
     sessions_trivial: int = 0
     sessions_ephemeral: int = 0
+    sessions_expired: int = 0
+    sessions_unsummarised: int = 0
     sessions_left: int = 0
     memories_added: int = 0
     memories_confirmed: int = 0
@@ -301,6 +303,10 @@ def apply_reply(
         keys = [session.source_key for session in sessions]
         scope: Scope = "coding" if any(s.scope == "coding" for s in sessions) else "openclaw"
         target = store.get_memory(str(op.get("id"))) if "id" in op else None
+        if target is not None and target.scope == "coding":
+            # What a coding session contributed to never narrows to openclaw, whoever
+            # confirms or rewrites it later.
+            scope = "coding"
         if kind_of_op in {"confirm", "supersede", "retire"} and (
             target is None or target.project != project or target.status != "active"
         ):
@@ -331,7 +337,9 @@ def apply_reply(
                 continue
             assert target is not None
             if normalize(text) == normalize(target.text):
-                store.confirm_memory(target.memory_id, evidence=keys, run_id=run_id, now=now)
+                store.confirm_memory(
+                    target.memory_id, evidence=keys, run_id=run_id, now=now, scope=scope
+                )
                 report.memories_confirmed += 1
                 continue
             store.set_memory_status(
@@ -354,7 +362,9 @@ def apply_reply(
             report.memories_superseded += 1
         elif kind_of_op == "confirm":
             assert target is not None
-            store.confirm_memory(target.memory_id, evidence=keys, run_id=run_id, now=now)
+            store.confirm_memory(
+                target.memory_id, evidence=keys, run_id=run_id, now=now, scope=scope
+            )
             report.memories_confirmed += 1
         elif kind_of_op == "retire":
             assert target is not None
@@ -371,6 +381,11 @@ def apply_reply(
 
     for ref, session in refs.items():
         title, summary = summaries.get(ref, (None, None))
+        if summary is None and session.summary_origin != "native":
+            # The model skipped this session: it stays pending and is retried, until it
+            # ages out of the queue.
+            report.sessions_unsummarised += 1
+            continue
         store.mark_curated(session.source_key, session.digest_version, title=title, summary=summary)
         report.sessions_curated += 1
 
@@ -382,12 +397,23 @@ def curate(
     max_calls: int,
     run_id: str | None = None,
     now: datetime | None = None,
+    max_age_days: float | None = None,
 ) -> CurateReport:
     """Curate pending sessions, coding projects first, within the call budget."""
     report = CurateReport()
+    cutoff = (
+        ((now or datetime.now(UTC)) - timedelta(days=max_age_days)).isoformat(timespec="seconds")
+        if max_age_days is not None
+        else None
+    )
     by_project: dict[str, list[SessionRow]] = {}
     for session in store.pending_sessions():
         assert session.project is not None
+        if cutoff is not None and (session.last_activity or "") < cutoff:
+            # Too old to be worth a call now; the backlog must not grow without bound.
+            store.mark_curated(session.source_key, session.digest_version)
+            report.sessions_expired += 1
+            continue
         if is_ephemeral_project(session.project):
             # Scratch, benchmark and already-deleted directories: no future session will
             # open there, so there is nothing to remember for them.

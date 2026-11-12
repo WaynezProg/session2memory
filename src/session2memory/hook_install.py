@@ -38,16 +38,30 @@ def hook_command(executable: Path, agent: str) -> str:
     return f"'{executable.as_posix()}' session-start-hook --agent {agent}"
 
 
-def _is_ours(group: object) -> bool:
-    if not isinstance(group, dict):
+def _is_our_hook(hook: object) -> bool:
+    if not isinstance(hook, dict):
         return False
-    hooks = group.get("hooks")
-    return isinstance(hooks, list) and any(
-        isinstance(hook, dict)
-        and HOOK_COMMAND_MARKER in str(hook.get("command", ""))
-        and "session2memory" in str(hook.get("command", ""))
-        for hook in hooks
-    )
+    command = str(hook.get("command", ""))
+    return HOOK_COMMAND_MARKER in command and "session2memory" in command
+
+
+def _without_ours(groups: list[object]) -> tuple[list[object], bool]:
+    """Every group with our hook taken out; a group that only held ours disappears."""
+    kept: list[object] = []
+    found = False
+    for group in groups:
+        if not isinstance(group, dict):
+            kept.append(group)
+            continue
+        hooks = group.get("hooks")
+        if not isinstance(hooks, list) or not any(_is_our_hook(hook) for hook in hooks):
+            kept.append(group)
+            continue
+        found = True
+        others = [hook for hook in hooks if not _is_our_hook(hook)]
+        if others:
+            kept.append({**group, "hooks": others})
+    return kept, found
 
 
 def update_settings(
@@ -81,15 +95,14 @@ def update_settings(
         "matcher": HOOK_MATCHER,
         "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECONDS}],
     }
-    existing = [group for group in groups if _is_ours(group)]
-    others = [group for group in groups if not _is_ours(group)]
+    others, found = _without_ours(groups)
     if remove:
-        action = "remove" if existing else "none"
+        action = "remove" if found else "none"
         updated = others
-    elif existing == [entry]:
+    elif entry in groups and [*others, entry] == groups:
         action, updated = "none", groups
     else:
-        action = "replace" if existing else "add"
+        action = "replace" if found else "add"
         updated = [*others, entry]
     if action == "none" or not apply:
         return InstallPlan(settings_path, action, command)

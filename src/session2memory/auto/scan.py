@@ -256,19 +256,29 @@ def scan(
             report.sessions_unchanged += 1
             continue
         report.by_tool[record.tool] = report.by_tool.get(record.tool, 0) + 1
-        moment = record.updated_at or record.started_at
         try:
-            mtime = record.source_path.stat().st_mtime
+            mtime: float | None = record.source_path.stat().st_mtime
         except OSError:
             mtime = None
-        last_activity = (
-            moment.astimezone(UTC).isoformat(timespec="seconds")
-            if moment is not None and moment.tzinfo is not None
-            else datetime.fromtimestamp(mtime, UTC).isoformat(timespec="seconds")
-            if mtime is not None
-            else None
-        )
+        # A sqlite store's file time says nothing about one session inside it.
+        file_time = mtime if record.source_path.suffix not in {".sqlite", ".db"} else None
+        updated = record.updated_at if record.updated_at and record.updated_at.tzinfo else None
+        started = record.started_at if record.started_at and record.started_at.tzinfo else None
+        if updated is not None:
+            last_activity: str | None = updated.astimezone(UTC).isoformat(timespec="seconds")
+        elif file_time is not None:
+            last_activity = datetime.fromtimestamp(file_time, UTC).isoformat(timespec="seconds")
+        elif started is not None:
+            last_activity = started.astimezone(UTC).isoformat(timespec="seconds")
+        else:
+            last_activity = None
         codex_summary = native.get(record.session_id) if record.tool == "codex" else None
+        if codex_summary is not None and not (
+            codex_summary.updated_at is not None
+            and mtime is not None
+            and codex_summary.updated_at.timestamp() >= mtime - 600
+        ):
+            codex_summary = None  # written before the session's latest activity
         store.upsert_session(
             source_key=record.source_key,
             tool=record.tool,
