@@ -262,6 +262,27 @@ class AutoStore:
         self._connection.commit()
         return bool(cursor.rowcount)
 
+    def widen_session_to_coding(self, source_key: str) -> bool:
+        """A coding location of the session turned up: it and what it fed become coding."""
+        cursor = self._connection.execute(
+            "UPDATE auto_sessions SET scope='coding', updated_at=? "
+            "WHERE source_key=? AND scope!='coding'",
+            (now_iso(), source_key),
+        )
+        if cursor.rowcount:
+            rows = self._connection.execute(
+                "SELECT memory_id, evidence_json FROM auto_memories WHERE scope!='coding'"
+            ).fetchall()
+            for memory_id, evidence in rows:
+                if source_key in json.loads(str(evidence)):
+                    self._connection.execute(
+                        "UPDATE auto_memories SET scope='coding', updated_at=? WHERE memory_id=?",
+                        (now_iso(), memory_id),
+                    )
+                    self._event(str(memory_id), "widen", {"evidence": [source_key]}, None)
+        self._connection.commit()
+        return bool(cursor.rowcount)
+
     def _session(self, row: tuple[object, ...]) -> SessionRow:
         return SessionRow(
             source_key=str(row[0]),
@@ -589,15 +610,17 @@ class AutoStore:
         report = json.loads(str(row[2])) if row[2] else {}
         return str(row[0]), (str(row[1]) if row[1] else None), report
 
-    def file_action(self, path: Path) -> tuple[str, int, int, str | None] | None:
-        """``(target, source_bytes, source_mtime_ns, purged_at)`` of a recorded action."""
+    def file_action(self, path: Path) -> tuple[str, int, int, str | None, str] | None:
+        """``(target, source_bytes, source_mtime_ns, purged_at, sha256)`` of an action."""
         row = self._connection.execute(
-            "SELECT target, source_bytes, source_mtime_ns, purged_at FROM auto_files WHERE path=?",
+            "SELECT target, source_bytes, source_mtime_ns, purged_at, content_sha256 "
+            "FROM auto_files WHERE path=?",
             (path.as_posix(),),
         ).fetchone()
         if row is None:
             return None
-        return str(row[0]), int(row[1]), int(row[2]), (str(row[3]) if row[3] else None)
+        purged = str(row[3]) if row[3] else None
+        return str(row[0]), int(row[1]), int(row[2]), purged, str(row[4])
 
     def record_file_action(
         self,

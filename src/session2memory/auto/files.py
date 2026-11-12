@@ -218,6 +218,13 @@ def compress_codex_rollouts(
                 held = holding_root / home.home_id.replace("/", "_") / path.relative_to(home.root)
                 held.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(path.as_posix(), held.as_posix())
+                moved = held.stat()
+                if (moved.st_size, moved.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+                    # A writer got in between the check and the move: undo, touch nothing.
+                    shutil.move(held.as_posix(), path.as_posix())
+                    target.unlink(missing_ok=True)
+                    report.skipped_busy += 1
+                    continue
                 store.record_file_action(
                     path=path,
                     action=COMPRESS_ACTION,
@@ -261,10 +268,16 @@ def purge_holding(
         # original goes.
         resumed = path.exists()
         try:
+            held_digest = _sha256_file(held)
+            if held_digest != action[4]:
+                # A writer still had the original open when it was moved: it holds
+                # conversation the compressed file does not. Never remove it.
+                report.fail(path, "held original changed after compression; kept for recovery")
+                continue
             if not resumed and (
                 zstd is None
                 or not compressed.exists()
-                or _sha256_of_decompressed(compressed, zstd) != _sha256_file(held)
+                or _sha256_of_decompressed(compressed, zstd) != held_digest
             ):
                 report.fail(path, "compressed file missing or changed; held original kept")
                 continue

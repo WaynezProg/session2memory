@@ -618,3 +618,103 @@ def test_review_preview_matches_evidence_by_digest_not_by_renumbered_index(
     assert _evidence_preview(evidence) == "決定: 用 Parquet"
     path.write_text(json.dumps(turn(3, "決定: 改用 ORC")) + "\n", encoding="utf-8")
     assert _evidence_preview(evidence).startswith("[source unavailable")
+
+
+# ---- fifth review round ------------------------------------------------------------------
+
+
+@needs_zstd
+def test_held_original_that_grew_after_compression_is_never_purged(tmp_path: Path) -> None:
+    from session2memory.auto.files import purge_holding
+
+    root = tmp_path / "agents" / "kurisu" / "agent" / "codex-home" / "sessions"
+    home = SourceHome("codex@openclaw/kurisu", "codex", "openclaw/kurisu", root)
+    path = write_rollout(root, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))
+    age(path, 30)
+    opened = AutoStore.open(tmp_path / "state.db")
+    holding = tmp_path / "holding"
+    compress_codex_rollouts(opened, (home,), holding, now=NOW, min_age_days=14)
+    held = next(holding.rglob("*.jsonl"))
+    # A writer that still had the original open appends to it after the move, and Codex
+    # later re-inflates the session from the compressed file.
+    with held.open("a", encoding="utf-8") as handle:
+        handle.write('{"type": "response_item", "ordinal": 99, "payload": {}}\n')
+    path.write_text("re-inflated by codex\n", encoding="utf-8")
+
+    report = purge_holding(opened, now=NOW + timedelta(days=30), hold_days=3)
+    opened.close()
+
+    assert report.purged == 0 and report.failed == 1
+    assert held.exists(), "the only copy of the appended conversation must survive"
+    assert "changed after compression" in report.errors[0]
+
+
+def test_coding_location_found_later_widens_the_session_and_its_memory(tmp_path: Path) -> None:
+    main = tmp_path / "home" / ".codex" / "sessions"
+    state_dir = tmp_path / "openclaw" / "state"
+    nested = state_dir / "agents" / "kurisu" / "agent" / "codex-home" / "sessions"
+    work = tmp_path / "work" / "alpha"
+    work.mkdir(parents=True)
+    lines = rollout_lines(S1, work.as_posix(), TURNS)
+    write_rollout(nested, S1, lines)  # the agent's copy is scanned first
+    agent_home = SourceHome("codex@openclaw/kurisu", "codex", "openclaw/kurisu", nested)
+    main_home = SourceHome("codex@main", "codex", "codex", main)
+
+    def config(*homes: SourceHome) -> AutoConfig:
+        return AutoConfig(
+            store_dir=tmp_path / "store", sources=ScanSources(codex_homes=homes), steps=("scan",)
+        )
+
+    run_auto(config(agent_home), now=NOW)
+    opened = AutoStore.open(tmp_path / "store" / "session2memory.db")
+    key = f"codex:{S1}"
+    assert opened.get_session(key).scope == "openclaw"  # type: ignore[union-attr]
+    memory_id, _ = opened.add_memory(
+        project=work.as_posix(),
+        scope="openclaw",
+        kind="decision",
+        text=PARQUET,
+        evidence=[key],
+        run_id=None,
+    )
+    opened.close()
+
+    own = write_rollout(main, S1, lines)  # the same thread in the person's own home
+    moment = (NOW + timedelta(minutes=30)).timestamp()
+    os.utime(own, (moment, moment))
+    run_auto(config(agent_home, main_home), now=NOW + timedelta(hours=1))
+
+    opened = AutoStore.open(tmp_path / "store" / "session2memory.db")
+    assert opened.get_session(key).scope == "coding"  # type: ignore[union-attr]
+    assert opened.get_memory(memory_id).scope == "coding"  # type: ignore[union-attr]
+    assert opened.memories(reader="openclaw") == []
+    opened.close()
+
+
+def test_rewinding_the_only_copy_is_a_rewrite_not_an_older_copy(tmp_path: Path) -> None:
+    longer = [*TURNS, ("user", "再加上重試機制"), ("assistant", "完成: 已加上重試")]
+    path = write_rollout(tmp_path, S1, rollout_lines(S1, "/proj/alpha-etl", longer))
+    state = StateStore.open(tmp_path / "state.db")
+    adapter = CodexAdapter(tmp_path)
+    state.sources.observe(adapter.read_file(path), workspace_id=None)
+    path.write_text("\n".join(rollout_lines(S1, "/proj/alpha-etl", TURNS)) + "\n", encoding="utf-8")
+
+    rewound = state.sources.observe(adapter.read_file(path), workspace_id=None)
+
+    assert rewound.reason == "rewrite" and rewound.has_new_content
+    assert state.sources.versions(f"codex:{S1}")[-1] == (2, "rewrite")
+
+
+def test_hook_install_keeps_settings_private(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"env": {"TOKEN": "secret"}}), encoding="utf-8")
+    settings.chmod(0o600)
+    previous = os.umask(0o022)
+    try:
+        update_settings(settings, executable=tmp_path / "bin" / "session2memory", apply=True)
+        update_settings(settings, remove=True, apply=True)
+    finally:
+        os.umask(previous)
+
+    assert settings.stat().st_mode & 0o777 == 0o600
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"env": {"TOKEN": "secret"}}

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -121,7 +122,14 @@ def update_settings(
     else:
         settings.pop("hooks", None)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
+    # Settings can hold credentials: the rewritten file keeps the original's mode and is
+    # never readable by others on the way.
+    mode = stat.S_IMODE(settings_path.stat().st_mode) if settings_path.exists() else 0o600
     temporary = settings_path.with_name(settings_path.name + ".session2memory-tmp")
-    temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", "utf-8")
+    temporary.unlink(missing_ok=True)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(temporary, mode)
     temporary.replace(settings_path)
     return InstallPlan(settings_path, action, command, backup)

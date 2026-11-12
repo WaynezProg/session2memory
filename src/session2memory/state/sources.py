@@ -148,10 +148,17 @@ class SourceRegistry:
                     locator in current and current[locator][2] == digest
                     for locator, digest in existing.items()
                 )
-                if not changed and len(current) < len(existing):
-                    # Nothing new, and less than we already hold: an older snapshot of the
-                    # session kept somewhere else, not a rewrite. It is recorded as a
-                    # location (version 0) and must not become the current version.
+                at_latest = self._connection.execute(
+                    "SELECT 1 FROM source_locations "
+                    "WHERE source_key=? AND path=? AND version_no=?",
+                    (key, record.source_path.as_posix(), int(row[0])),
+                ).fetchone()
+                if not changed and len(current) < len(existing) and at_latest is None:
+                    # Nothing new, and less than we already hold, at a path that never held
+                    # the latest version: an older snapshot of the session kept somewhere
+                    # else. (The same file getting shorter is a rewind, handled below.)
+                    # It is recorded as a location (version 0) and must not become the
+                    # current version.
                     reason = "older-copy"
                     version_no = 0
                     new_locators = frozenset()

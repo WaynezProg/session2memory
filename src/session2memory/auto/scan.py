@@ -258,6 +258,10 @@ def scan(
             report.sessions_updated += 1
         elif known is not None:
             report.sessions_unchanged += 1
+            # Same content at another location: nothing to re-read, but a coding location
+            # still makes this a coding session.
+            if scope_for(record, sources.openclaw_roots) == "coding":
+                store.widen_session_to_coding(record.source_key)
             continue
         report.by_tool[record.tool] = report.by_tool.get(record.tool, 0) + 1
         try:
