@@ -396,3 +396,28 @@ session stores; the conversation source of record for OpenClaw remains LCM.
 The Claude adapter skips `api-request*` records: they are copies of what was sent to the
 API (system prompt, replayed turns), not turns of the conversation.
 
+## Handoff packet (manual, read-only)
+
+```bash
+uv run session2memory handoff --workspace "$PWD"                      # latest across codex, claude, grok, muse
+uv run session2memory handoff --workspace "$PWD" --from-tool codex --max-chars 2000
+uv run session2memory handoff-show 'codex:<session id>#ord:42' --workspace "$PWD"
+```
+
+`handoff` prints a short packet for the most recent session of a workspace so another
+agent can continue it. It reads the agent's own store directly (no import, no state DB,
+no hook, no LLM) and never writes to it. The packet holds, in order of what is kept when
+space is tight: the first goal, the latest request and the last assistant reply (shortened
+to fit, never dropped), then the title, the agent's own summary where one exists, earlier
+requests and marker lines. Each quoted item ends with an evidence reference that
+`handoff-show` resolves to the full message. `--max-chars` (default 4000, minimum 600) is a
+hard upper bound.
+
+What the agents record natively is mostly a title, not a summary: Grok's `session_summary`
+repeats its title, Codex's thread `title` is the first user message (the short `name` is
+used instead), Claude Code has a real summary only after a compaction, Muse has a session
+name. Harness-injected user messages (`<system-reminder>`, `<environment_context>`, …) are
+skipped; `<user_query>` and `<pasted_content>` are unwrapped.
+
+`openclaw-native` is searched only with `--from-tool openclaw-native`.
+

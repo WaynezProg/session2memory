@@ -26,6 +26,20 @@ from session2memory.adapters.codex import discover_codex_homes
 from session2memory.adapters.registry import load_plugin_adapters
 from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.distill import DistillError, distill_reviews
+from session2memory.handoff import (
+    DEFAULT_MAX_CHARS,
+    MIN_MAX_CHARS,
+    build_packet,
+    find_message,
+    native_summary,
+    parse_reference,
+)
+from session2memory.handoff_find import (
+    DEFAULT_HANDOFF_TOOLS,
+    FINDERS,
+    find_session,
+    latest_session,
+)
 from session2memory.llm_extract import LlmInputMode, SubprocessLlmExtractBackend
 from session2memory.llm_extract_mock import MockLlmExtractBackend
 from session2memory.memory_lifecycle import (
@@ -116,6 +130,87 @@ TOOL_EXECUTABLES = {
     "muse": ("muse",),
 }
 DEFAULT_AGENTIC_OS_ROOT = Path("~/.agentic-os")
+
+
+@app.command("handoff", help="Print a handoff packet for the latest session of a workspace.")
+def handoff_packet(
+    workspace: Annotated[
+        Path, typer.Option("--workspace", help="Workspace whose latest session is handed off.")
+    ],
+    from_tool: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--from-tool",
+            help="Tool(s) to take the session from. Default: the latest across "
+            + ", ".join(DEFAULT_HANDOFF_TOOLS)
+            + ".",
+        ),
+    ] = None,
+    max_chars: Annotated[
+        int, typer.Option("--max-chars", help="Upper bound on the packet size, in characters.")
+    ] = DEFAULT_MAX_CHARS,
+    source_root: Annotated[
+        list[str] | None, typer.Option("--source-root", help="Override source root as tool=path.")
+    ] = None,
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Write the packet to this file instead of stdout.")
+    ] = None,
+) -> None:
+    """Read-only: nothing is imported, no state DB or hook is involved."""
+    if max_chars < MIN_MAX_CHARS:
+        raise typer.BadParameter(f"--max-chars must be at least {MIN_MAX_CHARS}")
+    roots = _handoff_roots(from_tool, source_root)
+    found = latest_session(roots, workspace.expanduser())
+    if found is None:
+        typer.echo(
+            f"no session with conversation found for {workspace} in: {', '.join(roots)}", err=True
+        )
+        raise typer.Exit(code=1)
+    packet = build_packet(found.record, native_summary(found.record), max_chars=max_chars)
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(packet + "\n", encoding="utf-8")
+        typer.echo(f"wrote {len(packet)} chars to {out.as_posix()}")
+        return
+    typer.echo(packet)
+
+
+@app.command("handoff-show", help="Print the full source message behind a packet reference.")
+def handoff_show(
+    reference: Annotated[
+        str, typer.Argument(help="Evidence reference: <tool>:<session id>#<locator>.")
+    ],
+    workspace: Annotated[
+        Path, typer.Option("--workspace", help="Workspace the session belongs to.")
+    ],
+    source_root: Annotated[
+        list[str] | None, typer.Option("--source-root", help="Override source root as tool=path.")
+    ] = None,
+) -> None:
+    try:
+        tool, session_id, locator = parse_reference(reference)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    roots = _handoff_roots([tool], source_root)
+    record = find_session(tool, roots[tool], workspace.expanduser(), session_id)
+    message = find_message(record, locator) if record is not None else None
+    if message is None:
+        missing = "session" if record is None else "message"
+        typer.echo(f"{missing} not found for {reference}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(message.text)
+
+
+def _handoff_roots(tools: list[str] | None, source_root: list[str] | None) -> dict[str, Path]:
+    source_roots = _default_source_roots()
+    source_roots.update(_parse_source_root(source_root or []))
+    selected = tools or list(DEFAULT_HANDOFF_TOOLS)
+    for tool in selected:
+        if tool not in FINDERS:
+            raise typer.BadParameter(
+                f"handoff does not support tool: {tool} (supported: {', '.join(sorted(FINDERS))})"
+            )
+    return {tool: source_roots[tool] for tool in selected}
 
 
 @app.callback()
