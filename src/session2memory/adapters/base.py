@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -97,6 +98,36 @@ def read_jsonl(
         if not isinstance(loaded, dict):
             raise ValueError(f"{path.as_posix()}:{line_number}: expected JSON object")
         yield line_number, cast("dict[str, object]", loaded)
+
+
+class ContentDigest:
+    """Running digest over the non-empty lines of a session, independent of its encoding."""
+
+    def __init__(self) -> None:
+        self._hash = sha256()
+        self.record_count = 0
+
+    def add(self, line: str) -> None:
+        self.record_count += 1
+        self._hash.update(line.encode("utf-8"))
+        self._hash.update(b"\n")
+
+    def value(self) -> str:
+        return "sha256:" + self._hash.hexdigest()
+
+
+def text_from_content(content: object) -> str:
+    """Join the text of a ``str`` or a list of ``{"text": ...}`` blocks."""
+    if isinstance(content, str):
+        return content
+    texts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    texts.append(text)
+    return "\n".join(texts)
 
 
 def skipped_file_reason(tool: str, path: Path, exc: Exception) -> str:

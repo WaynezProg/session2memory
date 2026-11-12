@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from hashlib import sha256
 from pathlib import Path
 
 from session2memory.adapters.base import (
+    ContentDigest,
     file_session_touches_date,
     jsonl_candidate_paths,
     jsonl_stem,
@@ -65,17 +65,9 @@ class CodexAdapter:
         started_at = None
         updated_at = None
         messages: list[SessionMessage] = []
-        content = sha256()
-        record_count = 0
-
-        def on_line(line: str) -> None:
-            nonlocal record_count
-            record_count += 1
-            content.update(line.encode("utf-8"))
-            content.update(b"\n")
-
+        content = ContentDigest()
         pending: list[tuple[int, str, str, str | None]] = []
-        for line_number, event in read_jsonl(path, on_line=on_line):
+        for line_number, event in read_jsonl(path, on_line=content.add):
             if event.get("type") == "session_meta":
                 payload = event.get("payload")
                 if isinstance(payload, dict):
@@ -133,9 +125,13 @@ class CodexAdapter:
             messages=messages,
             home_id=home.home_id if home else None,
             agent=home.agent if home else None,
-            content_digest="sha256:" + content.hexdigest(),
-            record_count=record_count,
+            content_digest=content.value(),
+            record_count=content.record_count,
         )
+
+    def read_session(self, path: Path, session_id: str) -> SessionRecord | None:
+        record = self.read_file(path)
+        return record if record.session_id == session_id else None
 
 
 def discover_codex_homes(

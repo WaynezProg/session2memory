@@ -20,7 +20,9 @@ from typing import Literal
 from session2memory.models import SessionMessage, SessionRecord, SourceHome
 
 ObservationReason = Literal["first-seen", "unchanged", "alias", "append", "rewrite"]
-SessionReader = Callable[[Path], SessionRecord]
+# Re-reads one session from a location: ``(path, session_id) -> record`` (``None`` when the
+# container no longer holds that session, e.g. rows deleted from a sqlite store).
+SessionReader = Callable[[Path, str], SessionRecord | None]
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,14 @@ class ResolvedEvidence:
     path: Path | None = None
     text: str | None = None
     error: str | None = None
+
+
+def _encoding_for(path: Path) -> str:
+    if path.name.endswith((".zst", ".zstd")):
+        return "zstd"
+    if path.suffix in {".sqlite", ".db"}:
+        return "sqlite"
+    return "plain"
 
 
 def message_locator(message: SessionMessage) -> str:
@@ -186,7 +196,7 @@ class SourceRegistry:
                 record.source_key,
                 path.as_posix(),
                 record.home_id,
-                "zstd" if path.name.endswith((".zst", ".zstd")) else "plain",
+                _encoding_for(path),
                 record.content_digest,
                 version_no,
                 size,
@@ -292,7 +302,7 @@ class SourceRegistry:
         if row is None:
             return ResolvedEvidence(ok=False, error="candidate has no registered source")
         key, locator, digest = str(row[0]), str(row[1]), str(row[2])
-        tool = key.split(":", 1)[0]
+        tool, session_id = key.split(":", 1)
         reader = readers.get(tool)
         if reader is None:
             return ResolvedEvidence(
@@ -304,8 +314,10 @@ class SourceRegistry:
                 continue
             tried.append(location.path.as_posix())
             try:
-                record = reader(location.path)
-            except (OSError, UnicodeError, ValueError):
+                record = reader(location.path, session_id)
+            except (OSError, UnicodeError, ValueError, sqlite3.Error):
+                continue
+            if record is None:
                 continue
             for message in record.messages:
                 if message_locator(message) == locator and message.raw_pointer.digest == digest:

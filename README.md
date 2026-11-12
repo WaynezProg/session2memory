@@ -378,3 +378,21 @@ By default only the main Codex home (`--source-root codex=…`) is scanned. Pass
 `--include-openclaw-codex-homes` to `import` or `discover` to also scan every
 `$OPENCLAW_STATE_DIR/agents/<agent>/agent/codex-home/sessions`. It is opt-in because those
 sessions are agent-private and would otherwise flow into the shared output.
+
+### Registry-tracked adapters
+
+| Tool | Source | Session id | Message locator |
+| --- | --- | --- | --- |
+| `codex` | `rollout-*.jsonl` / `.jsonl.zst` | thread id | `ord:<ordinal>` |
+| `claude`, `claude-desktop` | `<project>/<session>.jsonl` | `sessionId` | `uuid:<uuid>` |
+| `openclaw-native` | `<state>/agents/<agent>/agent/openclaw-agent.sqlite` (opened read-only) | `<agent>/<session id>` | `event:<event_id>` |
+| `grok` | `<cwd>/<session>/chat_history.jsonl` | directory name | `msg:<position>` (Grok records have no id) |
+| `muse` | `YYYY/MM/DD/<session>/session.jsonl` | session stream id | `rec:<record id>` |
+
+`openclaw-native`, `grok` and `muse` are opt-in: they are imported only when named with
+`--tool`, never as part of the default tool set. `openclaw-native` reads agent-private
+session stores; the conversation source of record for OpenClaw remains LCM.
+
+The Claude adapter skips `api-request*` records: they are copies of what was sent to the
+API (system prompt, replayed turns), not turns of the conversation.
+

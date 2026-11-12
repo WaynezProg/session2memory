@@ -14,8 +14,11 @@ from session2memory.adapters import (
     CodexAdapter,
     CursorAdapter,
     CursorCliAdapter,
+    GrokAdapter,
     HermesAdapter,
+    MuseAdapter,
     OpenClawAdapter,
+    OpenClawNativeAdapter,
     OpenCodeAdapter,
     QwenAdapter,
 )
@@ -66,6 +69,10 @@ P0_TOOLS = (
     "openclaw",
     "hermes",
 )
+# Supported, but only imported when named with --tool (never part of the default set):
+# openclaw-native reads agent-private session stores, grok/muse are newer sources.
+OPT_IN_TOOLS = ("openclaw-native", "grok", "muse")
+SUPPORTED_TOOLS = P0_TOOLS + OPT_IN_TOOLS
 DEFAULT_SOURCE_ROOTS = {
     "codex": Path("~/.codex/sessions"),
     "claude": Path("~/.claude/projects"),
@@ -76,6 +83,9 @@ DEFAULT_SOURCE_ROOTS = {
     "cursor-cli": Path("~/.cursor/projects"),
     "openclaw": Path("~/.openclaw/logs"),
     "hermes": Path("~/.hermes/logs"),
+    "openclaw-native": Path("~/.openclaw/agents"),
+    "grok": Path("~/.grok/sessions"),
+    "muse": Path("~/.local/share/muse/sessions"),
 }
 ADAPTERS: dict[str, AdapterFactory] = {
     "codex": CodexAdapter,
@@ -87,6 +97,9 @@ ADAPTERS: dict[str, AdapterFactory] = {
     "cursor-cli": CursorCliAdapter,
     "openclaw": OpenClawAdapter,
     "hermes": HermesAdapter,
+    "openclaw-native": OpenClawNativeAdapter,
+    "grok": GrokAdapter,
+    "muse": MuseAdapter,
 }
 TOOL_EXECUTABLES = {
     "codex": ("codex",),
@@ -98,6 +111,9 @@ TOOL_EXECUTABLES = {
     "cursor-cli": ("cursor-agent", "cursor-cli"),
     "openclaw": ("openclaw",),
     "hermes": ("hermes",),
+    "openclaw-native": ("openclaw",),
+    "grok": ("grok",),
+    "muse": ("muse",),
 }
 DEFAULT_AGENTIC_OS_ROOT = Path("~/.agentic-os")
 
@@ -118,7 +134,7 @@ def _parse_source_root(raw: list[str]) -> dict[str, Path]:
             raise typer.BadParameter("--source-root must use tool=path")
         tool, path = item.split("=", 1)
         tool_name = tool.strip()
-        if tool_name not in P0_TOOLS:
+        if tool_name not in SUPPORTED_TOOLS:
             raise typer.BadParameter(f"Unsupported tool: {tool_name}")
         roots[tool_name] = Path(path).expanduser()
     return roots
@@ -127,7 +143,7 @@ def _parse_source_root(raw: list[str]) -> dict[str, Path]:
 def _selected_tools(requested_tools: list[str] | None, roots: dict[str, Path]) -> list[str]:
     selected: list[str] = []
     for tool in requested_tools or sorted(roots) or list(P0_TOOLS):
-        if tool not in P0_TOOLS:
+        if tool not in SUPPORTED_TOOLS:
             raise typer.BadParameter(f"Unsupported tool: {tool}")
         if tool not in selected:
             selected.append(tool)
@@ -168,7 +184,9 @@ def _openclaw_state_dir() -> Path:
 
 
 def _default_source_roots() -> dict[str, Path]:
-    return {tool: path.expanduser() for tool, path in DEFAULT_SOURCE_ROOTS.items()}
+    roots = {tool: path.expanduser() for tool, path in DEFAULT_SOURCE_ROOTS.items()}
+    roots["openclaw-native"] = _openclaw_state_dir() / "agents"
+    return roots
 
 
 def _codex_homes(source_roots: dict[str, Path], *, include_openclaw: bool) -> list[SourceHome]:

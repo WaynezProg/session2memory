@@ -131,7 +131,7 @@ class Bench:
 
     def resolve(self, candidate_id: str):  # type: ignore[no-untyped-def]
         return self.store.sources.resolve_candidate(
-            candidate_id, readers={"codex": self.adapter.read_file}
+            candidate_id, readers={"codex": self.adapter.read_session}
         )
 
     def count(self, table: str) -> int:

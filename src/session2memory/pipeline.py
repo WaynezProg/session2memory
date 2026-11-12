@@ -65,7 +65,19 @@ def run_pipeline(
             ):
                 continue
             source_path = record.source_path.expanduser()
-            if state_store is not None:
+            observation: SourceObservation | None = None
+            if state_store is not None and record.content_digest:
+                # Registry-tracked sources are gated per session, not per file: one container
+                # (a sqlite store) can hold many sessions, and hashing it whole is wasteful.
+                observation = state_store.sources.observe(
+                    record, workspace_id=resolved_workspace.workspace_id
+                )
+                if not observation.has_new_content:
+                    # Same session content under another path: its compressed form, an
+                    # archived copy, or a copy in another home. Nothing new to extract.
+                    continue
+                state_store.upsert_workspace(resolved_workspace)
+            elif state_store is not None:
                 digest, mtime_ns = source_file_fingerprint(source_path)
                 if digest and not state_store.upsert_source_file(
                     tool=record.tool,
@@ -75,15 +87,6 @@ def run_pipeline(
                 ):
                     continue
                 state_store.upsert_workspace(resolved_workspace)
-            observation: SourceObservation | None = None
-            if state_store is not None and record.content_digest:
-                observation = state_store.sources.observe(
-                    record, workspace_id=resolved_workspace.workspace_id
-                )
-                if not observation.has_new_content:
-                    # Same session content under another path: its compressed form, an
-                    # archived copy, or a copy in another home. Nothing new to extract.
-                    continue
             session_count += 1
             message_count += len(record.messages)
             filtered_count += sum(1 for message in record.messages if is_noise(message))
