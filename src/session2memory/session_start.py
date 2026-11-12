@@ -94,6 +94,11 @@ class HookConfig:
     memory: bool = True
     handoff: bool = True
     temp_roots: tuple[str, ...] = TEMP_ROOTS
+    # Database of the unattended pipeline; its distilled project memory is injected too.
+    auto_db: Path | None = None
+    project_memory_items: int = 10
+    # With this set, a session started by an OpenClaw agent only gets OpenClaw memory.
+    openclaw_state_dir: Path | None = None
 
 
 def claude_project_dir(root: Path, workspace: Path) -> Path:
@@ -218,6 +223,44 @@ def memory_items(config: HookConfig, workspace: Path) -> list[MemoryItem]:
     if config.agent != "claude":
         items += claude_memory_items(config.claude_projects_root, workspace, config.memory_items)
     return items
+
+
+def render_project_memory(
+    config: HookConfig, workspace: Path, budget: int, *, openclaw_only: bool = False
+) -> str | None:
+    """Distilled memory of this workspace from the unattended pipeline, most recent first."""
+    if config.auto_db is None:
+        return None
+    from session2memory.auto.export import KIND_TITLES
+    from session2memory.auto.store import AutoStore
+
+    try:
+        store = AutoStore.open_read_only(config.auto_db)
+        if store is None:
+            return None
+        try:
+            project = workspace.resolve(strict=False).as_posix()
+            memories = store.memories(
+                project=project,
+                reader="openclaw" if openclaw_only else "coding",
+                limit=config.project_memory_items,
+            )
+        finally:
+            store.close()
+    except sqlite3.Error:
+        return None
+    if not memories:
+        return None
+    lines = [
+        "## 這個專案的記憶（由過去的 Session 整理；"
+        "需要更多用 `session2memory auto search <關鍵字>`）"
+    ]
+    for memory in memories:
+        line = f"- [{KIND_TITLES.get(memory.kind, memory.kind)}] {_clip(memory.text, 200)}"
+        if len("\n".join([*lines, line])) > budget:
+            break
+        lines.append(line)
+    return "\n".join(lines) if len(lines) > 1 else None
 
 
 def render_memory(items: list[MemoryItem], budget: int) -> str | None:
@@ -449,7 +492,23 @@ def run_hook(
         return result
 
     sections: list[str] = []
+    if config.openclaw_state_dir is not None:
+        from session2memory.auto.scope import forced_reader
+
+        if forced_reader(env, workspace, config.openclaw_state_dir) == "openclaw":
+            # An OpenClaw agent: its own memory only, nothing from other tools' sessions.
+            own = (
+                render_project_memory(config, workspace, config.max_chars, openclaw_only=True)
+                if config.memory and source in MEMORY_SOURCES
+                else None
+            )
+            result.notes.append("openclaw reader: other agents' memory and handoff withheld")
+            result.context = f"{PREAMBLE}\n\n{own}" if own else None
+            return result
     if config.memory and source in MEMORY_SOURCES:
+        distilled = render_project_memory(config, workspace, config.max_chars * 3 // 10)
+        if distilled:
+            sections.append(distilled)
         memory = render_memory(memory_items(config, workspace), config.max_chars // 2)
         if memory:
             sections.append(memory)

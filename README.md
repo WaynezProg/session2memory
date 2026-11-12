@@ -471,3 +471,48 @@ error results in no injection, never in a failed session.
 No embeddings or reranking are involved: at session start there is no query yet, so the
 index is selected by workspace and recency.
 
+## Unattended pipeline (`auto`)
+
+```bash
+uv run session2memory auto run --dry-run     # what would happen, no file changes, no LLM
+uv run session2memory auto run               # one full run
+uv run session2memory auto status            # counts and the last run's report
+uv run session2memory auto search "paperclip 暫停"
+uv run session2memory auto memory --workspace /path/to/workspace
+```
+
+`auto run` keeps one persistent store (`~/.local/share/session2memory/store`) and does, in
+order:
+
+| Step | What it does |
+| --- | --- |
+| `scan` | Registers every session changed since the last run (Codex incl. per-agent homes, Claude Code, Grok, Muse, OpenClaw native) in the source registry and stores a compact digest: the user's requests and the reply each ended with. First run looks back `--since-days` (30). |
+| `compress` | Cold `rollout-*.jsonl` files in Codex homes that Codex does not maintain itself are compressed in place to `.jsonl.zst` (Codex reads and re-inflates these on resume). The original is moved to `holding/` and removed only after the holding period, once the compressed file has been verified again. |
+| `archive` | Cold Claude Code transcripts are copied into `archive/claude/` as `.zst`. The originals are not touched; Claude Code deletes them itself after `cleanupPeriodDays`. |
+| `curate` | One small LLM call per project batch summarises the new sessions and maintains project memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Memory not confirmed for 120 days becomes `stale`. |
+| `export` | Renders memory and session summaries as Markdown under `memory/` (rewritten only when changed). |
+| `index` | Optional `--index-cmd`, e.g. HKS `ks update {memory_dir}`. |
+
+Every compressed or archived file is decompressed and compared by SHA-256 before the
+original is moved or left. Memory is never deleted: entries change status and each change
+is logged with its reason and evidence, so an automated decision can be undone
+(`auto memory --all`, `auto memory --retire <id>`).
+
+**Token use.** The model never sees transcripts or tool output, only digests (at most
+3,000 characters per session). Sessions of one project share a call. The default command
+runs `claude -p` with no tools, no MCP servers, no settings and a one-line system prompt,
+which removes the fixed overhead of a normal headless run (measured: 630 instead of about
+34,000 input tokens per call). `--max-llm-calls` bounds a run; the rest waits for the next
+one. Scratch, benchmark and deleted directories are skipped, as are one-line exchanges.
+Use `--llm-cmd` or `SESSION2MEMORY_AUTO_LLM_CMD` for another command; the prompt arrives
+on stdin and the reply must contain one JSON object.
+
+**Isolation.** Each session and memory has a scope: `openclaw` when it comes only from
+OpenClaw agents (their own session stores, their Codex homes, or work inside an OpenClaw
+workspace), `coding` otherwise. A `coding` reader sees everything. An `openclaw` reader
+sees only `openclaw` rows, and a process is forced to that reader when it runs inside an
+OpenClaw workspace, with an OpenClaw-owned `CODEX_HOME`, or with
+`SESSION2MEMORY_READER=openclaw`, whatever `--reader` says. The SessionStart hook injects
+the distilled memory of the workspace (`這個專案的記憶`) and stays silent for headless
+sessions, which is how OpenClaw starts its agents.
+

@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import shutil
 import sys
 from collections.abc import Callable
@@ -26,6 +27,11 @@ from session2memory.adapters import (
 from session2memory.adapters.codex import discover_codex_homes
 from session2memory.adapters.registry import load_plugin_adapters
 from session2memory.agentic_os_index import AgenticOsIndex
+from session2memory.auto.run import ALL_STEPS, AutoConfig, run_auto
+from session2memory.auto.run import DB_NAME as AUTO_DB_NAME
+from session2memory.auto.scan import ScanSources
+from session2memory.auto.scope import Reader, forced_reader, openclaw_roots
+from session2memory.auto.store import AutoStore
 from session2memory.distill import DistillError, distill_reviews
 from session2memory.handoff import (
     DEFAULT_MAX_CHARS,
@@ -80,6 +86,8 @@ from session2memory.validate import ValidateError, validate_distill
 from session2memory.worklog import generate_worklog, resolve_worklog_range
 
 app = typer.Typer(no_args_is_help=True)
+auto_app = typer.Typer(no_args_is_help=True, help="Unattended session maintenance.")
+app.add_typer(auto_app, name="auto")
 review_app = typer.Typer(no_args_is_help=True)
 memory_app = typer.Typer(no_args_is_help=True)
 
@@ -286,6 +294,9 @@ def session_start_hook(
     explain: Annotated[
         bool, typer.Option("--explain", help="Print the decision notes to stderr.")
     ] = False,
+    auto_store: Annotated[
+        Path, typer.Option("--auto-store", help="Store of `auto run`, for distilled memory.")
+    ] = Path("~/.local/share/session2memory/store"),
 ) -> None:
     """Reads the hook payload on stdin and prints the hook JSON. Never fails the session."""
     try:
@@ -304,6 +315,8 @@ def session_start_hook(
             include_automated=include_automated,
             memory=memory,
             handoff=handoff,
+            auto_db=auto_store.expanduser() / AUTO_DB_NAME,
+            openclaw_state_dir=_openclaw_state_dir(),
         )
         result = run_hook(config, payload if isinstance(payload, dict) else {}, os.environ)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
@@ -338,6 +351,203 @@ def hook_install(
     if plan.backup_path is not None:
         typer.echo(f"backup: {plan.backup_path.as_posix()}")
 
+
+DEFAULT_AUTO_STORE = Path("~/.local/share/session2memory/store")
+
+
+def _auto_config(
+    *,
+    store: Path,
+    steps: list[str] | None,
+    since_days: float,
+    max_llm_calls: int,
+    llm_cmd: str | None,
+    index_cmd: str | None,
+    include_openclaw: bool,
+    dry_run: bool,
+) -> AutoConfig:
+    roots = _default_source_roots()
+    state_dir = _openclaw_state_dir()
+    homes = tuple(_codex_homes(roots, include_openclaw=include_openclaw))
+    sources = ScanSources(
+        codex_homes=homes,
+        claude_root=roots["claude"],
+        grok_root=roots["grok"],
+        muse_root=roots["muse"],
+        openclaw_agents_root=roots["openclaw-native"] if include_openclaw else None,
+        codex_memory_root=DEFAULT_CODEX_MEMORY_ROOT.expanduser(),
+        openclaw_roots=openclaw_roots(state_dir),
+    )
+    for step in steps or []:
+        if step not in ALL_STEPS:
+            raise typer.BadParameter(f"unknown step {step}; choose from {', '.join(ALL_STEPS)}")
+    return AutoConfig(
+        store_dir=store.expanduser(),
+        sources=sources,
+        compress_homes=tuple(home for home in homes if home.home_id != "codex@main"),
+        steps=tuple(steps) if steps else ALL_STEPS,
+        since_days=since_days,
+        max_llm_calls=max_llm_calls,
+        llm_command=llm_cmd,
+        index_command=tuple(shlex.split(index_cmd)) if index_cmd else (),
+        dry_run=dry_run,
+    )
+
+
+def _reader(requested: str) -> Reader:
+    """The reader this process may act as; an OpenClaw agent cannot widen its own scope."""
+    if requested not in ("coding", "openclaw"):
+        raise typer.BadParameter("--reader must be coding or openclaw")
+    forced = forced_reader(os.environ, Path.cwd(), _openclaw_state_dir())
+    return forced or ("openclaw" if requested == "openclaw" else "coding")
+
+
+@auto_app.command("run", help="Scan, compress/archive, curate memory, export and index once.")
+def auto_run(
+    store: Annotated[
+        Path, typer.Option("--store", help="Directory holding the persistent state.")
+    ] = DEFAULT_AUTO_STORE,
+    step: Annotated[
+        list[str] | None,
+        typer.Option("--step", help=f"Run only these steps ({', '.join(ALL_STEPS)})."),
+    ] = None,
+    since_days: Annotated[
+        float, typer.Option("--since-days", help="How far back the first scan looks.")
+    ] = 30.0,
+    max_llm_calls: Annotated[
+        int, typer.Option("--max-llm-calls", help="Upper bound on curation calls in this run.")
+    ] = 20,
+    llm_cmd: Annotated[
+        str | None,
+        typer.Option("--llm-cmd", help="Curation command; the prompt is written to its stdin."),
+    ] = None,
+    index_cmd: Annotated[
+        str | None,
+        typer.Option(
+            "--index-cmd",
+            help="Command run after export; {memory_dir} is replaced by the exported tree.",
+        ),
+    ] = None,
+    include_openclaw: Annotated[
+        bool,
+        typer.Option(
+            "--openclaw/--no-openclaw", help="Include OpenClaw agents' own sessions and homes."
+        ),
+    ] = True,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report what would be done; change no files.")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the full report.")] = False,
+) -> None:
+    config = _auto_config(
+        store=store,
+        steps=step,
+        since_days=since_days,
+        max_llm_calls=max_llm_calls,
+        llm_cmd=llm_cmd,
+        index_cmd=index_cmd,
+        include_openclaw=include_openclaw,
+        dry_run=dry_run,
+    )
+    report = run_auto(config)
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=1))
+        return
+    for key, value in report.items():
+        typer.echo(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+
+
+@auto_app.command("status", help="Counts and the report of the last run.")
+def auto_status(
+    store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
+) -> None:
+    opened = AutoStore.open_read_only(store.expanduser() / AUTO_DB_NAME)
+    if opened is None:
+        typer.echo("no store yet; run `session2memory auto run` first", err=True)
+        raise typer.Exit(code=1)
+    try:
+        typer.echo(json.dumps(opened.counts(), ensure_ascii=False))
+        last = opened.last_run()
+        if last is not None:
+            typer.echo(f"last run {last[0]} finished {last[1]}")
+            typer.echo(json.dumps(last[2], ensure_ascii=False, indent=1))
+    finally:
+        opened.close()
+
+
+@auto_app.command("search", help="Keyword search over distilled memory and session summaries.")
+def auto_search(
+    query: Annotated[str, typer.Argument(help="Words that must all appear.")],
+    workspace: Annotated[
+        Path | None, typer.Option("--workspace", help="Limit to one workspace.")
+    ] = None,
+    reader: Annotated[
+        str, typer.Option("--reader", help="coding (everything) or openclaw (its own only).")
+    ] = "coding",
+    limit: Annotated[int, typer.Option("--limit")] = 8,
+    store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
+) -> None:
+    scope = _reader(reader)
+    opened = AutoStore.open_read_only(store.expanduser() / AUTO_DB_NAME)
+    if opened is None:
+        raise typer.Exit(code=1)
+    try:
+        project = workspace.expanduser().resolve(strict=False).as_posix() if workspace else None
+        hits = opened.search(query, project=project, reader=scope, limit=limit)
+    finally:
+        opened.close()
+    if not hits:
+        typer.echo("no match")
+        return
+    for kind, ref, hit_project, text in hits:
+        typer.echo(f"[{kind}] {ref}｜{hit_project or '-'}\n  {text[:500]}")
+
+
+@auto_app.command("memory", help="List or retire the distilled memory of a workspace.")
+def auto_memory(
+    workspace: Annotated[Path, typer.Option("--workspace")],
+    retire: Annotated[
+        str | None, typer.Option("--retire", help="Memory id to retire (kept, no longer used).")
+    ] = None,
+    all_statuses: Annotated[
+        bool, typer.Option("--all", help="Include superseded, retired and stale entries.")
+    ] = False,
+    reader: Annotated[str, typer.Option("--reader")] = "coding",
+    store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
+) -> None:
+    scope = _reader(reader)
+    project = workspace.expanduser().resolve(strict=False).as_posix()
+    if retire is not None:
+        if not (store.expanduser() / AUTO_DB_NAME).is_file():
+            raise typer.Exit(code=1)
+        writable = AutoStore.open(store.expanduser() / AUTO_DB_NAME)
+        try:
+            target = writable.get_memory(retire)
+            allowed = (
+                target is not None
+                and target.project == project
+                and (scope == "coding" or target.scope == "openclaw")
+            )
+            changed = allowed and writable.set_memory_status(
+                retire, "retired", reason="retired by hand", run_id=None, evidence=[]
+            )
+        finally:
+            writable.close()
+        typer.echo("retired" if changed else "no active memory with that id")
+        return
+    opened = AutoStore.open_read_only(store.expanduser() / AUTO_DB_NAME)
+    if opened is None:
+        raise typer.Exit(code=1)
+    try:
+        rows = opened.memories(
+            project=project, status=None if all_statuses else "active", reader=scope
+        )
+    finally:
+        opened.close()
+    for row in rows:
+        typer.echo(f"{row.memory_id}｜{row.status}｜{row.kind}｜{row.text}")
+    if not rows:
+        typer.echo("no memory for this workspace")
 
 @app.callback()
 def main() -> None:
