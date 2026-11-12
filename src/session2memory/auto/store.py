@@ -269,17 +269,20 @@ class AutoStore:
             "WHERE source_key=? AND scope!='coding'",
             (now_iso(), source_key),
         )
-        if cursor.rowcount:
-            rows = self._connection.execute(
-                "SELECT memory_id, evidence_json FROM auto_memories WHERE scope!='coding'"
-            ).fetchall()
-            for memory_id, evidence in rows:
-                if source_key in json.loads(str(evidence)):
-                    self._connection.execute(
-                        "UPDATE auto_memories SET scope='coding', updated_at=? WHERE memory_id=?",
-                        (now_iso(), memory_id),
-                    )
-                    self._event(str(memory_id), "widen", {"evidence": [source_key]}, None)
+        # Memory this session fed follows it, whether or not the session row itself was
+        # already coding (it may have been updated by another path).
+        rows = self._connection.execute(
+            "SELECT memory_id, evidence_json FROM auto_memories "
+            "WHERE scope!='coding' AND evidence_json LIKE ?",
+            (f"%{source_key}%",),
+        ).fetchall()
+        for memory_id, evidence in rows:
+            if source_key in json.loads(str(evidence)):
+                self._connection.execute(
+                    "UPDATE auto_memories SET scope='coding', updated_at=? WHERE memory_id=?",
+                    (now_iso(), memory_id),
+                )
+                self._event(str(memory_id), "widen", {"evidence": [source_key]}, None)
         self._connection.commit()
         return bool(cursor.rowcount)
 

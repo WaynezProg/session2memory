@@ -287,12 +287,13 @@ def scan(
             and codex_summary.updated_at.timestamp() >= mtime - 600
         ):
             codex_summary = None  # written before the session's latest activity
+        scope = scope_for(record, sources.openclaw_roots)
         store.upsert_session(
             source_key=record.source_key,
             tool=record.tool,
             session_id=record.session_id,
             agent=record.agent,
-            scope=scope_for(record, sources.openclaw_roots),
+            scope=scope,
             project=project,
             title=codex_summary.title if codex_summary else None,
             digest=build_digest(record),
@@ -300,6 +301,9 @@ def scan(
             last_activity=last_activity,
             native_summary=_clip(codex_summary.body, 1500) if codex_summary else None,
         )
+        if scope == "coding":
+            # Whichever path brought the session here, memory it already fed follows it.
+            store.widen_session_to_coding(record.source_key)
     # Codex writes its own summary some time after a session ends, when the transcript no
     # longer changes: adopt those too, whether or not the session was read this run.
     for thread_id, summary in native.items():

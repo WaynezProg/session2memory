@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from hashlib import sha256
@@ -308,9 +309,10 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
     if not source_path.exists():
         # A rollout compressed in place keeps its name plus ``.zst``.
         compressed = source_path.with_name(source_path.name + ".zst")
-        if not compressed.exists():
+        replacement = compressed if compressed.exists() else _registered_copy(source_path)
+        if replacement is None:
             return f"[source unavailable: {source_path.as_posix()}]"
-        source_path = compressed
+        source_path = replacement
 
     tool = str(evidence.get("tool", ""))
     if tool in LOCATOR_PREVIEW_TOOLS:
@@ -329,6 +331,47 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
         return _truncate(preview, limit)
     preview = _jsonl_preview(source_path=source_path, tool=tool, start=start, end=end)
     return _truncate(preview, limit)
+
+
+def _registered_copy(source_path: Path) -> Path | None:
+    """Another copy of a vanished source that the unattended pipeline registered.
+
+    Looks in the pipeline's persistent store (``SESSION2MEMORY_AUTO_STORE`` or the default)
+    for an archive of that file or another location of the same session.
+    """
+    store = Path(
+        os.environ.get("SESSION2MEMORY_AUTO_STORE", "~/.local/share/session2memory/store")
+    ).expanduser()
+    database = store / "session2memory.db"
+    if not database.is_file():
+        return None
+    original = source_path.as_posix()
+    queries = (
+        ("SELECT target FROM auto_files WHERE path=? AND action='archive'", (original,)),
+        (
+            "SELECT other.path FROM source_locations here "
+            "JOIN source_locations other ON other.source_key = here.source_key "
+            "WHERE here.path=? AND other.path!=? "
+            "AND other.content_digest = here.content_digest",
+            (original, original),
+        ),
+    )
+    try:
+        connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        for sql, arguments in queries:
+            try:
+                rows = connection.execute(sql, arguments).fetchall()
+            except sqlite3.Error:
+                continue  # a store that has not created this table yet
+            for (candidate,) in rows:
+                if isinstance(candidate, str) and Path(candidate).exists():
+                    return Path(candidate)
+    finally:
+        connection.close()
+    return None
 
 
 # Sources whose evidence index is not a physical line of a JSONL file.

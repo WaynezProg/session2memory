@@ -205,6 +205,12 @@ def compress_codex_rollouts(
                 if any(thread and thread in path.name for thread in busy) or target.exists():
                     report.skipped_busy += 1
                     continue
+                earlier = store.file_action(path)
+                if earlier is not None and earlier[3] is None and Path(earlier[0]).exists():
+                    # An original from an earlier compression is still held (for recovery
+                    # or simply not purged yet): its slot must not be overwritten.
+                    report.skipped_busy += 1
+                    continue
                 if dry_run:
                     report.done += 1
                     report.source_bytes += stat.st_size

@@ -131,6 +131,22 @@ class SourceRegistry:
                 ).fetchone()
                 reason = "unchanged" if seen_here else "alias"
                 new_locators = frozenset()
+                latest = int(row[0])
+                held_latest = self._connection.execute(
+                    "SELECT 1 FROM source_locations WHERE source_key=? AND path=? AND version_no=?",
+                    (key, record.source_path.as_posix(), latest),
+                ).fetchone()
+                if not seen_here and held_latest and version_no != latest:
+                    # This very file held the latest version and now shows earlier content
+                    # again: the history was rolled back, which is new content to act on.
+                    reason = "rewrite"
+                    version_no = latest + 1
+                    new_locators = frozenset(current)
+                    self._connection.execute(
+                        "UPDATE sources SET version_no=? WHERE source_key=?", (version_no, key)
+                    )
+                    self._insert_version(key, version_no, record, reason, now)
+                    self._write_messages(key, current, set(current), version_no)
             else:
                 existing = {
                     str(r[0]): str(r[1])

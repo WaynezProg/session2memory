@@ -718,3 +718,129 @@ def test_hook_install_keeps_settings_private(tmp_path: Path) -> None:
 
     assert settings.stat().st_mode & 0o777 == 0o600
     assert json.loads(settings.read_text(encoding="utf-8")) == {"env": {"TOKEN": "secret"}}
+
+
+# ---- sixth review round ------------------------------------------------------------------
+
+
+@needs_zstd
+def test_second_compression_never_overwrites_an_original_still_held(tmp_path: Path) -> None:
+    root = tmp_path / "agents" / "kurisu" / "agent" / "codex-home" / "sessions"
+    home = SourceHome("codex@openclaw/kurisu", "codex", "openclaw/kurisu", root)
+    path = write_rollout(root, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))
+    age(path, 30)
+    opened = AutoStore.open(tmp_path / "state.db")
+    holding = tmp_path / "holding"
+    compress_codex_rollouts(opened, (home,), holding, now=NOW, min_age_days=14)
+    held = next(holding.rglob("*.jsonl"))
+    with held.open("a", encoding="utf-8") as handle:  # a late writer: only copy of this line
+        handle.write('{"type": "response_item", "ordinal": 99, "payload": {}}\n')
+    precious = held.read_bytes()
+    # Codex re-inflates the session from the compressed file; it goes cold again.
+    path.with_name(path.name + ".zst").unlink()
+    again_plain = "\n".join(rollout_lines(S1, "/proj/alpha-etl", TURNS)) + "\n"
+    path.write_text(again_plain, encoding="utf-8")
+    age(path, 20)
+
+    again = compress_codex_rollouts(opened, (home,), holding, now=NOW, min_age_days=14)
+    opened.close()
+
+    assert (again.done, again.skipped_busy) == (0, 1)
+    assert held.read_bytes() == precious and path.exists()
+
+
+def test_coding_copy_with_more_content_also_widens_memory_already_derived(tmp_path: Path) -> None:
+    main = tmp_path / "home" / ".codex" / "sessions"
+    agents = tmp_path / "openclaw" / "state" / "agents"
+    nested = agents / "kurisu" / "agent" / "codex-home" / "sessions"
+    work = tmp_path / "work" / "alpha"
+    work.mkdir(parents=True)
+    write_rollout(nested, S1, rollout_lines(S1, work.as_posix(), TURNS))
+    agent_home = SourceHome("codex@openclaw/kurisu", "codex", "openclaw/kurisu", nested)
+    main_home = SourceHome("codex@main", "codex", "codex", main)
+    store_dir = tmp_path / "store"
+
+    def config(*homes: SourceHome) -> AutoConfig:
+        return AutoConfig(
+            store_dir=store_dir, sources=ScanSources(codex_homes=homes), steps=("scan",)
+        )
+
+    run_auto(config(agent_home), now=NOW)
+    key = f"codex:{S1}"
+    opened = AutoStore.open(store_dir / "session2memory.db")
+    memory_id, _ = opened.add_memory(
+        project=work.as_posix(),
+        scope="openclaw",
+        kind="decision",
+        text=PARQUET,
+        evidence=[key],
+        run_id=None,
+    )
+    opened.close()
+    longer = [*TURNS, ("user", "再加上重試機制"), ("assistant", "完成: 已加上重試")]
+    own = write_rollout(main, S1, rollout_lines(S1, work.as_posix(), longer))
+    moment = (NOW + timedelta(minutes=30)).timestamp()
+    os.utime(own, (moment, moment))
+
+    report = run_auto(config(agent_home, main_home), now=NOW + timedelta(hours=1))
+
+    scanned = report["scan"]
+    assert isinstance(scanned, dict) and scanned["sessions_updated"] == 1
+    opened = AutoStore.open(store_dir / "session2memory.db")
+    assert opened.get_session(key).scope == "coding"  # type: ignore[union-attr]
+    assert opened.get_memory(memory_id).scope == "coding"  # type: ignore[union-attr]
+    assert opened.memories(reader="openclaw") == []
+    opened.close()
+
+
+def test_file_going_back_to_earlier_content_is_a_new_rewrite(tmp_path: Path) -> None:
+    longer = [*TURNS, ("user", "再加上重試機制"), ("assistant", "完成: 已加上重試")]
+    first = "\n".join(rollout_lines(S1, "/proj/alpha-etl", TURNS)) + "\n"
+    path = write_rollout(tmp_path, S1, rollout_lines(S1, "/proj/alpha-etl", TURNS))
+    state = StateStore.open(tmp_path / "state.db")
+    adapter = CodexAdapter(tmp_path)
+    state.sources.observe(adapter.read_file(path), workspace_id=None)
+    second = "\n".join(rollout_lines(S1, "/proj/alpha-etl", longer)) + "\n"
+    path.write_text(second, encoding="utf-8")
+    state.sources.observe(adapter.read_file(path), workspace_id=None)
+    path.write_text(first, encoding="utf-8")
+
+    back = state.sources.observe(adapter.read_file(path), workspace_id=None)
+    same = state.sources.observe(adapter.read_file(path), workspace_id=None)
+
+    assert (back.reason, back.has_new_content) == ("rewrite", True)
+    assert [reason for _, reason in state.sources.versions(f"codex:{S1}")] == [
+        "first-seen",
+        "append",
+        "rewrite",
+    ]
+    assert same.reason == "unchanged"
+
+
+@needs_zstd
+def test_review_preview_uses_the_archive_once_claude_deleted_the_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from test_registry_adapters import claude_lines
+
+    from session2memory.auto.files import archive_claude
+    from session2memory.review import _evidence_preview
+
+    projects = tmp_path / "claude"
+    source = projects / "-proj-alpha" / "c1.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_text("\n".join(claude_lines(TURNS)) + "\n", encoding="utf-8")
+    age(source, 30)
+    store_dir = tmp_path / "store"
+    opened = AutoStore.open(store_dir / "session2memory.db")
+    archive_claude(opened, projects, store_dir / "archive" / "claude", now=NOW, min_age_days=10)
+    opened.close()
+    evidence = {"tool": "claude", "source_path": source.as_posix(), "message_start": 1}
+    before = _evidence_preview(evidence)
+    source.unlink()  # Claude Code's own cleanup
+    monkeypatch.setenv("SESSION2MEMORY_AUTO_STORE", store_dir.as_posix())
+
+    assert _evidence_preview(evidence) == before and "[source" not in before
+
+    monkeypatch.setenv("SESSION2MEMORY_AUTO_STORE", (tmp_path / "elsewhere").as_posix())
+    assert _evidence_preview(evidence).startswith("[source unavailable")
