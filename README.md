@@ -398,10 +398,20 @@ API (system prompt, replayed turns), not turns of the conversation.
 
 ## Handoff packet (manual, read-only)
 
+Run these from this repository (or add `--project <path to this repo>` to `uv run` when
+calling it from another directory, such as the workspace being handed off):
+
 ```bash
-uv run session2memory handoff --workspace "$PWD"                      # latest across codex, claude, grok, muse
-uv run session2memory handoff --workspace "$PWD" --from-tool codex --max-chars 2000
-uv run session2memory handoff-show 'codex:<session id>#ord:42' --workspace "$PWD"
+uv run session2memory handoff --workspace /path/to/workspace
+uv run session2memory handoff --workspace /path/to/workspace --from-tool codex --max-chars 2000
+```
+
+Without `--from-tool` the latest session across codex, claude, grok and muse is used. Each
+quoted line of the packet ends with a reference in square brackets. Copy one exactly as
+printed to read the full message:
+
+```bash
+uv run session2memory handoff-show '<reference copied from the packet>' --workspace /path/to/workspace
 ```
 
 `handoff` prints a short packet for the most recent session of a workspace so another
@@ -417,7 +427,9 @@ What the agents record natively is mostly a title, not a summary: Grok's `sessio
 repeats its title, Codex's thread `title` is the first user message (the short `name` is
 used instead), Claude Code has a real summary only after a compaction, Muse has a session
 name. Harness-injected user messages (`<system-reminder>`, `<environment_context>`, …) are
-skipped; `<user_query>` and `<pasted_content>` are unwrapped.
+skipped, whether they come before or after the user's words; `<user_query>` and
+`<pasted_content>` are unwrapped, and Codex's `## My request:` heading marks where the request
+starts. The summary a compacted session restarts with is shown as a summary, not a request.
 
 `openclaw-native` is searched only with `--from-tool openclaw-native`.
 

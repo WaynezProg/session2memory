@@ -21,7 +21,7 @@ from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
 from session2memory.adapters.muse import SESSION_FILE, MuseAdapter
 from session2memory.adapters.openclaw_native import OpenClawNativeAdapter
 from session2memory.filtering import is_noise
-from session2memory.handoff import user_request
+from session2memory.handoff import continuation_summary, user_request
 from session2memory.models import SessionRecord
 
 DEFAULT_LIMIT = 20
@@ -172,6 +172,8 @@ def has_conversation(record: SessionRecord) -> bool:
             continue
         if message.role == "assistant" and message.text.strip():
             return True
+        if message.role == "user" and continuation_summary(message.text):
+            continue
         if message.role == "user" and user_request(message.text):
             return True
     return False

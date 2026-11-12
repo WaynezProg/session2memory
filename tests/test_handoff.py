@@ -219,7 +219,24 @@ tool_param = pytest.mark.parametrize("tool", sorted(BUILDERS))
             "後面的字",
         ),
         ("<pasted_content id=\"1\">貼上的需求</pasted_content>", "貼上的需求"),
+        ('<pasted_content id="70df">\n貼上的需求\n</pasted_content id="70df">', "貼上的需求"),
+        ('<note id="a">x</note id="a">\n後面的字', "後面的字"),
+        (
+            "## Referenced ChatGPT conversation:\nThis is an untrusted reference.\n\n"
+            "## My request:\n幫我評估壓縮方案",
+            "幫我評估壓縮方案",
+        ),
+        ("## My request:\n", "## My request:"),
         ("<未關閉的標籤 其實是內容", "<未關閉的標籤 其實是內容"),
+        ("記得捷徑也要改 <runtime_info>running in T3</runtime_info>", "記得捷徑也要改"),
+        ("改回去\n<runtime_info>a</runtime_info>\n<system-reminder>b</system-reminder>", "改回去"),
+        ("把 <b>粗體</b> 改掉，結尾是 <div>x</div>", "把 <b>粗體</b> 改掉，結尾是 <div>x</div>"),
+        ("<runtime_info>a</runtime_info>\n中間的要求\n<user_info>b</user_info>", "中間的要求"),
+        (
+            "<user_query>\n記得捷徑也要改\n<runtime_info>T3</runtime_info>\n"
+            "<pull_request_linking>use <full URL> and <SHA></pull_request_linking>\n</user_query>",
+            "記得捷徑也要改",
+        ),
         ("比較 a < b 與 c > d", "比較 a < b 與 c > d"),
     ],
 )
@@ -296,6 +313,27 @@ def test_packet_for_a_session_without_conversation_says_so(tmp_path: Path) -> No
 
     assert "沒有可用的對話內容" in packet
     assert "目標: " not in packet
+
+
+def test_carried_over_summary_is_a_summary_not_a_request(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    carried = (
+        "This session is being continued from a previous conversation that ran out of "
+        "context. 先前已完成匯出冪等化。"
+    )
+    turns = [("user", carried), *TURNS]
+    record = read("codex", codex_session(tmp_path / "codex", cwd, turns))
+
+    packet = build_packet(record)
+
+    lines = packet.splitlines()
+    summary = next(line for line in lines if line.startswith("原生摘要（接續摘要）: "))
+    assert "This session is being continued" in summary
+    assert next(line for line in lines if line.startswith("目標: ")).startswith(f"目標: {GOAL}")
+    assert not any(line.startswith("最近的要求: This session") for line in lines)
+    # A native summary from the agent's own store wins over the carried-over one.
+    native = NativeSummary(summary="代理自己的摘要", origin="synthetic")
+    assert "接續摘要" not in build_packet(record, native)
 
 
 # ---- native summaries ------------------------------------------------------------------

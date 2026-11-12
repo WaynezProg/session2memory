@@ -29,6 +29,13 @@ MIN_ITEM_CHARS = 24
 # Wrappers whose *content* is the user's request; any other leading <tag>…</tag> block is
 # harness-injected context (reminders, environment, notifications) and is skipped.
 REQUEST_TAGS = ("user_query", "pasted_content")
+INJECTED_TAGS = ("heartbeat", "skill")
+# A compacted session restarts with its own summary as a user message.
+CONTINUATION_PREFIXES = ("This session is being continued from a previous conversation",)
+_TRAILING_BLOCK = re.compile(
+    r"<([A-Za-z_][\w:\-]*)(?:\s[^>]*)?>(?:(?!<\1[\s>]).)*?</\1(?:\s[^>]*)?>\s*\Z", flags=re.DOTALL
+)
+_REQUEST_HEADING = re.compile(r"^#{1,3} My request:[ \t]*$", flags=re.MULTILINE)
 _OPEN_TAG = re.compile(r"<([A-Za-z_][\w:\-]*)(?:\s[^>]*)?>")
 KIND_LABELS = {
     "decision": "決定",
@@ -70,20 +77,47 @@ SummaryReader = Callable[[SessionRecord], NativeSummary]
 def user_request(text: str) -> str | None:
     """The part of a user message the user actually wrote, or ``None`` if it is all wrapper."""
     remaining = text.strip()
+    # Codex prefixes attached context ("## Referenced ChatGPT conversation: …") and then
+    # marks where the user's own words start.
+    marked = _REQUEST_HEADING.split(remaining, maxsplit=1)
+    if len(marked) == 2 and marked[1].strip():
+        remaining = marked[1].strip()
     for tag in REQUEST_TAGS:
-        match = re.search(rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}>", remaining, flags=re.DOTALL)
+        # Some harnesses repeat the attributes in the closing tag (``</tag id="…">``).
+        match = re.search(
+            rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}(?:\s[^>]*)?>", remaining, flags=re.DOTALL
+        )
         if match and match.group(1).strip():
-            return match.group(1).strip()
+            # Keep going: injected blocks can sit inside the request wrapper too.
+            remaining = match.group(1).strip()
+            break
     while True:
         match = _OPEN_TAG.match(remaining)
         if match is None:
             break
-        closing = f"</{match.group(1)}>"
-        end = remaining.find(closing, match.end())
-        if end < 0:
+        closing = re.compile(rf"</{re.escape(match.group(1))}(?:\s[^>]*)?>")
+        end = closing.search(remaining, match.end())
+        if end is None:
             break
-        remaining = remaining[end + len(closing) :].lstrip()
+        remaining = remaining[end.end() :].lstrip()
+    # Harnesses also append context after the user's words (``… <runtime_info>…</runtime_info>``).
+    while True:
+        tail = _TRAILING_BLOCK.search(remaining)
+        if tail is None or tail.group(1) in REQUEST_TAGS or not _is_injected_tag(tail.group(1)):
+            break
+        remaining = remaining[: tail.start()].rstrip()
     return remaining or None
+
+
+def _is_injected_tag(name: str) -> bool:
+    """Harness tags use snake_case or kebab-case; plain HTML/XML the user typed does not."""
+    return "_" in name or "-" in name or name in INJECTED_TAGS
+
+
+def continuation_summary(text: str) -> str | None:
+    """The carried-over summary of a compacted session, which arrives as a user message."""
+    stripped = text.strip()
+    return stripped if stripped.startswith(CONTINUATION_PREFIXES) else None
 
 
 def _clip(text: str, limit: int) -> str:
@@ -110,10 +144,15 @@ def build_packet(
     native = native or NativeSummary()
     requests: list[tuple[SessionMessage, str]] = []
     replies: list[SessionMessage] = []
+    carried_over: str | None = None
     for message in record.messages:
         if is_noise(message):
             continue
         if message.role == "user":
+            carried = continuation_summary(message.text)
+            if carried:
+                carried_over = carried
+                continue
             request = user_request(message.text)
             if request:
                 requests.append((message, request))
@@ -136,6 +175,8 @@ def build_packet(
     if native.summary:
         origin = f"（{native.origin}）" if native.origin else ""
         body.append(_Line(60, f"原生摘要{origin}: ", _clip(native.summary, max_chars * 3 // 10)))
+    elif carried_over:
+        body.append(_Line(60, "原生摘要（接續摘要）: ", _clip(carried_over, max_chars * 3 // 10)))
     if native.last_turn:
         body.append(_Line(55, "上一輪摘要: ", _clip(native.last_turn, 240)))
     if requests:
@@ -157,7 +198,7 @@ def build_packet(
         ref = f" [{_reference(record, source)}]" if source is not None else ""
         label = KIND_LABELS.get(candidate.kind, candidate.kind)
         body.append(_Line(30, f"{label}: ", _clip(candidate.text, 200), ref))
-    if not requests and not replies and native.is_empty:
+    if not requests and not replies and native.is_empty and not carried_over:
         body.append(_Line(100, "", "（這個 Session 沒有可用的對話內容）"))
 
     def render() -> str:
