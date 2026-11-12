@@ -430,6 +430,8 @@ name. Harness-injected user messages (`<system-reminder>`, `<environment_context
 skipped, whether they come before or after the user's words; `<user_query>` and
 `<pasted_content>` are unwrapped, and Codex's `## My request:` heading marks where the request
 starts. The summary a compacted session restarts with is shown as a summary, not a request.
+Bare acknowledgements ("Commit", "修正", "ok") are left out of the goal and the recent
+requests unless the session has nothing else.
 
 `openclaw-native` is searched only with `--from-tool openclaw-native`.
 

@@ -26,6 +26,9 @@ DEFAULT_MAX_CHARS = 4000
 MIN_MAX_CHARS = 600
 ESSENTIAL = 80  # goal, latest request, last reply: shortened, not dropped
 MIN_ITEM_CHARS = 24
+# Below this a request is a bare acknowledgement: "Commit" is 6, "修正" 4, "ok do it" 6,
+# while "全部都升級" is 10.
+MIN_REQUEST_WEIGHT = 9
 # Wrappers whose *content* is the user's request; any other leading <tag>…</tag> block is
 # harness-injected context (reminders, environment, notifications) and is skipped.
 REQUEST_TAGS = ("user_query", "pasted_content")
@@ -109,6 +112,20 @@ def user_request(text: str) -> str | None:
     return remaining or None
 
 
+def request_weight(text: str) -> int:
+    """Rough amount of content: a CJK character counts as a short word, others as a letter."""
+    weight = 0
+    for char in text:
+        if char.isspace():
+            continue
+        weight += 2 if "\u2e80" <= char <= "\u9fff" or "\uf900" <= char <= "\ufaff" else 1
+    return weight
+
+
+def is_substantive(text: str) -> bool:
+    return request_weight(text) >= MIN_REQUEST_WEIGHT
+
+
 def _is_injected_tag(name: str) -> bool:
     """Harness tags use snake_case or kebab-case; plain HTML/XML the user typed does not."""
     return "_" in name or "-" in name or name in INJECTED_TAGS
@@ -179,11 +196,14 @@ def build_packet(
         body.append(_Line(60, "原生摘要（接續摘要）: ", _clip(carried_over, max_chars * 3 // 10)))
     if native.last_turn:
         body.append(_Line(55, "上一輪摘要: ", _clip(native.last_turn, 240)))
-    if requests:
-        first, text = requests[0]
+    # One- or two-word turns ("Commit", "修正", "ok") say nothing to the next agent; the last
+    # reply already reflects them. They are kept only when the session has nothing else.
+    substantive = [item for item in requests if is_substantive(item[1])] or requests[:1]
+    if substantive:
+        first, text = substantive[0]
         ref = f" [{_reference(record, first)}]"
         body.append(_Line(100, "目標: ", _clip(text, max_chars * 15 // 100), ref))
-    tail = requests[1:][-recent_requests:]
+    tail = substantive[1:][-recent_requests:]
     for position, (message, text) in enumerate(tail):
         priority = ESSENTIAL if position == len(tail) - 1 else 40 + position
         ref = f" [{_reference(record, message)}]"

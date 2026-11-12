@@ -41,6 +41,7 @@ from session2memory.handoff import (
     claude_summary,
     codex_summary,
     grok_summary,
+    is_substantive,
     muse_summary,
     native_summary,
     parse_reference,
@@ -334,6 +335,61 @@ def test_carried_over_summary_is_a_summary_not_a_request(tmp_path: Path) -> None
     # A native summary from the agent's own store wins over the carried-over one.
     native = NativeSummary(summary="代理自己的摘要", origin="synthetic")
     assert "接續摘要" not in build_packet(record, native)
+
+
+@pytest.mark.parametrize(
+    ("text", "substantive"),
+    [
+        ("Commit", False),
+        ("修正", False),
+        ("先不測", False),
+        ("ok do it", False),
+        ("  繼續  ", False),
+        ("全部都升級", True),
+        ("那ai memory的部分？", True),
+        ("fix the retry test", True),
+    ],
+)
+def test_bare_acknowledgements_are_not_substantive(text: str, substantive: bool) -> None:
+    assert is_substantive(text) is substantive
+
+
+def test_recent_requests_skip_bare_acknowledgements(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    turns = [
+        ("user", "ok"),
+        ("assistant", "請說明要做什麼"),
+        ("user", GOAL),
+        ("assistant", "決定: 匯出格式採用 Parquet"),
+        ("user", SECOND),
+        ("assistant", "已確認"),
+        ("user", "Commit"),
+        ("assistant", "已 commit"),
+        ("user", LAST_REQUEST),
+        ("assistant", "已修改"),
+        ("user", "修正"),
+        ("assistant", LAST_REPLY),
+    ]
+    record = read("codex", codex_session(tmp_path / "codex", cwd, turns))
+
+    lines = build_packet(record).splitlines()
+
+    assert next(line for line in lines if line.startswith("目標: ")).startswith(f"目標: {GOAL}")
+    requests = [line for line in lines if line.startswith("最近的要求: ")]
+    assert [SECOND in requests[0], LAST_REQUEST in requests[1], len(requests)] == [True, True, 2]
+    assert not any("Commit" in line or "修正 [" in line for line in requests)
+    assert any(line.startswith("最後的回覆: ") and "DRIFT-409" in line for line in lines)
+
+
+def test_a_session_of_only_short_requests_still_shows_its_first_one(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    turns = [("user", "繼續"), ("assistant", "已繼續處理"), ("user", "ok"), ("assistant", "完成")]
+    record = read("codex", codex_session(tmp_path / "codex", cwd, turns))
+
+    lines = build_packet(record).splitlines()
+
+    assert any(line.startswith("目標: 繼續 [") for line in lines)
+    assert not any(line.startswith("最近的要求: ") for line in lines)
 
 
 # ---- native summaries ------------------------------------------------------------------
