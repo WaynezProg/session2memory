@@ -406,7 +406,10 @@ uv run session2memory handoff --workspace /path/to/workspace
 uv run session2memory handoff --workspace /path/to/workspace --from-tool codex --max-chars 2000
 ```
 
-Without `--from-tool` the latest session across codex, claude, grok and muse is used. Each
+Without `--from-tool` the latest session across codex, claude, grok and muse is used. To
+hand off a specific session instead, add `--session <id>`: the full session id, a unique
+prefix of it, or `<tool>:<id>`. When the id is unknown or ambiguous the error lists the
+most recent session ids of the workspace. Each
 quoted line of the packet ends with a reference in square brackets. Copy one exactly as
 printed to read the full message:
 

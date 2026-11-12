@@ -47,7 +47,12 @@ from session2memory.handoff import (
     parse_reference,
     user_request,
 )
-from session2memory.handoff_find import latest_session, recent_sessions
+from session2memory.handoff_find import (
+    SessionSelectionError,
+    latest_session,
+    recent_sessions,
+    select_session,
+)
 from session2memory.models import SessionRecord
 
 DATE = "2026-11-10"
@@ -634,3 +639,83 @@ def test_cli_handoff_fails_clearly_when_nothing_matches(tmp_path: Path) -> None:
     assert missing.exit_code == 1 and "no session with conversation found" in missing.output
     assert too_small.exit_code != 0 and bad_tool.exit_code != 0 and bad_ref.exit_code != 0
     assert gone.exit_code == 1 and "session not found" in gone.output
+
+
+# ---- --session -------------------------------------------------------------------------
+
+OLDER_CLAUDE_ID = "c1a0de00-2222-4bbb-8bbb-0000000000b2"
+OLDER_GOAL = "替 alpha-etl 的匯出加上 schema 漂移偵測"
+
+
+def older_claude_session(root: Path, cwd: Path) -> Path:
+    """A second, older Claude session of the same workspace with its own goal."""
+    newest = claude_session(root, cwd)
+    path = newest.with_name(f"{OLDER_CLAUDE_ID}.jsonl")
+    lines = []
+    for raw in claude_lines([("user", OLDER_GOAL), ("assistant", "完成: 漂移偵測已上線")]):
+        line = json.loads(raw)
+        line["sessionId"] = OLDER_CLAUDE_ID
+        if "cwd" in line:
+            line["cwd"] = cwd.as_posix()
+        lines.append(json.dumps(line, ensure_ascii=False))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    touch(path, 50)
+    touch(newest, 400)
+    return path
+
+
+def test_select_session_by_id_prefix_or_tool_qualified_id(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    roots = all_roots(tmp_path)
+    older = older_claude_session(roots["claude"], cwd)
+    touch(codex_session(roots["codex"], cwd), 900)
+
+    assert latest_session(roots, cwd).record.tool == "codex"  # type: ignore[union-attr]
+    for spec in (OLDER_CLAUDE_ID, f"claude:{OLDER_CLAUDE_ID}", OLDER_CLAUDE_ID[:13]):
+        assert select_session(roots, cwd, spec).record.source_path == older
+    assert select_session(roots, cwd, f"codex:{CODEX_ID[:8]}").record.session_id == CODEX_ID
+
+
+def test_select_session_reports_ambiguous_and_unknown_ids(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    roots = all_roots(tmp_path)
+    older_claude_session(roots["claude"], cwd)
+
+    with pytest.raises(SessionSelectionError, match="ambiguous") as ambiguous:
+        select_session(roots, cwd, "c1a0de00")
+    assert CLAUDE_ID in str(ambiguous.value) and OLDER_CLAUDE_ID in str(ambiguous.value)
+    with pytest.raises(SessionSelectionError, match="no session 'nope'") as unknown:
+        select_session(roots, cwd, "nope")
+    assert f"claude:{CLAUDE_ID}" in str(unknown.value)  # tells which ids exist
+    # A tool-qualified id is only looked up in that tool.
+    with pytest.raises(SessionSelectionError, match="no session"):
+        select_session(roots, cwd, f"codex:{OLDER_CLAUDE_ID}")
+    # Another workspace never sees this one's sessions.
+    with pytest.raises(SessionSelectionError, match=r"most recent sessions: \(none\)"):
+        select_session(roots, tmp_path / "work" / "other", OLDER_CLAUDE_ID)
+
+
+def test_cli_handoff_session_option_overrides_latest(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    roots = all_roots(tmp_path)
+    older_claude_session(roots["claude"], cwd)
+    touch(codex_session(roots["codex"], cwd), 900)
+    runner = CliRunner()
+    base = ["handoff", "--workspace", cwd.as_posix(), *cli_roots(tmp_path)]
+
+    latest = runner.invoke(app, base)
+    chosen = runner.invoke(app, [*base, "--session", OLDER_CLAUDE_ID[:13]])
+    qualified = runner.invoke(app, [*base, "--session", f"claude:{CLAUDE_ID}"])
+    wrong_tool = runner.invoke(
+        app, [*base, "--from-tool", "codex", "--session", OLDER_CLAUDE_ID]
+    )
+    ambiguous = runner.invoke(app, [*base, "--session", "c1a0de00"])
+
+    assert f"from: codex session {CODEX_ID}" in latest.output
+    assert chosen.exit_code == 0, chosen.output
+    assert f"from: claude session {OLDER_CLAUDE_ID}" in chosen.output
+    assert f"目標: {OLDER_GOAL}" in chosen.output
+    assert f"from: claude session {CLAUDE_ID}" in qualified.output
+    assert wrong_tool.exit_code == 1 and "no session" in wrong_tool.output
+    assert ambiguous.exit_code == 1 and "ambiguous" in ambiguous.output
+

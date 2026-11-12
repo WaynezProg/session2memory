@@ -37,8 +37,12 @@ from session2memory.handoff import (
 from session2memory.handoff_find import (
     DEFAULT_HANDOFF_TOOLS,
     FINDERS,
+    FoundSession,
+    SessionSelectionError,
     find_session,
     latest_session,
+    select_session,
+    split_session_spec,
 )
 from session2memory.llm_extract import LlmInputMode, SubprocessLlmExtractBackend
 from session2memory.llm_extract_mock import MockLlmExtractBackend
@@ -155,12 +159,28 @@ def handoff_packet(
     out: Annotated[
         Path | None, typer.Option("--out", help="Write the packet to this file instead of stdout.")
     ] = None,
+    session: Annotated[
+        str | None,
+        typer.Option(
+            "--session",
+            help="Hand off this session instead of the latest one: a session id, a unique "
+            "prefix of it, or <tool>:<id>.",
+        ),
+    ] = None,
 ) -> None:
     """Read-only: nothing is imported, no state DB or hook is involved."""
     if max_chars < MIN_MAX_CHARS:
         raise typer.BadParameter(f"--max-chars must be at least {MIN_MAX_CHARS}")
-    roots = _handoff_roots(from_tool, source_root)
-    found = latest_session(roots, workspace.expanduser())
+    named_tool = split_session_spec(session)[0] if session else None
+    roots = _handoff_roots(from_tool or ([named_tool] if named_tool else None), source_root)
+    if session is not None:
+        try:
+            found: FoundSession | None = select_session(roots, workspace.expanduser(), session)
+        except SessionSelectionError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+    else:
+        found = latest_session(roots, workspace.expanduser())
     if found is None:
         typer.echo(
             f"no session with conversation found for {workspace} in: {', '.join(roots)}", err=True

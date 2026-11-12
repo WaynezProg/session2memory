@@ -211,3 +211,39 @@ def find_session(
         if found.record.session_id == session_id:
             return found.record
     return None
+
+
+class SessionSelectionError(LookupError):
+    """``--session`` matched no session, or more than one."""
+
+
+def split_session_spec(spec: str) -> tuple[str | None, str]:
+    """``<tool>:<id>`` -> ``(tool, id)``; a bare id -> ``(None, id)``."""
+    tool, colon, rest = spec.strip().partition(":")
+    if colon and tool in FINDERS and rest:
+        return tool, rest
+    return None, spec.strip()
+
+
+def select_session(
+    roots: Mapping[str, Path], workspace: Path, spec: str, *, limit: int = 200
+) -> FoundSession:
+    """The session of ``workspace`` whose id equals ``spec`` or uniquely starts with it."""
+    tool, wanted = split_session_spec(spec)
+    available: list[FoundSession] = []
+    for name, root in roots.items():
+        if tool is None or name == tool:
+            available.extend(recent_sessions(name, root, workspace, limit=limit))
+    exact = [found for found in available if found.record.session_id == wanted]
+    matches = exact or [f for f in available if f.record.session_id.startswith(wanted)]
+    if len(matches) == 1:
+        return matches[0]
+    listing = matches if matches else available
+    newest = sorted(listing, key=lambda found: found.recency, reverse=True)[:8]
+    shown = ", ".join(found.record.source_key for found in newest) or "(none)"
+    if matches:
+        raise SessionSelectionError(f"session id {wanted!r} is ambiguous; it matches: {shown}")
+    raise SessionSelectionError(
+        f"no session {wanted!r} for this workspace; most recent sessions: {shown}"
+    )
+
