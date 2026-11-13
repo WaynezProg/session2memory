@@ -234,6 +234,50 @@ def test_a_named_conversation_is_found_beyond_the_newest_few(tmp_path: Path) -> 
     assert len(list(find_antigravity(root, here, 3))) == 3
 
 
+def test_a_closing_tag_typed_by_the_person_does_not_end_the_request(tmp_path: Path) -> None:
+    root = tmp_path / "antigravity-cli"
+    typed = "請修正 parser：輸入可能包含 </USER_REQUEST>，並保留後面的必要限制。"
+    path = conversation(root, tmp_path / "w", content=rows(request=typed))
+
+    record = AntigravityAdapter(root).read_file(path)
+
+    assert record.messages[0].text == typed
+    bare = [{**rows()[0], "content": "沒有包裝的輸入"}]
+    plain = AntigravityAdapter(root).read_file(
+        conversation(root, tmp_path / "w", "p", content=bare)
+    )
+    assert plain.messages[0].text == "沒有包裝的輸入"
+
+
+def test_a_workspace_that_reaches_the_index_later_is_filled_in(machine: Machine) -> None:
+    """Without a project a session is never curated; an unchanged transcript must not keep it so."""
+    root = machine.tmp / "antigravity-cli"
+    path = transcript_path(root, CONVERSATION)
+    path.parent.mkdir(parents=True)
+    lines = [json.dumps(row, ensure_ascii=False) for row in rows()]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    sources = ScanSources(antigravity_root=root, openclaw_roots=openclaw_roots(machine.state_dir))
+    machine.store_dir.mkdir(parents=True, exist_ok=True)
+    state = StateStore.open(machine.db)
+    try:
+        store = AutoStore(state._connection)
+        scan(state.sources, store, sources, since=LONG_AGO)
+        before = store.get_session(f"antigravity:{CONVERSATION}")
+        text = path.read_text(encoding="utf-8")
+        conversation(root, machine.work)  # the index catches up; the transcript is the same
+        assert path.read_text(encoding="utf-8") == text
+        report = scan(state.sources, store, sources, since=LONG_AGO)
+        after = store.get_session(f"antigravity:{CONVERSATION}")
+        pending = [row.source_key for row in store.pending_sessions()]
+    finally:
+        state.close()
+
+    assert before is not None and before.project is None
+    assert report.sessions_unchanged == 1
+    assert after is not None and after.project == machine.work.as_posix()
+    assert pending == [f"antigravity:{CONVERSATION}"]
+
+
 # ---- hook ------------------------------------------------------------------------------
 
 

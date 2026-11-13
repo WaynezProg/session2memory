@@ -264,6 +264,10 @@ def scan(
             report.sessions_updated += 1
         elif known is not None:
             report.sessions_unchanged += 1
+            if known.project is None and project is not None:
+                store.fill_session_project(
+                    record.source_key, project, scope_for(record, sources.openclaw_roots)
+                )
             # Same content at another location: nothing to re-read, but a coding location
             # still makes this a coding session.
             if scope_for(record, sources.openclaw_roots) == "coding":

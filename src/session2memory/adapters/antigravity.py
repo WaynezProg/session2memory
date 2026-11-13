@@ -24,7 +24,13 @@ SUMMARIES_DB = "conversation_summaries.db"
 HOME_ID = "antigravity@cli"
 # Rows of the transcript that are conversation; tool output (GENERIC) and errors are not.
 ROLES = {"USER_INPUT": "user", "PLANNER_RESPONSE": "assistant"}
-_REQUEST = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
+# The request runs to the wrapper's own closing tag: the last one that is followed by
+# the CLI's metadata blocks or the end. The same tag typed inside the request is text.
+_REQUEST = re.compile(
+    r"\A\s*<USER_REQUEST>\s*(.*)\s*</USER_REQUEST>\s*"
+    r"(?:<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>.*)?\Z",
+    re.DOTALL,
+)
 
 
 class AntigravityAdapter:
@@ -208,7 +214,7 @@ def conversations_of(root: Path, workspace: Path, limit: int = 5) -> list[str]:
 
 def _request(content: str) -> str:
     """What the person typed: the CLI wraps it and appends its own metadata blocks."""
-    match = _REQUEST.search(content)
+    match = _REQUEST.match(content)
     return (match.group(1) if match else content).strip()
 
 

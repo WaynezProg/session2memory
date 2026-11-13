@@ -272,6 +272,21 @@ class AutoStore:
         self._connection.commit()
         return bool(cursor.rowcount)
 
+    def fill_session_project(self, source_key: str, project: str, scope: Scope) -> bool:
+        """Give a session registered without a workspace the one that is known now.
+
+        Some agents keep the workspace in an index beside the transcript; when that index
+        lagged behind at the first scan, the session has no project and would never be
+        curated, although its content did not change.
+        """
+        cursor = self._connection.execute(
+            "UPDATE auto_sessions SET project=?, scope=?, updated_at=? "
+            "WHERE source_key=? AND project IS NULL",
+            (project, scope, now_iso(), source_key),
+        )
+        self._connection.commit()
+        return cursor.rowcount > 0
+
     def widen_session_to_coding(self, source_key: str) -> bool:
         """A coding location of the session turned up: it and what it fed become coding."""
         cursor = self._connection.execute(
