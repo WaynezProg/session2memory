@@ -123,6 +123,7 @@ class CurateReport:
     sessions_ephemeral: int = 0
     sessions_expired: int = 0
     sessions_unsummarised: int = 0
+    sessions_out_of_scope: int = 0
     sessions_left: int = 0
     memories_added: int = 0
     memories_confirmed: int = 0
@@ -386,8 +387,15 @@ def curate(
     run_id: str | None = None,
     now: datetime | None = None,
     max_age_days: float | None = None,
+    scopes: tuple[str, ...] | None = None,
 ) -> CurateReport:
-    """Curate pending sessions, coding projects first, within the call budget."""
+    """Curate pending sessions, coding projects first, within the call budget.
+
+    ``scopes`` limits which sessions are curated at all. The rest stay registered and
+    pending, untouched: they are neither summarised nor expired, so widening the setting
+    later picks them up. Agent runtimes that produce hundreds of machine-triggered
+    sessions a day are kept out of the budget this way.
+    """
     report = CurateReport()
     cutoff = (
         ((now or datetime.now(UTC)) - timedelta(days=max_age_days)).isoformat(timespec="seconds")
@@ -397,6 +405,9 @@ def curate(
     by_project: dict[str, list[SessionRow]] = {}
     for session in store.pending_sessions():
         assert session.project is not None
+        if scopes is not None and session.scope not in scopes:
+            report.sessions_out_of_scope += 1
+            continue
         if cutoff is not None and (session.last_activity or "") < cutoff:
             # Too old to be worth a call now; the backlog must not grow without bound.
             store.mark_curated(session.source_key, session.digest_version)

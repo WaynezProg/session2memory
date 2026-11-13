@@ -49,6 +49,8 @@ class AutoConfig:
     stale_after_days: int = 120
     # Sessions that waited longer than this for curation are dropped from the queue.
     curate_max_age_days: float = 21.0
+    # Scopes whose sessions are curated; ``None`` curates every scope.
+    curate_scopes: tuple[str, ...] | None = None
     index_command: Sequence[str] = ()
     index_env: dict[str, str] = field(default_factory=dict)
     dry_run: bool = False
@@ -216,6 +218,7 @@ def _run_step(
             run_id=run_id,
             now=now,
             max_age_days=config.curate_max_age_days,
+            scopes=config.curate_scopes,
         ).as_dict()
         result["memories_stale"] = store.mark_stale(
             older_than_days=config.stale_after_days, run_id=run_id, now=now
