@@ -28,6 +28,7 @@ from session2memory.adapters import (
 from session2memory.adapters.codex import discover_codex_homes
 from session2memory.adapters.registry import load_plugin_adapters
 from session2memory.agentic_os_index import AgenticOsIndex
+from session2memory.auto import console
 from session2memory.auto.run import ALL_STEPS, AutoConfig, run_auto
 from session2memory.auto.run import DB_NAME as AUTO_DB_NAME
 from session2memory.auto.scan import ScanSources
@@ -360,8 +361,7 @@ def session_start_hook(
         config = HookConfig(
             agent=agent,
             session_roots={
-                tool: source_roots[tool]
-                for tool in ("claude", "codex", "grok", "antigravity")
+                tool: source_roots[tool] for tool in ("claude", "codex", "grok", "antigravity")
             },
             codex_memory_root=codex_memory_root.expanduser(),
             claude_projects_root=source_roots["claude"],
@@ -708,6 +708,86 @@ def auto_memory(
     if not rows:
         typer.echo("no memory for this workspace")
 
+
+CONSOLE_VIEWS = (
+    "overview", "projects", "memories", "memory", "sessions", "session", "runs",
+    "retire", "restore",
+)  # fmt: skip
+
+
+@auto_app.command(
+    "console",
+    help="JSON views of the store for the operator console; retire and restore change it.",
+)
+def auto_console(
+    view: Annotated[str, typer.Argument(help=", ".join(CONSOLE_VIEWS))],
+    project: Annotated[str | None, typer.Option("--project", help="Workspace path.")] = None,
+    memory_id: Annotated[str | None, typer.Option("--id", help="Memory id.")] = None,
+    key: Annotated[str | None, typer.Option("--key", help="Session key (tool:id).")] = None,
+    status: Annotated[
+        str, typer.Option("--status", help="active, superseded, retired, stale or all.")
+    ] = "active",
+    tool: Annotated[str | None, typer.Option("--tool")] = None,
+    reason: Annotated[str, typer.Option("--reason", help="Why, for retire and restore.")] = "",
+    limit: Annotated[int, typer.Option("--limit")] = 200,
+    offset: Annotated[int, typer.Option("--offset")] = 0,
+    store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
+) -> None:
+    """Always prints one JSON object: ``{"ok": true, "data": ...}`` or
+    ``{"ok": false, "error": "..."}`` (with exit status 1)."""
+
+    def fail(message: str) -> None:
+        typer.echo(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+        raise typer.Exit(code=1)
+
+    def need(value: str | None, option: str) -> str:
+        if not value:
+            fail(f"{view} needs {option}")
+        assert value is not None
+        return value
+
+    if view not in CONSOLE_VIEWS:
+        fail(f"unknown view {view}; choose from {', '.join(CONSOLE_VIEWS)}")
+    if status not in (*console.STATUSES, "all"):
+        fail(f"unknown status {status}")
+    store_dir = store.expanduser()
+    database = store_dir / AUTO_DB_NAME
+    writes = view in ("retire", "restore")
+    if not database.is_file():
+        fail(f"no store at {store_dir.as_posix()}; run `session2memory auto run` first")
+    opened = AutoStore.open(database) if writes else AutoStore.open_read_only(database)
+    if opened is None:
+        fail(f"cannot open {database.as_posix()}")
+    assert opened is not None
+    data: object
+    try:
+        if view == "overview":
+            data = console.overview(opened, store_dir)
+        elif view == "projects":
+            data = console.projects(opened)
+        elif view == "memories":
+            data = console.memories(opened, need(project, "--project"), status=status)
+        elif view == "memory":
+            data = console.memory(opened, need(memory_id, "--id"))
+        elif view == "sessions":
+            data = console.sessions(opened, project=project, tool=tool, limit=limit, offset=offset)
+        elif view == "session":
+            data = console.session(opened, need(key, "--key"))
+        elif view == "runs":
+            data = console.runs(opened, limit=limit)
+        elif view == "retire":
+            data = console.retire(opened, need(memory_id, "--id"), need(reason, "--reason"))
+        else:
+            data = console.restore(opened, need(memory_id, "--id"), need(reason, "--reason"))
+    except ValueError as exc:
+        fail(str(exc))
+    finally:
+        opened.close()
+    if data is None:
+        fail("not found")
+    typer.echo(json.dumps({"ok": True, "data": data}, ensure_ascii=False))
+
+
 @app.callback()
 def main() -> None:
     pass
@@ -768,9 +848,7 @@ def _parse_date(value: str) -> str:
 
 
 def _openclaw_state_dir() -> Path:
-    return Path(
-        os.environ.get("OPENCLAW_STATE_DIR", "~/.openclaw")
-    ).expanduser()
+    return Path(os.environ.get("OPENCLAW_STATE_DIR", "~/.openclaw")).expanduser()
 
 
 def _default_source_roots() -> dict[str, Path]:
