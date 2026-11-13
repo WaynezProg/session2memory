@@ -28,6 +28,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
+from session2memory.adapters.antigravity import (
+    AntigravityAdapter,
+    conversations_of,
+    transcript_path,
+)
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import CodexAdapter
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
@@ -335,7 +340,17 @@ def _codex_candidates(root: Path, workspace: Path) -> list[Candidate]:
     return candidates
 
 
+def _antigravity_candidates(root: Path, workspace: Path) -> list[Candidate]:
+    found = []
+    for identifier in conversations_of(root, workspace):
+        candidate = _file_candidate("antigravity", identifier, transcript_path(root, identifier))
+        if candidate is not None:
+            found.append(candidate)
+    return found
+
+
 CANDIDATE_FINDERS: Mapping[str, Callable[[Path, Path], list[Candidate]]] = {
+    "antigravity": _antigravity_candidates,
     "claude": _claude_candidates,
     "codex": _codex_candidates,
     "grok": _grok_candidates,
@@ -377,6 +392,7 @@ def _read_candidate(candidate: Candidate) -> SessionRecord | None:
         "claude": ClaudeAdapter(candidate.path.parent)._read_file,
         "codex": CodexAdapter(candidate.path.parent).read_file,
         "grok": GrokAdapter(candidate.path.parent).read_file,
+        "antigravity": AntigravityAdapter(candidate.path.parent).read_file,
     }
     try:
         return readers[candidate.tool](candidate.path)
@@ -506,12 +522,13 @@ def run_hook(
     now = now or datetime.now(UTC)
     source = str(payload.get("source") or "startup")
     source = SOURCE_ALIASES.get(source, source)
-    session_id = str(payload.get("session_id") or payload.get("sessionId") or "")
+    session_id = payload_session_id(payload)
     # Grok's ``cwd`` on a tool event is where that step runs, which can be a subdirectory
     # or another project; the session's workspace is ``workspaceRoot``.
     cwd = (
         payload.get("workspaceRoot")
         or payload.get("cwd")
+        or _first(payload.get("workspacePaths"))
         or env.get("CLAUDE_PROJECT_DIR")
         or env.get("GROK_WORKSPACE_ROOT")
         or ""
@@ -587,10 +604,31 @@ def run_hook(
     return result
 
 
-def hook_output(context: str | None, event: str = "SessionStart") -> str:
-    """The JSON a Claude-style hook prints to add context to the session."""
+def payload_session_id(payload: Mapping[str, object]) -> str:
+    """The session a hook payload is about, whatever this agent calls it."""
+    for key in ("session_id", "sessionId", "conversationId"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _first(value: object) -> object:
+    return value[0] if isinstance(value, list) and value else None
+
+
+def hook_output(context: str | None, event: str = "SessionStart", *, style: str = "claude") -> str:
+    """The JSON a hook prints to add context to the session.
+
+    ``claude`` is the shape Claude Code, Codex, Muse and Grok read. Antigravity takes a list
+    of steps to insert into the conversation; a system message stays in it across turns.
+    """
     if not context:
         return "{}"
+    if style == "antigravity":
+        return json.dumps(
+            {"injectSteps": [{"systemMessage": {"systemMessage": context}}]}, ensure_ascii=False
+        )
     return json.dumps(
         {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}},
         ensure_ascii=False,

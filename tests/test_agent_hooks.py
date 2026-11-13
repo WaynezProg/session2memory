@@ -127,6 +127,7 @@ def test_default_settings_file_of_each_agent() -> None:
         "codex": "~/.codex/hooks.json",
         "muse": "~/.config/muse/settings.json",
         "grok": "~/.grok/hooks/session2memory.json",
+        "antigravity": "~/.gemini/config/hooks.json",
     }
 
 

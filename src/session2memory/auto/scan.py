@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from session2memory.adapters.antigravity import TRANSCRIPT_GLOB, AntigravityAdapter
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import ROLLOUT_PATTERNS, CodexAdapter
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
@@ -42,6 +43,7 @@ class ScanSources:
     claude_root: Path | None = None
     grok_root: Path | None = None
     muse_root: Path | None = None
+    antigravity_root: Path | None = None
     openclaw_agents_root: Path | None = None
     codex_memory_root: Path | None = None
     # Sessions started in these directories belong to OpenClaw agents.
@@ -194,6 +196,10 @@ def iter_records(
             if not any(part.startswith(".") for part in path.relative_to(root).parts[:-1])
         )
         yield from read_all(_recent(files, cutoff, max_bytes, report), muse.read_file)
+    if sources.antigravity_root is not None and sources.antigravity_root.is_dir():
+        antigravity = AntigravityAdapter(sources.antigravity_root)
+        files = sources.antigravity_root.glob(TRANSCRIPT_GLOB)
+        yield from read_all(_recent(files, cutoff, max_bytes, report), antigravity.read_file)
     if sources.openclaw_agents_root is not None and sources.openclaw_agents_root.is_dir():
         native = OpenClawNativeAdapter(sources.openclaw_agents_root)
         for agent, database in native.databases():

@@ -11,6 +11,7 @@ from typing import Annotated
 import typer
 
 from session2memory.adapters import (
+    AntigravityAdapter,
     ClaudeAdapter,
     ClaudeDesktopAdapter,
     CodexAdapter,
@@ -85,6 +86,7 @@ from session2memory.session_start import (
     first_time,
     hook_output,
     is_resume,
+    payload_session_id,
     release,
     run_hook,
     served,
@@ -114,8 +116,8 @@ P0_TOOLS = (
     "hermes",
 )
 # Supported, but only imported when named with --tool (never part of the default set):
-# openclaw-native reads agent-private session stores, grok/muse are newer sources.
-OPT_IN_TOOLS = ("openclaw-native", "grok", "muse")
+# openclaw-native reads agent-private session stores, the others are newer sources.
+OPT_IN_TOOLS = ("openclaw-native", "grok", "muse", "antigravity")
 SUPPORTED_TOOLS = P0_TOOLS + OPT_IN_TOOLS
 DEFAULT_SOURCE_ROOTS = {
     "codex": Path("~/.codex/sessions"),
@@ -130,6 +132,7 @@ DEFAULT_SOURCE_ROOTS = {
     "openclaw-native": Path("~/.openclaw/agents"),
     "grok": Path("~/.grok/sessions"),
     "muse": Path("~/.local/share/muse/sessions"),
+    "antigravity": Path("~/.gemini/antigravity-cli"),
 }
 ADAPTERS: dict[str, AdapterFactory] = {
     "codex": CodexAdapter,
@@ -144,6 +147,7 @@ ADAPTERS: dict[str, AdapterFactory] = {
     "openclaw-native": OpenClawNativeAdapter,
     "grok": GrokAdapter,
     "muse": MuseAdapter,
+    "antigravity": AntigravityAdapter,
 }
 TOOL_EXECUTABLES = {
     "codex": ("codex",),
@@ -158,6 +162,7 @@ TOOL_EXECUTABLES = {
     "openclaw-native": ("openclaw",),
     "grok": ("grok",),
     "muse": ("muse",),
+    "antigravity": ("agy",),
 }
 DEFAULT_AGENTIC_OS_ROOT = Path("~/.agentic-os")
 
@@ -271,7 +276,7 @@ DEFAULT_HOOK_MAX_CHARS = 3000
 def session_start_hook(
     agent: Annotated[
         str,
-        typer.Option("--agent", help="Agent this hook runs in (claude, codex, grok or muse)."),
+        typer.Option("--agent", help="Agent this hook runs in (see hook-install)."),
     ] = "claude",
     event: Annotated[
         str, typer.Option("--event", help="Hook event this command is attached to.")
@@ -337,13 +342,13 @@ def session_start_hook(
         if not isinstance(payload, dict):
             payload = {}
         if observe:
-            session = str(payload.get("session_id") or payload.get("sessionId") or "")
+            session = payload_session_id(payload)
             if session and is_resume(payload):
                 served(seen_dir.expanduser(), agent, session)
             typer.echo("{}")
             return
         if once:
-            claimed = str(payload.get("session_id") or payload.get("sessionId") or "")
+            claimed = payload_session_id(payload)
             if not first_time(seen_dir.expanduser(), agent, claimed):
                 typer.echo("{}")
                 return
@@ -354,7 +359,10 @@ def session_start_hook(
         source_roots.update(_parse_source_root(source_root or []))
         config = HookConfig(
             agent=agent,
-            session_roots={tool: source_roots[tool] for tool in ("claude", "codex", "grok")},
+            session_roots={
+                tool: source_roots[tool]
+                for tool in ("claude", "codex", "grok", "antigravity")
+            },
             codex_memory_root=codex_memory_root.expanduser(),
             claude_projects_root=source_roots["claude"],
             ledger_path=ledger.expanduser(),
@@ -379,13 +387,14 @@ def session_start_hook(
     if explain:
         for note in result.notes:
             typer.echo(note, err=True)
-    typer.echo(hook_output(result.context, event))
+    style = AGENT_HOOKS[agent].output if agent in AGENT_HOOKS else "claude"
+    typer.echo(hook_output(result.context, event, style=style))
 
 
 @app.command("hook-install", help="Add or remove the memory hook in an agent's settings.")
 def hook_install(
     agent: Annotated[
-        str, typer.Option("--agent", help="Agent to change: claude, codex, grok or muse.")
+        str, typer.Option("--agent", help="claude, codex, grok, muse or antigravity.")
     ] = "claude",
     settings: Annotated[
         Path | None,
@@ -419,6 +428,7 @@ def _auto_config(
     store: Path,
     steps: list[str] | None,
     since_days: float,
+    rescan: bool,
     max_llm_calls: int,
     curate_scope: list[str] | None,
     llm_cmd: str | None,
@@ -434,6 +444,7 @@ def _auto_config(
         claude_root=roots["claude"],
         grok_root=roots["grok"],
         muse_root=roots["muse"],
+        antigravity_root=roots["antigravity"],
         openclaw_agents_root=roots["openclaw-native"] if include_openclaw else None,
         codex_memory_root=DEFAULT_CODEX_MEMORY_ROOT.expanduser(),
         openclaw_roots=openclaw_roots(state_dir),
@@ -447,6 +458,7 @@ def _auto_config(
         compress_homes=tuple(home for home in homes if home.home_id != "codex@main"),
         steps=tuple(steps) if steps else ALL_STEPS,
         since_days=since_days,
+        rescan=rescan,
         max_llm_calls=max_llm_calls,
         curate_scopes=tuple(curate_scope) if curate_scope else None,
         llm_command=llm_cmd,
@@ -475,6 +487,16 @@ def auto_run(
     since_days: Annotated[
         float, typer.Option("--since-days", help="How far back the first scan looks.")
     ] = 30.0,
+    rescan: Annotated[
+        bool,
+        typer.Option(
+            "--rescan",
+            help=(
+                "Scan the whole --since-days window again instead of from the last scan, "
+                "e.g. after a new kind of session store became readable."
+            ),
+        ),
+    ] = False,
     max_llm_calls: Annotated[
         int, typer.Option("--max-llm-calls", help="Upper bound on curation calls in this run.")
     ] = 20,
@@ -516,6 +538,7 @@ def auto_run(
         store=store,
         steps=step,
         since_days=since_days,
+        rescan=rescan,
         max_llm_calls=max_llm_calls,
         curate_scope=curate_scope,
         llm_cmd=llm_cmd,

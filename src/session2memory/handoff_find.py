@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+from session2memory.adapters.antigravity import (
+    AntigravityAdapter,
+    conversations_of,
+    transcript_path,
+)
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import ROLLOUT_PATTERNS, CodexAdapter
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
@@ -118,6 +123,13 @@ def find_grok(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]
     yield from _read_each(_newest(directory.glob(f"*/{CHAT_HISTORY}"), limit), adapter.read_file)
 
 
+def find_antigravity(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]:
+    """Antigravity's own index says which conversations belong to a workspace."""
+    adapter = AntigravityAdapter(root)
+    paths = [transcript_path(root, identifier) for identifier in conversations_of(root, workspace)]
+    yield from _read_each(_newest((p for p in paths if p.is_file()), limit), adapter.read_file)
+
+
 def find_muse(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]:
     """Muse has no per-workspace index: inspect the newest sessions and match their cwd."""
     adapter = MuseAdapter(root)
@@ -171,11 +183,12 @@ FINDERS: Mapping[str, Finder] = {
     "codex": find_codex,
     "grok": find_grok,
     "muse": find_muse,
+    "antigravity": find_antigravity,
     "openclaw-native": find_openclaw_native,
 }
 # Searched when no tool is named. ``openclaw-native`` holds agent-private sessions and is
 # only searched when asked for explicitly.
-DEFAULT_HANDOFF_TOOLS = ("codex", "claude", "grok", "muse")
+DEFAULT_HANDOFF_TOOLS = ("codex", "claude", "grok", "muse", "antigravity")
 
 
 def has_conversation(record: SessionRecord) -> bool:
@@ -259,4 +272,3 @@ def select_session(
     raise SessionSelectionError(
         f"no session {wanted!r} for this workspace; most recent sessions: {shown}"
     )
-

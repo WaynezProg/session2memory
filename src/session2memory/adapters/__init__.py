@@ -1,3 +1,4 @@
+from session2memory.adapters.antigravity import AntigravityAdapter
 from session2memory.adapters.claude import ClaudeAdapter, ClaudeDesktopAdapter
 from session2memory.adapters.codex import CodexAdapter
 from session2memory.adapters.cursor import CursorAdapter, CursorCliAdapter
@@ -10,6 +11,7 @@ from session2memory.adapters.opencode import OpenCodeAdapter
 from session2memory.adapters.qwen import QwenAdapter
 
 __all__ = [
+    "AntigravityAdapter",
     "ClaudeAdapter",
     "ClaudeDesktopAdapter",
     "CodexAdapter",
