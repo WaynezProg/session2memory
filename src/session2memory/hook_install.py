@@ -76,10 +76,11 @@ def hook_command(executable: Path, agent: str, seen_dir: str = DEFAULT_SEEN_DIR)
     if spec.session_env is None:
         return command
     # The event fires on every tool call: answer from the shell once the session has had
-    # its injection, without starting Python.
+    # its injection (a filled marker; an empty one is a claim still being worked on),
+    # without starting Python.
     directory = seen_dir.replace("~", "$HOME", 1) if seen_dir.startswith("~") else seen_dir
     marker = f'"{directory}/{agent}-${{{spec.session_env}:-}}"'
-    return f"[ -e {marker} ] && exit 0; {command}"
+    return f"[ -s {marker} ] && exit 0; {command}"
 
 
 def _is_our_hook(hook: object) -> bool:

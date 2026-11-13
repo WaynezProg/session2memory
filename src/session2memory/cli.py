@@ -84,7 +84,9 @@ from session2memory.session_start import (
     HookConfig,
     first_time,
     hook_output,
+    release,
     run_hook,
+    served,
 )
 from session2memory.solidify import SolidifyError, solidify_distill
 from session2memory.state.store import StateStore
@@ -320,18 +322,20 @@ def session_start_hook(
     ] = Path("~/.local/share/session2memory/store"),
 ) -> None:
     """Reads the hook payload on stdin and prints the hook JSON. Never fails the session."""
+    claimed = ""
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
         if not isinstance(payload, dict):
             payload = {}
         if once:
-            session = str(payload.get("session_id") or payload.get("sessionId") or "")
-            if not first_time(seen_dir.expanduser(), agent, session):
+            claimed = str(payload.get("session_id") or payload.get("sessionId") or "")
+            if not first_time(seen_dir.expanduser(), agent, claimed):
                 typer.echo("{}")
                 return
-            # The session's first tool call stands for its start.
-            payload = {**payload, "source": "startup"}
+            # The session's first tool call stands for its start, unless the agent says
+            # what this session is (a resumed one gets nothing, as everywhere else).
+            payload = {"source": "startup", **payload}
         source_roots = _default_source_roots()
         source_roots.update(_parse_source_root(source_root or []))
         config = HookConfig(
@@ -350,10 +354,14 @@ def session_start_hook(
         )
         result = run_hook(config, payload, os.environ)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
+        if claimed:
+            release(seen_dir.expanduser(), agent, claimed)
         if explain:
             typer.echo(f"session-start-hook: {type(exc).__name__}: {exc}", err=True)
         typer.echo("{}")
         return
+    if claimed:
+        served(seen_dir.expanduser(), agent, claimed)
     if explain:
         for note in result.notes:
             typer.echo(note, err=True)
@@ -565,18 +573,26 @@ def auto_search(
         hits = None
         if mode not in ("auto", "keyword", "semantic"):
             raise typer.BadParameter("--mode must be auto, keyword or semantic")
-        if mode != "keyword" and opened.vector_digests(embed_model_name()):
-            embedder = load_embedder()
-            if embedder is not None:
-                hits = semantic_search(
-                    opened,
-                    query,
-                    embedder=embedder,
-                    reranker=load_reranker() if rerank else None,
-                    project=project,
-                    reader=scope,
-                    limit=limit,
-                )
+        if mode != "keyword" and opened.has_vectors(
+            embed_model_name(), project=project, reader=scope
+        ):
+            # Models are loaded only when this reader has something to compare, and any
+            # failure there (a model that cannot be fetched) leaves keyword search.
+            try:
+                embedder = load_embedder()
+                if embedder is not None:
+                    hits = semantic_search(
+                        opened,
+                        query,
+                        embedder=embedder,
+                        reranker=load_reranker() if rerank else None,
+                        project=project,
+                        reader=scope,
+                        limit=limit,
+                    )
+            except Exception as exc:  # noqa: BLE001 - search must still answer
+                typer.echo(f"semantic search failed ({type(exc).__name__}: {exc})", err=True)
+                hits = None
         if hits is None:
             if mode == "semantic":
                 typer.echo(

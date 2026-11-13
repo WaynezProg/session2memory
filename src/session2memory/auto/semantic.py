@@ -52,14 +52,29 @@ def model_cache() -> str:
     return os.path.expanduser(os.environ.get(MODEL_CACHE_ENV) or DEFAULT_MODEL_CACHE)
 
 
+# Models trained with a marker in front of the text need it at both ends; fastembed does
+# not add it. ``(document, question)`` by a fragment of the model name.
+TASK_PREFIXES = {
+    "e5": ("passage: ", "query: "),
+    "nomic-embed": ("search_document: ", "search_query: "),
+}
+
+
+def task_prefixes(model: str) -> tuple[str, str]:
+    lowered = model.lower()
+    for fragment, prefixes in TASK_PREFIXES.items():
+        if fragment in lowered:
+            return prefixes
+    return ("", "")
+
+
 class FastEmbedEmbedder:
     def __init__(self, model: str) -> None:
         from fastembed import TextEmbedding
 
         self.model = model
         self._model = TextEmbedding(model, cache_dir=model_cache())
-        # The e5 family was trained with these markers and needs them at both ends.
-        self._prefixes = ("passage: ", "query: ") if "e5" in model.lower() else ("", "")
+        self._prefixes = task_prefixes(model)
 
     def embed(self, texts: Sequence[str], *, query: bool = False) -> list[list[float]]:
         prefix = self._prefixes[1 if query else 0]

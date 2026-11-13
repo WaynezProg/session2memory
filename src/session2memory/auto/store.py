@@ -620,6 +620,17 @@ class AutoStore:
         self._connection.commit()
         return len(stale) + max(other, 0)
 
+    def has_vectors(
+        self, model: str, *, project: str | None = None, reader: Reader = "coding"
+    ) -> bool:
+        """Whether any row this reader may search in this workspace has a vector."""
+        known = self.vector_digests(model)
+        if not known:
+            return False
+        return any(
+            ref in known for _, ref, _, _ in self.search_rows(project=project, reader=reader)
+        )
+
     def vectors(self, model: str, refs: set[str]) -> dict[str, bytes]:
         try:
             rows = self._connection.execute(

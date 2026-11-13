@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,15 @@ from typer.testing import CliRunner
 
 from session2memory.cli import app
 from session2memory.hook_install import AGENT_HOOKS, hook_command, update_settings
-from session2memory.session_start import first_time, hook_output, run_hook, seen_marker
+from session2memory.session_start import (
+    CLAIM_RETRY_SECONDS,
+    first_time,
+    hook_output,
+    release,
+    run_hook,
+    seen_marker,
+    served,
+)
 
 EXE = Path("/opt/s2m/bin/session2memory")
 
@@ -69,7 +78,7 @@ def test_grok_hook_lives_in_its_own_file_on_the_first_tool_call(tmp_path: Path) 
     assert list(written["hooks"]) == ["PreToolUse"], "Grok's SessionStart cannot reach the model"
     command = written["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     assert command == (
-        '[ -e "$HOME/.local/share/session2memory/hook-seen/grok-${GROK_SESSION_ID:-}" ] '
+        '[ -s "$HOME/.local/share/session2memory/hook-seen/grok-${GROK_SESSION_ID:-}" ] '
         f"&& exit 0; '{EXE.as_posix()}' session-start-hook --agent grok "
         "--event PreToolUse --once"
     )
@@ -112,6 +121,9 @@ def test_the_shell_guard_skips_python_once_the_session_was_served(tmp_path: Path
     assert fire() == "ran"
     assert first_time(seen, "grok", "01a1-abc", NOW) is True
     assert seen_marker(seen, "grok", "01a1-abc").exists()
+    assert fire() == "ran", "a claim that is still being answered does not stop the guard"
+    assert first_time(seen, "grok", "01a1-abc", NOW) is False, "but only one caller holds it"
+    served(seen, "grok", "01a1-abc")
     assert fire() == "", "served sessions are answered by the shell alone"
     assert first_time(seen, "grok", "01a1-abc", NOW) is False
     assert first_time(seen, "grok", "", NOW) is False, "no session id: never inject"
@@ -177,3 +189,61 @@ def test_cli_once_injects_on_the_first_firing_only(bench: Bench) -> None:
         app, arguments, input=json.dumps({"sessionId": "g2", "cwd": bench.cwd.as_posix()})
     )
     assert "hookSpecificOutput" in json.loads(other.output)
+
+
+def test_a_failed_or_abandoned_claim_can_be_taken_again(tmp_path: Path) -> None:
+    seen = tmp_path / "seen"
+    assert first_time(seen, "grok", "s1", NOW) is True
+    release(seen, "grok", "s1")
+    assert first_time(seen, "grok", "s1", NOW) is True, "released after a failure"
+
+    marker = seen_marker(seen, "grok", "s1")
+    os.utime(marker, (NOW.timestamp(), NOW.timestamp()))
+    soon = NOW + timedelta(seconds=CLAIM_RETRY_SECONDS - 1)
+    later = NOW + timedelta(seconds=CLAIM_RETRY_SECONDS + 1)
+    assert first_time(seen, "grok", "s1", soon) is False, "the first caller may still be at work"
+    assert first_time(seen, "grok", "s1", later) is True, "a hook killed by its timeout"
+
+    served(seen, "grok", "s1")
+    release(seen, "grok", "s1")
+    assert marker.read_text(encoding="utf-8") == "done\n", "a served session is never released"
+    assert first_time(seen, "grok", "s1", later + timedelta(days=1)) is False
+
+
+def test_cli_once_releases_its_claim_when_the_hook_fails(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import session2memory.cli as cli_module
+
+    claude_memory(bench.claude_root, bench.cwd)
+    seen = bench.tmp / "seen"
+    arguments = [
+        *[("grok" if a == "claude" else a) for a in hook_arguments(bench)],
+        "--event", "PreToolUse", "--once", "--seen-dir", seen.as_posix(),
+    ]  # fmt: skip
+    payload = json.dumps({"sessionId": "g1", "cwd": bench.cwd.as_posix()})
+    real = cli_module.run_hook
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("store is locked")
+
+    monkeypatch.setattr(cli_module, "run_hook", broken)
+    failed = CliRunner().invoke(app, arguments, input=payload)
+    monkeypatch.setattr(cli_module, "run_hook", real)
+    retried = CliRunner().invoke(app, arguments, input=payload)
+
+    assert json.loads(failed.output) == {}
+    assert "匯出格式" in json.loads(retried.output)["hookSpecificOutput"]["additionalContext"]
+    assert json.loads(CliRunner().invoke(app, arguments, input=payload).output) == {}
+
+
+def test_cli_once_keeps_a_resumed_session_silent(bench: Bench) -> None:
+    claude_memory(bench.claude_root, bench.cwd)
+    arguments = [
+        *[("grok" if a == "claude" else a) for a in hook_arguments(bench)],
+        "--event", "PreToolUse", "--once", "--seen-dir", (bench.tmp / "seen").as_posix(),
+    ]  # fmt: skip
+    for session, source in (("r1", "load"), ("r2", "resume")):
+        payload = {"sessionId": session, "cwd": bench.cwd.as_posix(), "source": source}
+        result = CliRunner().invoke(app, arguments, input=json.dumps(payload))
+        assert json.loads(result.output) == {}, source

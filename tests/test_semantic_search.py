@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 
 import session2memory.cli as cli_module
 from session2memory.auto.run import run_auto
-from session2memory.auto.semantic import embed_pending, semantic_search
+from session2memory.auto.semantic import embed_pending, semantic_search, task_prefixes
 from session2memory.auto.store import AutoStore
 from session2memory.cli import app
 
@@ -276,3 +276,61 @@ def test_every_keyword_hit_reaches_the_reranker_when_the_pool_is_full(store: Aut
 
     assert set(hits) == {tail, *outside}
     assert len(reranker.seen) == 20
+
+
+def test_models_are_not_loaded_when_this_reader_has_nothing_to_compare(
+    machine: Machine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = machine.store()
+    remember(opened, "部署前先跑測試")
+    embedder = ConceptEmbedder()
+    embed_pending(opened, embedder)
+    monkeypatch.setattr(cli_module, "embed_model_name", lambda: embedder.model)
+    loaded: list[str] = []
+
+    def load() -> ConceptEmbedder:
+        loaded.append("embedder")
+        return embedder
+
+    monkeypatch.setattr(cli_module, "load_embedder", load)
+    base = ["auto", "search", "部署", "--store", machine.store_dir.as_posix()]
+
+    assert opened.has_vectors(embedder.model) is True
+    assert opened.has_vectors(embedder.model, reader="openclaw") is False
+    empty = CliRunner().invoke(app, [*base, "--workspace", "/nowhere/else"])
+    agent = CliRunner().invoke(app, [*base, "--reader", "openclaw"])
+    assert "no match" in empty.output and "no match" in agent.output
+    assert loaded == [], "nothing to compare: no model was loaded"
+
+    assert "部署前先跑測試" in CliRunner().invoke(app, base).output
+    assert loaded == ["embedder"]
+
+
+def test_a_model_that_cannot_be_loaded_leaves_keyword_search(
+    machine: Machine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = machine.store()
+    remember(opened, "部署前先跑測試")
+    embedder = ConceptEmbedder()
+    embed_pending(opened, embedder)
+    monkeypatch.setattr(cli_module, "embed_model_name", lambda: embedder.model)
+
+    def unavailable() -> ConceptEmbedder:
+        raise OSError("model download failed")
+
+    monkeypatch.setattr(cli_module, "load_embedder", unavailable)
+    result = CliRunner().invoke(
+        app, ["auto", "search", "部署 測試", "--store", machine.store_dir.as_posix()]
+    )
+
+    assert result.exit_code == 0 and "部署前先跑測試" in result.output
+    assert "semantic search failed" in result.output
+
+
+def test_models_trained_with_task_markers_get_them() -> None:
+    assert task_prefixes("intfloat/multilingual-e5-large") == ("passage: ", "query: ")
+    assert task_prefixes("nomic-ai/nomic-embed-text-v1.5") == (
+        "search_document: ",
+        "search_query: ",
+    )
+    assert task_prefixes("BAAI/bge-small-zh-v1.5") == ("", "")
