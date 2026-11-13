@@ -534,7 +534,10 @@ one model call per project and touches only a temporary store. One run with the 
 command (`claude -p --model haiku`, 2026-11-14, 7 calls, $0.005): 4 of 4 contradictions
 found with the right winner, 2 of 2 repeats merged, 27 of 29 other entries left alone. The
 two that changed were a general rule and the later entry that adds its details, merged into
-one. This is a single run; it was not repeated to measure variance.
+one. This is a single run; it was not repeated to measure variance. It was scored by the
+status of each entry only; the script has since been made stricter (a retirement must name
+the entry that replaced it, a merge must join exactly the expected entries and keep their
+key words) and the run has not been repeated under the stricter scoring.
 
 **Token use.** The model never sees transcripts or tool output, only digests (at most
 3,000 characters per session). Sessions of one project share a call. The default command

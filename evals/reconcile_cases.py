@@ -12,25 +12,30 @@ runs the real ``reconcile`` (one model call per project, so a run costs one call
 project per repeat), and compares what changed with what was expected.
 
 Reported:
-- contradictions found: expected retirements that happened, with the right winner;
-- repeats merged: expected groups whose members were merged into one entry;
+- contradictions found: the older entry was retired, the newer one still stands, and the
+  retirement names that newer entry as its reason;
+- repeats merged: the members of a group, and nothing else, now stand as one active entry
+  that still contains the group's key words;
 - left alone: entries that should stay active and did;
 - wrong changes: entries that changed although they should not have (the costly error).
 
-Nothing outside a temporary directory is read or written, apart from running the command.
+The store lives in a temporary directory. The command itself is run as curation runs it
+(inherited environment, a temporary working directory); what that program reads or writes
+on its own is outside this script's control.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from session2memory.auto.curate import default_runner
+from session2memory.auto.curate import Runner, default_runner
 from session2memory.auto.reconcile import reconcile
 from session2memory.auto.store import AutoStore
 from session2memory.state.store import StateStore
@@ -55,6 +60,8 @@ class Case:
     retire: tuple[tuple[str, str], ...] = ()
     # groups of entries that say the same thing
     merge: tuple[tuple[str, ...], ...] = ()
+    # for each group, words the merged entry must still contain
+    merge_keeps: tuple[tuple[str, ...], ...] = ()
 
 
 E = Entry
@@ -100,6 +107,7 @@ CASES = (
             E("tests", "procedure", 7, "驗證以 swift test --filter 在 worktree 執行，主要是 MealCoreTests。"),
         ),
         merge=(("thumb-a", "thumb-b"), ("commit-a", "commit-b")),
+        merge_keeps=(("320", "JPEG"), ("commit", "push")),
     ),
     Case(
         "/eval/stack",
@@ -164,7 +172,11 @@ class Score:
     cost_usd: float = 0.0
 
 
-def run_case(case: Case, runner, score: Score) -> None:  # type: ignore[no-untyped-def]
+_MERGED_INTO = re.compile(r"合併為 (m_[0-9a-f]+)")
+_GIVES_WAY_TO = re.compile(r"與 ([^）]*) 矛盾")
+
+
+def run_case(case: Case, runner: Runner, score: Score) -> None:
     with tempfile.TemporaryDirectory() as scratch:
         state = StateStore.open(Path(scratch) / "eval.db")
         try:
@@ -184,7 +196,26 @@ def run_case(case: Case, runner, score: Score) -> None:  # type: ignore[no-untyp
             score.calls += report.llm_calls
             score.failures += report.llm_failures
             score.cost_usd += report.cost_usd
-            status = {key: store.get_memory(memory_id).status for key, memory_id in ids.items()}  # type: ignore[union-attr]
+            status: dict[str, str] = {}
+            winners: dict[str, set[str]] = {}  # a retired entry -> what it gave way to
+            merged_into: dict[str, str] = {}  # an entry -> the memory that now stands for it
+            for key, memory_id in ids.items():
+                row = store.get_memory(memory_id)
+                assert row is not None
+                status[key] = row.status
+                if row.status == "active":
+                    merged_into[key] = memory_id
+                for op, detail, _at in store.events(memory_id):
+                    reason = str(detail.get("reason") or "")
+                    if op == "retired" and (found := _GIVES_WAY_TO.search(reason)):
+                        winners[key] = {one.strip() for one in found.group(1).split(",")}
+                    if op == "superseded" and (found := _MERGED_INTO.search(reason)):
+                        merged_into[key] = found.group(1)
+            texts = {
+                memory_id: row.text
+                for memory_id in set(merged_into.values())
+                if (row := store.get_memory(memory_id)) is not None and row.status == "active"
+            }
         finally:
             state.close()
 
@@ -192,20 +223,35 @@ def run_case(case: Case, runner, score: Score) -> None:  # type: ignore[no-untyp
     for loser, winner in case.retire:
         score.contradictions += 1
         touched.update((loser, winner))
-        if status[loser] == "retired" and status[winner] == "active":
+        # Retired, the expected entry still stands, and it is the one named as the reason.
+        if (
+            status[loser] == "retired"
+            and status[winner] == "active"
+            and winners.get(loser) == {ids[winner]}
+        ):
             score.contradictions_found += 1
         else:
-            score.missed.append(f"{case.project}: {loser} should lose to {winner} ({status[loser]}/{status[winner]})")
-    for group in case.merge:
+            score.missed.append(
+                f"{case.project}: {loser} should lose to {winner} "
+                f"({status[loser]}/{status[winner]}, gave way to {sorted(winners.get(loser, []))})"
+            )
+    for index, group in enumerate(case.merge):
         score.repeats += 1
         touched.update(group)
-        # A merge leaves at most one member active (when the merged text equals it).
-        if sum(status[key] == "active" for key in group) <= 1 and all(
-            status[key] in {"active", "superseded"} for key in group
-        ):
+        # Every member, and nothing else, now stands as one active entry that still says
+        # what the members said.
+        targets = {merged_into.get(key) for key in group}
+        target = next(iter(targets)) if len(targets) == 1 else None
+        others = [key for key, where in merged_into.items() if where == target and key not in group]
+        keeps = case.merge_keeps[index] if index < len(case.merge_keeps) else ()
+        text = texts.get(target or "", "")
+        if target and target in texts and not others and all(word in text for word in keeps):
             score.repeats_merged += 1
         else:
-            score.missed.append(f"{case.project}: {'+'.join(group)} should be merged ({[status[k] for k in group]})")
+            score.missed.append(
+                f"{case.project}: {'+'.join(group)} should be one entry "
+                f"({[status[key] for key in group]}, mixed with {others}, text {text[:60]!r})"
+            )
     for entry in case.entries:
         if entry.key in touched:
             continue
