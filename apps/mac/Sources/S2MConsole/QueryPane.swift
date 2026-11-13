@@ -37,6 +37,10 @@ struct QueryPane: View {
                 Placeholder(
                     text: "Runs `ks query … --writeback=no` in the HKS folder set in Settings.")
             }
+            if running {
+                // Nothing below fills the pane while a query runs; keep the field at the top.
+                Spacer(minLength: 0)
+            }
         }
         .navigationTitle("HKS Query")
     }
