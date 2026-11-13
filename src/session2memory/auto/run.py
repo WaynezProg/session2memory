@@ -1,4 +1,4 @@
-"""One unattended run: scan, compress and archive, curate memory, export, index.
+"""One unattended run: scan, compress and archive, curate and reconcile memory, export, index.
 
 Each step is independent and reports what it did; a failing step is recorded and the
 others still run. A lock file keeps two runs from overlapping.
@@ -20,13 +20,14 @@ from pathlib import Path
 from session2memory.auto.curate import Runner, curate, default_runner
 from session2memory.auto.export import export
 from session2memory.auto.files import archive_claude, compress_codex_rollouts, purge_holding
+from session2memory.auto.reconcile import reconcile
 from session2memory.auto.scan import DEFAULT_MAX_FILE_BYTES, ScanSources, scan
 from session2memory.auto.semantic import Embedder, embed_pending, load_embedder
 from session2memory.auto.store import AutoStore, now_iso
 from session2memory.models import SourceHome
 from session2memory.state.store import StateStore
 
-ALL_STEPS = ("scan", "compress", "archive", "curate", "embed", "export", "index")
+ALL_STEPS = ("scan", "compress", "archive", "curate", "reconcile", "embed", "export", "index")
 DB_NAME = "session2memory.db"
 LAST_SCAN_KEY = "last_scan_at"
 SCAN_OVERLAP = timedelta(hours=2)
@@ -46,6 +47,9 @@ class AutoConfig:
     rescan: bool = False
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     max_llm_calls: int = 20
+    # Calls the reconcile step may spend looking for contradicting or repeated memories;
+    # 0 turns the step off.
+    max_reconcile_calls: int = 5
     llm_command: str | None = None
     compress_min_age_days: float = 14.0
     hold_days: float = 3.0
@@ -230,6 +234,19 @@ def _run_step(
             older_than_days=config.stale_after_days, run_id=run_id, now=now
         )
         return result
+    if step == "reconcile":
+        if config.dry_run:
+            return {"skipped": "dry run"}
+        if config.max_reconcile_calls <= 0:
+            return {"skipped": "turned off (--max-reconcile-calls 0)"}
+        return reconcile(
+            store,
+            runner or default_runner(config.llm_command),
+            max_calls=config.max_reconcile_calls,
+            run_id=run_id,
+            now=now,
+            scopes=config.curate_scopes,
+        ).as_dict()
     if step == "embed":
         if config.dry_run:
             return {"skipped": "dry run"}

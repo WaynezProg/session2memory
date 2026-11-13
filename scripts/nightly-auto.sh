@@ -11,6 +11,8 @@ Usage: scripts/nightly-auto.sh [--dry-run] [extra `session2memory auto run` opti
 Environment overrides:
   SESSION2MEMORY_AUTO_STORE           persistent store (default ~/.local/share/session2memory/store)
   SESSION2MEMORY_AUTO_MAX_LLM_CALLS   curation call budget per run (default 40)
+  SESSION2MEMORY_AUTO_MAX_RECONCILE_CALLS  calls spent looking for contradicting or repeated
+                                      memories per run (default 5; 0 turns it off)
   SESSION2MEMORY_AUTO_CURATE_SCOPE    scopes to curate, space separated (default: coding);
                                       "all" curates OpenClaw agents' sessions too
   SESSION2MEMORY_AUTO_SEMANTIC        1 = install the `semantic` extra and keep embeddings
@@ -33,7 +35,9 @@ log_dir="$store/logs"
 mkdir -p "$log_dir"
 report="$log_dir/run-$(date +%Y%m%d-%H%M%S).json"
 
-args=(auto run --store "$store" --max-llm-calls "$max_calls" --json)
+reconcile_calls="${SESSION2MEMORY_AUTO_MAX_RECONCILE_CALLS:-5}"
+args=(auto run --store "$store" --max-llm-calls "$max_calls" \
+  --max-reconcile-calls "$reconcile_calls" --json)
 # OpenClaw agents produce hundreds of machine-triggered sessions a day and keep their own
 # memory; by default only sessions of coding tools are distilled.
 curate_scope="${SESSION2MEMORY_AUTO_CURATE_SCOPE:-coding}"
