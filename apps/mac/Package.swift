@@ -8,6 +8,11 @@ let package = Package(
         .executableTarget(
             name: "S2MConsole",
             path: "Sources/S2MConsole"
-        )
+        ),
+        .testTarget(
+            name: "S2MConsoleTests",
+            dependencies: ["S2MConsole"],
+            path: "Tests/S2MConsoleTests"
+        ),
     ]
 )

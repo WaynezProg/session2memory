@@ -16,7 +16,7 @@ Architecture, pipeline, session-start and data-model diagrams are in
 [docs/architecture.md](docs/architecture.md).
 
 A native macOS console for browsing memory, sessions and runs, and for testing HKS
-queries, is in [apps/mac](apps/mac/README.md) (not yet compiled; see its README).
+queries, is in [apps/mac](apps/mac/README.md).
 
 ## Supported P0 Sources
 

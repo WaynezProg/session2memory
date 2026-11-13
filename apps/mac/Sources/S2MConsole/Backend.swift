@@ -14,14 +14,54 @@ enum SettingKey {
     static let hksCommand = "hksCommand"
     static let ksRoot = "ksRoot"
 
-    static let defaults: [String: Any] = [
-        s2mDirectory: "~/session2memory",
-        s2mCommand: "uv run session2memory",
-        storeDirectory: "",
-        hksDirectory: "~/Hybrid-Knowledge-System",
-        hksCommand: "uv run ks",
-        ksRoot: "",
-    ]
+    static var defaults: [String: Any] {
+        let s2m = RepositoryFinder.session2memory()
+        return [
+            s2mDirectory: s2m ?? "",
+            s2mCommand: "uv run session2memory",
+            storeDirectory: "",
+            hksDirectory: s2m.flatMap(RepositoryFinder.hks(beside:)) ?? "",
+            hksCommand: "uv run ks",
+            ksRoot: "",
+        ]
+    }
+}
+
+/// Finds the two repositories for the first start, so no personal path is built in.
+/// Settings override whatever is found here.
+enum RepositoryFinder {
+    /// The session2memory checkout this app was built in or started from: the nearest
+    /// folder above the executable or the working directory that holds its sources.
+    static func session2memory(
+        from starts: [String] = [
+            Bundle.main.bundlePath, FileManager.default.currentDirectoryPath,
+        ]
+    ) -> String? {
+        for start in starts {
+            var url = URL(fileURLWithPath: start).standardizedFileURL
+            while url.path != "/" {
+                if isDirectory(url.appendingPathComponent("src/session2memory")) {
+                    return url.path
+                }
+                url.deleteLastPathComponent()
+            }
+        }
+        return nil
+    }
+
+    /// An HKS checkout next to the session2memory one, under its repository name.
+    static func hks(beside s2m: String) -> String? {
+        let candidate = URL(fileURLWithPath: s2m)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Hybrid-Knowledge-System")
+        return isDirectory(candidate.appendingPathComponent("src/hks")) ? candidate.path : nil
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory)
+            && directory.boolValue
+    }
 }
 
 private final class DataBox: @unchecked Sendable {
