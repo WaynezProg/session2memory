@@ -21,8 +21,9 @@ the schema can change without the app.
 
 It builds with Swift 6.4 (Xcode 27) on macOS 27 and `swift test` passes. The models in
 `Models.swift` were checked against what `auto console` and `ks query` print for a real
-store. The window opens on the Memory pane; the other panes have not been clicked through
-by hand yet.
+store. All five panes were opened against that store: Memory with one entry's detail,
+Sessions with a digest, Runs with a report, HKS Query with a hit and a no-hit, and
+Settings with **Check both commands**. Retire and Restore have not been pressed.
 
 ## Build and run
 
