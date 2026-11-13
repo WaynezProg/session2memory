@@ -256,3 +256,23 @@ def test_a_row_newer_than_the_last_embed_is_found_by_its_words(store: AutoStore)
             )
         )
         assert fresh in hits and len(hits) == len(set(hits))
+
+
+def test_every_keyword_hit_reaches_the_reranker_when_the_pool_is_full(store: AutoStore) -> None:
+    """A keyword hit at the tail of the vector candidates must not be pushed out by others."""
+    for index in range(19):
+        remember(store, f"部署 上線 deploy 步驟 {index}")
+    tail = remember(store, "VID-7 封面 檢查 部署")  # shares the query's meaning, weakly
+    outside = [remember(store, f"VID-7 封面 檢查 備註 {index}") for index in range(4)]
+    embedder = ConceptEmbedder()
+    embed_pending(store, embedder)
+    reranker = PreferWord("VID-7")
+
+    hits = refs(
+        semantic_search(
+            store, "部署 VID-7 封面 檢查", embedder=embedder, reranker=reranker, limit=5
+        )
+    )
+
+    assert set(hits) == {tail, *outside}
+    assert len(reranker.seen) == 20

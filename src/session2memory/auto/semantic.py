@@ -63,9 +63,13 @@ class FastEmbedEmbedder:
 
     def embed(self, texts: Sequence[str], *, query: bool = False) -> list[list[float]]:
         prefix = self._prefixes[1 if query else 0]
-        return [
-            [float(x) for x in vector] for vector in self._model.embed([prefix + t for t in texts])
-        ]
+        prepared = [prefix + text for text in texts]
+        # Some models encode a question differently from a passage; fastembed exposes
+        # that through these two entry points and falls back to plain embedding.
+        vectors = (
+            self._model.query_embed(prepared) if query else self._model.passage_embed(prepared)
+        )
+        return [[float(x) for x in vector] for vector in vectors]
 
 
 class FastEmbedReranker:
@@ -200,11 +204,18 @@ def semantic_search(
     # Meaning leads. Measured on real memory, merging the two rankings as equals pushed
     # the right row down, so keyword hits only make sure an exact name or id that the
     # vectors missed is among the candidates the reranker reads.
-    head = by_meaning[:size]
-    # A row written after the last embed step has no vector yet; a keyword hit still counts.
-    missing = [ref for ref in by_words if ref in rows and ref not in set(head)]
-    if missing:
-        head = [*head[: size - len(missing)], *missing]
+    # Every selected keyword hit stays; only other candidates give up their place. A row
+    # written after the last embed step has no vector yet and counts by its words alone.
+    chosen = [ref for ref in by_words if ref in rows]
+    room = size - len(chosen)
+    head = []
+    for ref in by_meaning:
+        if ref in chosen:
+            head.append(ref)
+        elif room > 0:
+            head.append(ref)
+            room -= 1
+    head += [ref for ref in chosen if ref not in similar]
     if reranker is None:
         # Nothing will compare them with the rest: rows the vectors cannot rank at all go
         # first, since shared words are the only evidence there is for them.
