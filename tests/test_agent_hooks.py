@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -315,4 +316,32 @@ def test_only_one_caller_takes_over_an_abandoned_claim(tmp_path: Path) -> None:
 
     assert first_time(seen, "grok", "s1", later) is True
     assert first_time(seen, "grok", "s1", later) is False, "the takeover is itself a fresh claim"
-    assert [p.name for p in seen.iterdir()] == ["grok-s1"], "nothing is left behind"
+    assert sorted(p.name for p in seen.iterdir()) == [".lock", "grok-s1"]
+
+
+def test_parallel_callers_of_an_abandoned_claim_get_it_once(tmp_path: Path) -> None:
+    """Many tool calls retrying at the same moment: exactly one may inject."""
+    seen = tmp_path / "seen"
+    assert first_time(seen, "grok", "s1", NOW) is True
+    later = NOW + timedelta(seconds=CLAIM_RETRY_SECONDS + 5)
+    script = (
+        "import sys\n"
+        "from datetime import datetime\n"
+        "from pathlib import Path\n"
+        "from session2memory.session_start import first_time\n"
+        "print(first_time(Path(sys.argv[1]), 'grok', 's1', datetime.fromisoformat(sys.argv[2])))\n"
+    )
+    for attempt in range(3):
+        marker = seen / "grok-s1"
+        marker.write_text("", encoding="utf-8")
+        os.utime(marker, (NOW.timestamp(), NOW.timestamp()))
+        running = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, seen.as_posix(), later.isoformat()],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(8)
+        ]
+        answers = [process.communicate()[0].strip() for process in running]
+        assert answers.count("True") == 1, (attempt, answers)
