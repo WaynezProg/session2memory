@@ -19,9 +19,10 @@ the schema can change without the app.
 
 ## Status
 
-**This code has not been compiled.** It was written on a machine without a Swift toolchain
-or macOS SDK. Expect to fix compile errors on the first build; the command-line side it
-talks to (`auto console`) is covered by `tests/test_console.py`.
+It builds with Swift 6.4 (Xcode 27) on macOS 27 and `swift test` passes. The models in
+`Models.swift` were checked against what `auto console` and `ks query` print for a real
+store. The window opens on the Memory pane; the other panes have not been clicked through
+by hand yet.
 
 ## Build and run
 
@@ -34,8 +35,15 @@ swift run            # builds and opens the window
 
 Or open `apps/mac/Package.swift` in Xcode and run the `S2MConsole` scheme.
 
-On first start, open **Settings** in the sidebar, set the two repository folders, and
-press **Check both commands**.
+No folder is built in. On first start the session2memory folder is the checkout the app
+was built in or started from (the nearest folder above it that holds `src/session2memory`),
+and the HKS folder is a checkout named `Hybrid-Knowledge-System` next to it, if there is
+one. Anything not found is left empty: open **Settings** in the sidebar, set the two
+repository folders, and press **Check both commands**. What you set there is kept.
+
+```bash
+swift test           # JSON decoding, shell quoting, finding the checkout
+```
 
 ## How it starts the commands
 
