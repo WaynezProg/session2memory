@@ -1312,8 +1312,8 @@ class CodexTree:
 
 
 def after_hold() -> datetime:
-    """A moment past the holding period of a compression done just now (wall clock)."""
-    return datetime.now(UTC) + timedelta(days=4)
+    """A moment past the holding period of a compression done at ``NOW``."""
+    return NOW + timedelta(days=4)
 
 
 @needs_zstd
@@ -1363,7 +1363,9 @@ def test_held_original_is_purged_only_after_the_holding_period(machine: Machine)
     store = machine.store()
     tree.compress(store)
 
-    early = purge_holding(store, now=datetime.now(UTC), hold_days=3)
+    # The compression is recorded at NOW, so "too early" is measured from NOW as well:
+    # the wall clock would pass the holding period three days after that date.
+    early = purge_holding(store, now=NOW + timedelta(days=2), hold_days=3)
 
     assert (early.examined, early.purged) == (0, 0) and tree.held.exists()
 
