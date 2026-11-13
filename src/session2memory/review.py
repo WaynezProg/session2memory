@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
+from session2memory.adapters.base import iter_text_lines
 from session2memory.adapters.cursor import cursor_clean_text, cursor_texts_from_content
 from session2memory.memory_lifecycle import open_state_store
 from session2memory.review_conflicts import (
@@ -305,9 +307,28 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
     if end is None or end < start:
         end = start
     if not source_path.exists():
-        return f"[source unavailable: {source_path.as_posix()}]"
+        # A rollout compressed in place keeps its name plus ``.zst``.
+        compressed = source_path.with_name(source_path.name + ".zst")
+        replacement: Path | None = compressed if compressed.exists() else None
+        if replacement is None:
+            # Only a copy that still contains this evidence may stand in: an archive taken
+            # before the session changed would show the wrong text.
+            replacement = next(
+                (
+                    copy
+                    for copy in _registered_copies(source_path)
+                    if _copy_holds_evidence(copy, evidence)
+                ),
+                None,
+            )
+        if replacement is None:
+            return f"[source unavailable: {source_path.as_posix()}]"
+        source_path = replacement
 
     tool = str(evidence.get("tool", ""))
+    if tool in LOCATOR_PREVIEW_TOOLS:
+        preview = _reader_preview(evidence=evidence, source_path=source_path, start=start, end=end)
+        return _truncate(preview, limit)
     if tool == "opencode":
         preview = _opencode_preview(
             source_path=source_path,
@@ -323,6 +344,94 @@ def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> 
     return _truncate(preview, limit)
 
 
+def _registered_copies(source_path: Path) -> list[Path]:
+    """Other copies of a vanished source that the unattended pipeline registered.
+
+    Looks in the pipeline's persistent store (``SESSION2MEMORY_AUTO_STORE`` or the default)
+    for an archive of that file or another location of the same session.
+    """
+    store = Path(
+        os.environ.get("SESSION2MEMORY_AUTO_STORE", "~/.local/share/session2memory/store")
+    ).expanduser()
+    database = store / "session2memory.db"
+    if not database.is_file():
+        return []
+    original = source_path.as_posix()
+    queries = (
+        ("SELECT target FROM auto_files WHERE path=? AND action='archive'", (original,)),
+        (
+            "SELECT other.path FROM source_locations here "
+            "JOIN source_locations other ON other.source_key = here.source_key "
+            "WHERE here.path=? AND other.path!=? "
+            "AND other.content_digest = here.content_digest",
+            (original, original),
+        ),
+    )
+    try:
+        connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return []
+    found: list[Path] = []
+    try:
+        for sql, arguments in queries:
+            try:
+                rows = connection.execute(sql, arguments).fetchall()
+            except sqlite3.Error:
+                continue  # a store that has not created this table yet
+            for (candidate,) in rows:
+                if isinstance(candidate, str) and Path(candidate).exists():
+                    found.append(Path(candidate))
+    finally:
+        connection.close()
+    return found
+
+
+def _copy_holds_evidence(path: Path, evidence: dict[str, Any]) -> bool:
+    """True when ``path`` still contains the message the evidence points at."""
+    digest = evidence.get("digest")
+    if not isinstance(digest, str) or not digest:
+        return False  # nothing to check against: do not vouch for another copy
+    from session2memory.source_readers import default_readers
+
+    reader = default_readers().get(str(evidence.get("tool", "")))
+    if reader is None:
+        return False
+    try:
+        record = reader(path, str(evidence.get("session_id", "")))
+    except (OSError, UnicodeError, ValueError, sqlite3.Error):
+        return False
+    return record is not None and any(m.raw_pointer.digest == digest for m in record.messages)
+
+
+# Sources whose evidence index is not a physical line of a JSONL file.
+LOCATOR_PREVIEW_TOOLS = ("openclaw-native", "muse")
+
+
+def _reader_preview(
+    *, evidence: dict[str, Any], source_path: Path, start: int, end: int
+) -> str:
+    """Preview through the adapter that wrote the evidence, matching by message index."""
+    from session2memory.source_readers import default_readers
+
+    reader = default_readers().get(str(evidence.get("tool", "")))
+    if reader is None:
+        return "[source unreadable: no reader]"
+    try:
+        record = reader(source_path, str(evidence.get("session_id", "")))
+    except (OSError, UnicodeError, ValueError, sqlite3.Error) as exc:
+        return f"[source unreadable: {exc}]"
+    if record is None:
+        return "[source range unavailable]"
+    digest = evidence.get("digest")
+    if isinstance(digest, str) and digest:
+        # The stable identity of the evidence is its content digest; an index can be
+        # renumbered when the source rewrites itself.
+        texts = [m.text for m in record.messages if m.raw_pointer.digest == digest]
+        return texts[0] if texts else "[source unavailable: evidence no longer in source]"
+    texts = [m.text for m in record.messages if start <= m.index <= end]
+    return "\n".join(texts) if texts else "[source range unavailable]"
+
+
 def _positive_int(value: Any) -> int | None:
     try:
         parsed = int(value)
@@ -333,8 +442,8 @@ def _positive_int(value: Any) -> int | None:
 
 def _jsonl_preview(*, source_path: Path, tool: str, start: int, end: int) -> str:
     try:
-        lines = source_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
+        lines = [line.rstrip("\n") for line in iter_text_lines(source_path)]
+    except (OSError, UnicodeError, ValueError) as exc:
         return f"[source unreadable: {exc}]"
     if start > len(lines):
         return "[source range unavailable]"

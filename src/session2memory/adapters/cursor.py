@@ -5,11 +5,13 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from string import hexdigits
 from typing import cast
 
 from session2memory.adapters.base import (
+    ContentDigest,
     file_session_touches_date,
     jsonl_candidate_paths,
     make_message,
@@ -20,9 +22,19 @@ from session2memory.models import SessionMessage, SessionRecord
 
 _USER_QUERY_RE = re.compile(r"<user_query>\s*(.*?)\s*</user_query>", re.DOTALL)
 _WORKSPACE_PATH_RE = re.compile(r"^Workspace Path:\s*(.+?)\s*$", re.MULTILINE)
+STORE_GLOB = "*/*/store.db"
+TRANSCRIPT_GLOBS = ("*/*/*.jsonl", "*/agent-transcripts/*/*.jsonl")
+HOME_ID = "cursor@main"
+CLI_HOME_ID = "cursor-cli@main"
 
 
 class CursorAdapter:
+    """Reads Cursor chat stores: ``<root>/<workspace hash>/<session id>/store.db``.
+
+    Every store holds one session. Blobs are addressed by their id (``blob:<id>``), which
+    does not depend on where the store lies; the digest covers every blob in store order.
+    """
+
     tool = "cursor"
 
     def __init__(self, root: Path) -> None:
@@ -33,26 +45,34 @@ class CursorAdapter:
         self.skipped.clear()
         if not self.root.exists():
             return
-        for path in sorted(self.root.glob("*/*/store.db")):
+        for path in sorted(self.root.glob(STORE_GLOB)):
             try:
-                record = self._read_db(path)
+                record = self.read_file(path)
             except (OSError, UnicodeError, ValueError, sqlite3.Error) as exc:
                 self.skipped.append(skipped_file_reason(self.tool, path, exc))
                 continue
             if file_session_touches_date(record, date):
                 yield record
 
-    def _read_db(self, path: Path) -> SessionRecord:
-        connection = sqlite3.connect(path)
+    def read_session(self, path: Path, session_id: str) -> SessionRecord | None:
+        record = self.read_file(path)
+        return record if record.session_id == session_id else None
+
+    def read_file(self, path: Path) -> SessionRecord:
+        # Read-only: the store belongs to Cursor, which may have it open.
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=2)
         try:
+            connection.execute("PRAGMA query_only=1")
             meta = _read_cursor_meta(connection)
             session_id = str(meta.get("agentId") or path.parent.name)
             started_at = _datetime_from_millis(meta.get("createdAt"))
             updated_at = _file_modified_at(path)
             cwd: Path | None = None
             messages: list[SessionMessage] = []
-            rows = connection.execute("select rowid, data from blobs order by rowid")
-            for rowid, data in rows:
+            digest = ContentDigest()
+            rows = connection.execute("select rowid, id, data from blobs order by rowid")
+            for rowid, blob_id, data in rows:
+                digest.add(f"{blob_id}:{_blob_hash(data)}")
                 blob = _json_object_from_blob(data)
                 role = str(blob.get("role") or "unknown")
                 if role == "system":
@@ -74,6 +94,7 @@ class CursorAdapter:
                         text=text,
                         timestamp=None,
                         cwd=cwd,
+                        locator=f"blob:{blob_id}",
                     )
                 )
             return SessionRecord(
@@ -86,12 +107,19 @@ class CursorAdapter:
                 repo_root=None,
                 tool_workspace_id=None,
                 messages=messages,
+                home_id=HOME_ID,
+                agent=self.tool,
+                content_digest=digest.value(),
+                record_count=digest.record_count,
             )
         finally:
             connection.close()
 
 
 class CursorCliAdapter:
+    """Reads Cursor agent transcripts (JSONL). Records carry no id, so a message is
+    addressed by its position in the file (``msg:<n>``)."""
+
     tool = "cursor-cli"
 
     def __init__(self, root: Path) -> None:
@@ -102,7 +130,7 @@ class CursorCliAdapter:
         self.skipped.clear()
         for path in self._candidate_paths(date):
             try:
-                record = self._read_file(path)
+                record = self.read_file(path)
             except (OSError, UnicodeError, ValueError) as exc:
                 self.skipped.append(skipped_file_reason(self.tool, path, exc))
                 continue
@@ -114,15 +142,22 @@ class CursorCliAdapter:
             self.root,
             date=date,
             primary_patterns=(),
-            modified_patterns=("*/*/*.jsonl", "*/agent-transcripts/*/*.jsonl"),
+            modified_patterns=TRANSCRIPT_GLOBS,
         )
 
-    def _read_file(self, path: Path) -> SessionRecord:
+    def read_session(self, path: Path, session_id: str) -> SessionRecord | None:
+        record = self.read_file(path)
+        return record if record.session_id == session_id else None
+
+    def read_file(self, path: Path) -> SessionRecord:
         session_id = path.stem
         cwd = _cwd_from_cursor_project_path(self.root, path)
         updated_at = _file_modified_at(path)
         messages: list[SessionMessage] = []
-        for line_number, event in read_jsonl(path):
+        digest = ContentDigest()
+        position = -1
+        for line_number, event in read_jsonl(path, on_line=digest.add):
+            position += 1
             role = str(event.get("role") or "unknown")
             message = event.get("message")
             if not isinstance(message, dict):
@@ -144,6 +179,7 @@ class CursorCliAdapter:
                     text=text,
                     timestamp=None,
                     cwd=cwd,
+                    locator=f"msg:{position}",
                 )
             )
         return SessionRecord(
@@ -156,6 +192,10 @@ class CursorCliAdapter:
             repo_root=None,
             tool_workspace_id=None,
             messages=messages,
+            home_id=CLI_HOME_ID,
+            agent=self.tool,
+            content_digest=digest.value(),
+            record_count=digest.record_count,
         )
 
 
@@ -207,6 +247,24 @@ def _read_cursor_meta(connection: sqlite3.Connection) -> dict[str, object]:
     if not isinstance(loaded, dict):
         return {}
     return cast("dict[str, object]", loaded)
+
+
+def _blob_hash(value: object) -> str:
+    raw = bytes(value) if isinstance(value, bytes | bytearray | memoryview) else str(value).encode()
+    return sha256(raw).hexdigest()
+
+
+def session_title(path: Path) -> str | None:
+    """The name Cursor gave the chat in ``store.db``, if any."""
+    try:
+        connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=2)
+        try:
+            name = _read_cursor_meta(connection).get("name")
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError, UnicodeError, ValueError):
+        return None
+    return name.strip() if isinstance(name, str) and name.strip() else None
 
 
 def _json_object_from_blob(value: object) -> dict[str, object]:

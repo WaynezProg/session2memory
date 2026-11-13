@@ -44,6 +44,10 @@ class SessionMessage:
     text: str
     timestamp: datetime | None
     raw_pointer: EvidencePointer
+    # Native, path-independent position of this message inside its session
+    # (e.g. ``ord:42`` for a Codex rollout ordinal). ``None`` for adapters that
+    # only know the physical line number.
+    locator: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "text", self.text.strip())
@@ -60,6 +64,26 @@ class SessionRecord:
     repo_root: Path | None
     tool_workspace_id: str | None
     messages: list[SessionMessage]
+    # Source-registry fields. Adapters opt in by setting ``content_digest``.
+    home_id: str | None = None
+    agent: str | None = None
+    content_digest: str | None = None
+    record_count: int = 0
+
+    @property
+    def source_key(self) -> str:
+        """Stable identity of the session: tool plus native session id, never a path."""
+        return f"{self.tool}:{self.session_id}"
+
+
+@dataclass(frozen=True)
+class SourceHome:
+    """One on-disk home/profile of a tool (a tool can have many, e.g. per-agent CODEX_HOME)."""
+
+    home_id: str
+    tool: str
+    agent: str
+    root: Path
 
 
 @dataclass(frozen=True)

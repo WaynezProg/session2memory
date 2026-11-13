@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from session2memory.adapters.base import (
+    ContentDigest,
     file_session_touches_date,
     jsonl_candidate_paths,
     make_message,
@@ -14,6 +15,8 @@ from session2memory.adapters.base import (
     skipped_file_reason,
 )
 from session2memory.models import SessionMessage, SessionRecord
+
+REQUEST_RECORD_PREFIX = "api-request"
 
 
 class _ClaudeJsonlAdapter:
@@ -48,7 +51,8 @@ class _ClaudeJsonlAdapter:
         started_at = None
         updated_at = None
         messages: list[SessionMessage] = []
-        for line_number, event in read_jsonl(path):
+        digest = ContentDigest()
+        for line_number, event in read_jsonl(path, on_line=digest.add):
             session_id = str(event.get("sessionId") or event.get("session_id") or session_id)
             timestamp = event.get("timestamp") or event.get("_audit_timestamp")
             event_time = parse_datetime(str(timestamp)) if timestamp else None
@@ -58,6 +62,10 @@ class _ClaudeJsonlAdapter:
             cwd = Path(str(cwd_value)) if cwd_value else cwd
             message = event.get("message")
             if not isinstance(message, dict):
+                continue
+            if str(event.get("type") or "").startswith(REQUEST_RECORD_PREFIX):
+                # Copies of what was sent to the API (system prompt, replayed turns), not
+                # turns of the conversation; they have no uuid of their own.
                 continue
             content = message.get("content")
             texts: list[str] = []
@@ -70,6 +78,7 @@ class _ClaudeJsonlAdapter:
                         if isinstance(text, str):
                             texts.append(text)
             if texts:
+                uuid = event.get("uuid")
                 messages.append(
                     make_message(
                         tool=self.tool,
@@ -80,6 +89,7 @@ class _ClaudeJsonlAdapter:
                         text="\n".join(texts),
                         timestamp=event_time,
                         cwd=cwd,
+                        locator=f"uuid:{uuid}" if isinstance(uuid, str) and uuid else None,
                     )
                 )
         return SessionRecord(
@@ -92,7 +102,15 @@ class _ClaudeJsonlAdapter:
             repo_root=None,
             tool_workspace_id=path.parent.name,
             messages=messages,
+            home_id=f"{self.tool}@main",
+            agent=self.tool,
+            content_digest=digest.value(),
+            record_count=digest.record_count,
         )
+
+    def read_session(self, path: Path, session_id: str) -> SessionRecord | None:
+        record = self._read_file(path)
+        return record if record.session_id == session_id else None
 
 
 def _is_subagent_path(path: Path) -> bool:

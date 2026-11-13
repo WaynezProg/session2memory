@@ -184,3 +184,35 @@ test -f "$export_root/$workspace_id/daily/2026-05-22.md"
 ```
 
 Do not commit generated export data.
+
+## Unattended maintenance (`auto`)
+
+The nightly job runs this; run it by hand only to check or catch up:
+
+```bash
+uv run session2memory auto status                 # counts and the last run's report
+uv run session2memory auto run --dry-run          # what a run would do; changes nothing
+uv run session2memory auto run                    # scan, compress/archive, curate, export
+```
+
+- It keeps one persistent store in `~/.local/share/session2memory/store`; it does not
+  use the per-date `./out/session-memory/<date>` trees of `import`, and both can coexist.
+- Session compression, archival and memory curation are automatic. Do not compress,
+  move or delete session files by hand.
+- Curated memory is never deleted, only re-statused. To undo a wrong entry:
+  `uv run session2memory auto memory --workspace <path> --all`, then
+  `--retire <memory id>`.
+
+Reading memory:
+
+```bash
+uv run session2memory auto search "<keywords or a question>" [--workspace <path>]
+uv run session2memory auto memory --workspace <path>
+```
+
+**Isolation.** An OpenClaw agent only reads memory and summaries that came from OpenClaw
+agents' own sessions. This is enforced by where the command runs (an OpenClaw workspace,
+an OpenClaw-owned `CODEX_HOME`, or `SESSION2MEMORY_READER=openclaw`); `--reader coding`
+does not widen it. Coding agents outside OpenClaw read everything. Running the pipeline
+(`auto run`, `import`) is not restricted, only reading its results is.
+

@@ -284,7 +284,14 @@ def test_cli_worklog_missing_db_shows_suggested_command(tmp_path: Path) -> None:
     assert "Suggested command" in result.output
 
 
-def test_cli_worklog_yesterday(tmp_path: Path) -> None:
+def test_cli_worklog_yesterday(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class DayAfterTheSeed(date):
+        @classmethod
+        def today(cls) -> date:
+            return date(2026, 6, 9)
+
+    # "yesterday" follows the clock; the seeded entries are from 2026-06-08.
+    monkeypatch.setattr("session2memory.worklog.date", DayAfterTheSeed)
     store, output_dir = _seed_store(tmp_path)
     store.close()
     result = CliRunner().invoke(

@@ -69,3 +69,76 @@ CREATE TABLE IF NOT EXISTS sync_targets (
     last_synced_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, target, dest_path)
 );
+
+-- Source registry: sessions are identified by tool + native session id, messages by a
+-- native locator, and every on-disk copy (plain, compressed, archived, another home) is
+-- a location of that one source. No transcript text is stored here.
+CREATE TABLE IF NOT EXISTS source_homes (
+    home_id TEXT PRIMARY KEY,
+    tool TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    root TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+    source_key TEXT PRIMARY KEY,
+    tool TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    agent TEXT,
+    workspace_id TEXT,
+    first_home_id TEXT,
+    version_no INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS source_versions (
+    source_key TEXT NOT NULL,
+    version_no INTEGER NOT NULL,
+    content_digest TEXT NOT NULL,
+    record_count INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (source_key, version_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_versions_digest
+    ON source_versions (source_key, content_digest);
+
+CREATE TABLE IF NOT EXISTS source_locations (
+    source_key TEXT NOT NULL,
+    path TEXT NOT NULL,
+    home_id TEXT,
+    encoding TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'present',
+    content_digest TEXT NOT NULL,
+    version_no INTEGER NOT NULL,
+    bytes INTEGER NOT NULL,
+    mtime_ns INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (source_key, path)
+);
+
+CREATE TABLE IF NOT EXISTS source_messages (
+    source_key TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    ord INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    message_digest TEXT NOT NULL,
+    version_no INTEGER NOT NULL,
+    PRIMARY KEY (source_key, locator)
+);
+
+CREATE TABLE IF NOT EXISTS candidate_sources (
+    candidate_id TEXT PRIMARY KEY,
+    source_key TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    message_digest TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_sources_source ON candidate_sources (source_key);
+
+CREATE TABLE IF NOT EXISTS source_refs (
+    parent_kind TEXT NOT NULL,
+    parent_id TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    PRIMARY KEY (parent_kind, parent_id, source_key)
+);

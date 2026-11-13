@@ -17,6 +17,7 @@ from session2memory.state.ids import (
     review_id_for,
 )
 from session2memory.state.migrate import migrate_legacy_output
+from session2memory.state.sources import SourceRegistry
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,10 @@ class StateStore:
 
     def close(self) -> None:
         self._connection.close()
+
+    @property
+    def sources(self) -> SourceRegistry:
+        return SourceRegistry(self._connection)
 
     def upsert_workspace(self, workspace: WorkspaceIdentity) -> None:
         self._connection.execute(

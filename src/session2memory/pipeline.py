@@ -14,6 +14,7 @@ from session2memory.llm_extract import (
 )
 from session2memory.models import MemoryCandidate, SessionRecord, WorkspaceIdentity
 from session2memory.state.fingerprint import source_file_fingerprint
+from session2memory.state.sources import SourceObservation, message_locator
 from session2memory.state.store import StateStore
 from session2memory.workspace import resolve_workspace
 from session2memory.writer import write_output
@@ -52,7 +53,8 @@ def run_pipeline(
         source_root = source_roots.get(tool)
         if source_root is not None and not source_root.exists():
             skipped.append(f"{tool}: missing source root: {source_root.as_posix()}")
-            continue
+            if not _has_other_roots(adapter, source_root):
+                continue
         for record in adapter.iter_sessions(date):
             if registered_logs is not None:
                 log_path = record.source_path.expanduser().resolve(strict=False)
@@ -64,7 +66,19 @@ def run_pipeline(
             ):
                 continue
             source_path = record.source_path.expanduser()
-            if state_store is not None:
+            observation: SourceObservation | None = None
+            if state_store is not None and record.content_digest:
+                # Registry-tracked sources are gated per session, not per file: one container
+                # (a sqlite store) can hold many sessions, and hashing it whole is wasteful.
+                observation = state_store.sources.observe(
+                    record, workspace_id=resolved_workspace.workspace_id
+                )
+                if not observation.has_new_content:
+                    # Same session content under another path: its compressed form, an
+                    # archived copy, or a copy in another home. Nothing new to extract.
+                    continue
+                state_store.upsert_workspace(resolved_workspace)
+            elif state_store is not None:
                 digest, mtime_ns = source_file_fingerprint(source_path)
                 if digest and not state_store.upsert_source_file(
                     tool=record.tool,
@@ -89,8 +103,19 @@ def run_pipeline(
                 llm_candidates=llm_candidates,
             )
             if state_store is not None:
+                locators = {
+                    message.index: message_locator(message) for message in record.messages
+                }
                 for candidate in session_candidates:
-                    state_store.upsert_candidate(import_date=date, candidate=candidate)
+                    stored = state_store.upsert_candidate(import_date=date, candidate=candidate)
+                    locator = locators.get(candidate.evidence.message_start)
+                    if observation is not None and locator is not None:
+                        state_store.sources.link_candidate(
+                            candidate_id=stored.candidate_id,
+                            source_key=observation.source_key,
+                            locator=locator,
+                            message_digest=candidate.evidence.digest,
+                        )
             else:
                 candidates.extend(session_candidates)
         skipped.extend(_adapter_skipped(adapter))
@@ -151,6 +176,18 @@ def _extract_llm_candidates(
         messages=messages,
         workspace_id=workspace.workspace_id,
     )
+
+
+def _has_other_roots(adapter: PipelineAdapter, source_root: Path) -> bool:
+    """True when a multi-home adapter still has an existing home besides ``source_root``."""
+    homes: object = getattr(adapter, "homes", ())
+    if not isinstance(homes, Sequence):
+        return False
+    for home in homes:
+        root = getattr(home, "root", None)
+        if isinstance(root, Path) and root != source_root and root.exists():
+            return True
+    return False
 
 
 def _adapter_skipped(adapter: PipelineAdapter) -> list[str]:

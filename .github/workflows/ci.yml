@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      # Compressed Codex rollouts and OpenClaw event rows are read through the zstd
+      # executable; without it those tests are skipped.
+      - name: Install zstd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      # The ui group brings textual, which the review UI is type-checked against.
+      - name: Sync dependencies
+        run: uv sync --group ui
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest -q
