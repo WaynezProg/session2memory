@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS auto_files (
     done_at TEXT NOT NULL,
     purged_at TEXT
 );
+
+-- One embedding per searchable row (memory id or session source key) and model.
+CREATE TABLE IF NOT EXISTS auto_vectors (
+    ref TEXT NOT NULL,
+    model TEXT NOT NULL,
+    text_digest TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    PRIMARY KEY (ref, model)
+);
 """
 
 
@@ -545,21 +554,10 @@ class AutoStore:
         return [(str(op), json.loads(str(detail)), str(at)) for op, detail, at in rows]
 
     # ---- search --------------------------------------------------------------
-    def search(
-        self, query: str, *, project: str | None = None, reader: Reader = "coding", limit: int = 8
-    ) -> list[tuple[str, str, str | None, str]]:
-        """Ranked keyword search over active memories and session summaries.
-
-        Returns ``(kind, ref, project, text)``. The query may be a few keywords or a
-        sentence: it is split into words and, for CJK text, character pairs. Pieces that
-        occur nowhere (the filler of a question, pairs straddling two words) are ignored;
-        a row must contain two of the rest (one, when there is only one). Rows matching
-        more and rarer pieces rank first, then memories before session summaries, newer
-        before older.
-        """
-        tokens = search_tokens(query)
-        if not tokens:
-            return []
+    def _search_rows(
+        self, project: str | None, reader: Reader
+    ) -> list[tuple[int, str, tuple[str, str, str | None, str], str]]:
+        """Every row ``reader`` may search: ``(order, recency, hit, lowered text)``."""
         scopes = _readable(reader)
         marks = ",".join("?" * len(scopes))
         memory_sql = (
@@ -583,6 +581,70 @@ class AutoStore:
             for kind, ref, row_project, text, recency, order in self._connection.execute(sql, args):
                 hit = (str(kind), str(ref), str(row_project) if row_project else None, str(text))
                 rows.append((int(order), str(recency), hit, str(text).lower()))
+        return rows
+
+    def search_rows(
+        self, *, project: str | None = None, reader: Reader = "coding"
+    ) -> list[tuple[str, str, str | None, str]]:
+        """``(kind, ref, project, text)`` of every active memory and summarised session."""
+        return [hit for _, _, hit, _ in self._search_rows(project, reader)]
+
+    # ---- vectors -------------------------------------------------------------
+    def vector_digests(self, model: str) -> dict[str, str]:
+        try:
+            rows = self._connection.execute(
+                "SELECT ref, text_digest FROM auto_vectors WHERE model=?", (model,)
+            ).fetchall()
+        except sqlite3.OperationalError:  # a database from before vectors, opened read-only
+            return {}
+        return {str(ref): str(digest) for ref, digest in rows}
+
+    def put_vectors(self, model: str, items: list[tuple[str, str, bytes]]) -> None:
+        self._connection.executemany(
+            "INSERT INTO auto_vectors (ref, model, text_digest, vector) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(ref, model) DO UPDATE SET "
+            "text_digest=excluded.text_digest, vector=excluded.vector",
+            [(ref, model, digest, vector) for ref, digest, vector in items],
+        )
+        self._connection.commit()
+
+    def drop_vectors(self, model: str, *, keep: set[str]) -> int:
+        """Remove vectors of rows that are no longer searchable, and of other models."""
+        stale = [ref for ref in self.vector_digests(model) if ref not in keep]
+        self._connection.executemany(
+            "DELETE FROM auto_vectors WHERE model=? AND ref=?", [(model, ref) for ref in stale]
+        )
+        other = self._connection.execute(
+            "DELETE FROM auto_vectors WHERE model != ?", (model,)
+        ).rowcount
+        self._connection.commit()
+        return len(stale) + max(other, 0)
+
+    def vectors(self, model: str, refs: set[str]) -> dict[str, bytes]:
+        try:
+            rows = self._connection.execute(
+                "SELECT ref, vector FROM auto_vectors WHERE model=?", (model,)
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {str(ref): bytes(vector) for ref, vector in rows if ref in refs}
+
+    def search(
+        self, query: str, *, project: str | None = None, reader: Reader = "coding", limit: int = 8
+    ) -> list[tuple[str, str, str | None, str]]:
+        """Ranked keyword search over active memories and session summaries.
+
+        Returns ``(kind, ref, project, text)``. The query may be a few keywords or a
+        sentence: it is split into words and, for CJK text, character pairs. Pieces that
+        occur nowhere (the filler of a question, pairs straddling two words) are ignored;
+        a row must contain two of the rest (one, when there is only one). Rows matching
+        more and rarer pieces rank first, then memories before session summaries, newer
+        before older.
+        """
+        tokens = search_tokens(query)
+        if not tokens:
+            return []
+        rows = self._search_rows(project, reader)
         frequency = {
             token: sum(1 for _, _, _, haystack in rows if token in haystack) for token in tokens
         }

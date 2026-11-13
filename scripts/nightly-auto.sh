@@ -13,6 +13,8 @@ Environment overrides:
   SESSION2MEMORY_AUTO_MAX_LLM_CALLS   curation call budget per run (default 40)
   SESSION2MEMORY_AUTO_CURATE_SCOPE    scopes to curate, space separated (default: coding);
                                       "all" curates OpenClaw agents' sessions too
+  SESSION2MEMORY_AUTO_SEMANTIC        1 = install the `semantic` extra and keep embeddings
+                                      current for `auto search` (local models, ~3 GB once)
   SESSION2MEMORY_AUTO_INDEX_CMD       command run after export; {memory_dir} is substituted
   SESSION2MEMORY_AUTO_LLM_CMD         curation command (prompt on stdin)
   OPENCLAW_STATE_DIR                  OpenClaw state directory, for its agents' sessions
@@ -46,7 +48,11 @@ fi
 
 cd "$repo_root"
 status=0
-uv run session2memory "${args[@]}" "$@" > "$report" || status=$?
+runner=(uv run)
+if [ "${SESSION2MEMORY_AUTO_SEMANTIC:-0}" = "1" ]; then
+  runner+=(--extra semantic)
+fi
+"${runner[@]}" session2memory "${args[@]}" "$@" > "$report" || status=$?
 echo "report=$report exit=$status"
 
 # Keep the most recent reports only.

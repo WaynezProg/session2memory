@@ -31,6 +31,12 @@ from session2memory.auto.run import ALL_STEPS, AutoConfig, run_auto
 from session2memory.auto.run import DB_NAME as AUTO_DB_NAME
 from session2memory.auto.scan import ScanSources
 from session2memory.auto.scope import Reader, forced_reader, openclaw_roots
+from session2memory.auto.semantic import (
+    embed_model_name,
+    load_embedder,
+    load_reranker,
+    semantic_search,
+)
 from session2memory.auto.store import AutoStore
 from session2memory.distill import DistillError, distill_reviews
 from session2memory.handoff import (
@@ -521,9 +527,26 @@ def auto_status(
         opened.close()
 
 
-@auto_app.command("search", help="Keyword search over distilled memory and session summaries.")
+@auto_app.command("search", help="Search distilled memory and session summaries.")
 def auto_search(
-    query: Annotated[str, typer.Argument(help="Words that must all appear.")],
+    query: Annotated[str, typer.Argument(help="Keywords or a whole question.")],
+    mode: Annotated[
+        str,
+        typer.Option(
+            "--mode",
+            help=(
+                "keyword: shared words only. semantic: local embeddings fused with keywords. "
+                "auto: semantic when the embeddings exist, else keyword."
+            ),
+        ),
+    ] = "auto",
+    rerank: Annotated[
+        bool,
+        typer.Option(
+            "--rerank/--no-rerank",
+            help="Re-read the best candidates with a local cross-encoder (slower, more exact).",
+        ),
+    ] = True,
     workspace: Annotated[
         Path | None, typer.Option("--workspace", help="Limit to one workspace.")
     ] = None,
@@ -539,7 +562,29 @@ def auto_search(
         raise typer.Exit(code=1)
     try:
         project = workspace.expanduser().resolve(strict=False).as_posix() if workspace else None
-        hits = opened.search(query, project=project, reader=scope, limit=limit)
+        hits = None
+        if mode not in ("auto", "keyword", "semantic"):
+            raise typer.BadParameter("--mode must be auto, keyword or semantic")
+        if mode != "keyword" and opened.vector_digests(embed_model_name()):
+            embedder = load_embedder()
+            if embedder is not None:
+                hits = semantic_search(
+                    opened,
+                    query,
+                    embedder=embedder,
+                    reranker=load_reranker() if rerank else None,
+                    project=project,
+                    reader=scope,
+                    limit=limit,
+                )
+        if hits is None:
+            if mode == "semantic":
+                typer.echo(
+                    "semantic search is unavailable (run `auto run --step embed` with the "
+                    "`semantic` extra installed); using keyword search",
+                    err=True,
+                )
+            hits = opened.search(query, project=project, reader=scope, limit=limit)
     finally:
         opened.close()
     if not hits:

@@ -12,6 +12,12 @@ dependencies = [
   "typer>=0.12,<1",
 ]
 
+[project.optional-dependencies]
+# Local embeddings and reranking for `auto search` (ONNX models, no service involved).
+semantic = [
+  "fastembed>=0.9,<1",
+]
+
 [project.scripts]
 session2memory = "session2memory.cli:app"
 
@@ -50,3 +56,7 @@ python_version = "3.12"
 strict = true
 warn_unused_configs = true
 packages = ["session2memory"]
+
+[[tool.mypy.overrides]]
+module = ["fastembed", "fastembed.*", "numpy"]
+ignore_missing_imports = true
