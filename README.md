@@ -526,6 +526,16 @@ original is moved or left. Memory is never deleted: entries change status and ea
 is logged with its reason and evidence, so an automated decision can be undone
 (`auto memory --all`, `auto memory --retire <id>`).
 
+**Checking reconcile.** `uv run python evals/reconcile_cases.py` runs the real step against
+seven hand-written projects with a known answer (an older decision replaced by a newer one,
+the same thing said twice, entries that only share a topic, an entry that reads like an
+instruction to the model) and reports what was found and what was changed wrongly. It makes
+one model call per project and touches only a temporary store. One run with the default
+command (`claude -p --model haiku`, 2026-11-14, 7 calls, $0.005): 4 of 4 contradictions
+found with the right winner, 2 of 2 repeats merged, 27 of 29 other entries left alone. The
+two that changed were a general rule and the later entry that adds its details, merged into
+one. This is a single run; it was not repeated to measure variance.
+
 **Token use.** The model never sees transcripts or tool output, only digests (at most
 3,000 characters per session). Sessions of one project share a call. The default command
 runs `claude -p` with no tools, no MCP servers, no settings and a one-line system prompt,
