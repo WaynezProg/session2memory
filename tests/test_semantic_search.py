@@ -240,3 +240,19 @@ def test_a_row_found_both_ways_is_returned_once(store: AutoStore) -> None:
         assert hits[0] == late and set(both) <= set(
             refs(semantic_search(store, "部署 檢查表", embedder=embedder, limit=30))
         )
+
+
+def test_a_row_newer_than_the_last_embed_is_found_by_its_words(store: AutoStore) -> None:
+    for index in range(6):
+        remember(store, f"上線 流程 補充 {index}")
+    embedder = ConceptEmbedder()
+    embed_pending(store, embedder)
+    fresh = remember(store, "VID-9001 的封面要用 16:9")
+
+    for reranker in (None, PreferWord("VID-9001")):
+        hits = refs(
+            semantic_search(
+                store, "VID-9001 封面", embedder=embedder, reranker=reranker, limit=3, pool=4
+            )
+        )
+        assert fresh in hits and len(hits) == len(set(hits))

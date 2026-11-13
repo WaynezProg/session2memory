@@ -201,9 +201,15 @@ def semantic_search(
     # the right row down, so keyword hits only make sure an exact name or id that the
     # vectors missed is among the candidates the reranker reads.
     head = by_meaning[:size]
-    missing = [ref for ref in by_words if ref in similar and ref not in set(head)]
+    # A row written after the last embed step has no vector yet; a keyword hit still counts.
+    missing = [ref for ref in by_words if ref in rows and ref not in set(head)]
     if missing:
         head = [*head[: size - len(missing)], *missing]
+    if reranker is None:
+        # Nothing will compare them with the rest: rows the vectors cannot rank at all go
+        # first, since shared words are the only evidence there is for them.
+        unranked = [ref for ref in head if ref not in similar]
+        head = [*unranked, *(ref for ref in head if ref in similar)]
     if reranker is not None and head:
         scores = reranker.score(query, [rows[ref][3][:RERANK_CHARS] for ref in head])
         ranked = sorted(zip(head, scores, strict=True), key=lambda pair: -pair[1])
