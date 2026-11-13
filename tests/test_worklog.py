@@ -1,3 +1,5 @@
+import re
+import shlex
 from datetime import date
 from pathlib import Path
 
@@ -277,11 +279,61 @@ def test_cli_worklog_missing_db_shows_suggested_command(tmp_path: Path) -> None:
         ["worklog", "yesterday", "--output", str(output_root)],
     )
     assert result.exit_code != 0
-    assert "session2memory.db" in result.output
-    assert "Nearby databases" in result.output
-    assert "2026-06-08" in result.output
-    assert "--state-db" in result.output
-    assert "Suggested command" in result.output
+    # The error is drawn in a box whose width and colours follow the terminal (a CI
+    # runner colours and wraps it): compare the text with both taken out.
+    shown = re.sub(r"\x1b\[[0-9;]*m|[│╭╮╰╯─\s]", "", result.output)
+    assert "session2memory.db" in shown
+    assert "Nearbydatabases" in shown
+    assert "2026-06-08" in shown
+    assert "--state-db" in shown
+    assert "Suggestedcommand" in shown
+
+
+def test_suggested_command_survives_a_path_with_spaces(tmp_path: Path) -> None:
+    output_root = tmp_path / "session memory"
+    dated = output_root / "2026-06-08"
+    dated.mkdir(parents=True)
+    StateStore.open(dated / "session2memory.db", output_dir=dated).close()
+
+    message = format_missing_state_db_error(
+        output_dir=output_root, state_db=None, period="yesterday"
+    )
+
+    command = message.splitlines()[-1]
+    assert shlex.split(command) == [
+        "uv",
+        "run",
+        "session2memory",
+        "worklog",
+        "yesterday",
+        "--output",
+        output_root.as_posix(),
+        "--state-db",
+        (dated / "session2memory.db").as_posix(),
+    ]
+
+
+def test_nearby_databases_are_found_under_a_home_relative_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", tmp_path.as_posix())
+    dated = tmp_path / "session-memory" / "2026-06-08"
+    dated.mkdir(parents=True)
+    StateStore.open(dated / "session2memory.db", output_dir=dated).close()
+
+    message = format_missing_state_db_error(
+        output_dir=Path("~/session-memory"), state_db=None, period="yesterday"
+    )
+
+    assert "Nearby databases" in message and (dated / "session2memory.db").as_posix() in message
+
+
+def test_an_explicit_state_db_that_is_missing_says_it_takes_precedence(tmp_path: Path) -> None:
+    message = format_missing_state_db_error(
+        output_dir=tmp_path, state_db=tmp_path / "nowhere.db", period="yesterday"
+    )
+
+    assert "drop --state-db" in message
 
 
 def test_cli_worklog_yesterday(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

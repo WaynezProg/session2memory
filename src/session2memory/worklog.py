@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -198,12 +199,15 @@ def format_missing_state_db_error(
         ),
     ]
     if state_db is not None:
+        # --state-db wins over --output, so changing --output alone would fail again.
         lines.append(
-            "Pass a different --state-db path, or set --output to the folder that "
-            "contains session2memory.db."
+            "Pass a different --state-db path, or drop --state-db and set --output to the "
+            "folder that contains session2memory.db."
         )
         return "\n".join(lines)
 
+    # The same folder the lookup above used: "~" is expanded there, so it is here too.
+    output_dir = looked_up.parent
     candidates = discover_state_db_candidates(output_dir)
     if candidates:
         lines.append("Nearby databases:")
@@ -242,7 +246,7 @@ def suggest_worklog_command(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> str:
-    parts = ["uv run session2memory worklog"]
+    parts = ["uv", "run", "session2memory", "worklog"]
     if period is not None:
         parts.append(period)
     if date_from is not None:
@@ -251,7 +255,8 @@ def suggest_worklog_command(
         parts.extend(["--to", date_to])
     parts.extend(["--output", output_dir.as_posix()])
     parts.extend(["--state-db", state_db.as_posix()])
-    return " ".join(parts)
+    # Quoted for a shell: a path with a space stays one argument when pasted.
+    return shlex.join(parts)
 
 
 def _output_name(date_from: date, date_to: date) -> str:
