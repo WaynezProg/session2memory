@@ -272,6 +272,14 @@ class AutoStore:
         self._connection.commit()
         return bool(cursor.rowcount)
 
+    def sessions_without_project(self, tool: str) -> list[tuple[str, str]]:
+        """``(source_key, session_id)`` of this tool's sessions registered without a workspace."""
+        rows = self._connection.execute(
+            "SELECT source_key, session_id FROM auto_sessions WHERE tool=? AND project IS NULL",
+            (tool,),
+        ).fetchall()
+        return [(str(key), str(session_id)) for key, session_id in rows]
+
     def fill_session_project(self, source_key: str, project: str, scope: Scope) -> bool:
         """Give a session registered without a workspace the one that is known now.
 

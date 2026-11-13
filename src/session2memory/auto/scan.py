@@ -14,7 +14,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from session2memory.adapters.antigravity import SUMMARIES_DB, TRANSCRIPT_GLOB, AntigravityAdapter
+from session2memory.adapters.antigravity import (
+    TRANSCRIPT_GLOB,
+    AntigravityAdapter,
+    conversation_info,
+)
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import ROLLOUT_PATTERNS, CodexAdapter
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
@@ -59,6 +63,7 @@ class ScanReport:
     sessions_updated: int = 0
     sessions_unchanged: int = 0
     native_summaries_adopted: int = 0
+    projects_filled: int = 0
     by_tool: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
@@ -199,16 +204,7 @@ def iter_records(
     if sources.antigravity_root is not None and sources.antigravity_root.is_dir():
         antigravity = AntigravityAdapter(sources.antigravity_root)
         files = sources.antigravity_root.glob(TRANSCRIPT_GLOB)
-        # The workspace of a conversation lives in an index beside the transcripts. When
-        # the index changed, older transcripts are read again as well: one registered
-        # before the index listed it gets its workspace this way. The store is small and
-        # an unchanged conversation costs nothing further.
-        try:
-            index_time = (sources.antigravity_root / SUMMARIES_DB).stat().st_mtime
-        except OSError:
-            index_time = 0.0
-        since_file = 0.0 if index_time >= cutoff else cutoff
-        yield from read_all(_recent(files, since_file, max_bytes, report), antigravity.read_file)
+        yield from read_all(_recent(files, cutoff, max_bytes, report), antigravity.read_file)
     if sources.openclaw_agents_root is not None and sources.openclaw_agents_root.is_dir():
         native = OpenClawNativeAdapter(sources.openclaw_agents_root)
         for agent, database in native.databases():
@@ -323,6 +319,17 @@ def scan(
         if scope == "coding":
             # Whichever path brought the session here, memory it already fed follows it.
             store.widen_session_to_coding(record.source_key)
+    # Antigravity keeps a conversation's workspace in an index beside the transcripts. One
+    # registered before the index listed it has no project and would never be curated;
+    # ask the index again for exactly those, whatever the age of their transcript.
+    if sources.antigravity_root is not None:
+        for key, session_id in store.sessions_without_project("antigravity"):
+            folder = conversation_info(sources.antigravity_root, session_id).workspace
+            if folder is None:
+                continue
+            filled: Scope = "openclaw" if within(folder, sources.openclaw_roots) else "coding"
+            if store.fill_session_project(key, folder.resolve(strict=False).as_posix(), filled):
+                report.projects_filled += 1
     # Codex writes its own summary some time after a session ends, when the transcript no
     # longer changes: adopt those too, whether or not the session was read this run.
     for thread_id, summary in native.items():
