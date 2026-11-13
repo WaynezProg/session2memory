@@ -12,6 +12,9 @@ Raw transcripts do not enter HKS. Raw session stores remain local evidence
 sources; generated Markdown contains only daily logs, durable memories, and
 evidence ids that point back to the original session.
 
+Architecture, pipeline, session-start and data-model diagrams are in
+[docs/architecture.md](docs/architecture.md).
+
 ## Supported P0 Sources
 
 - Claude Code JSONL under `~/.claude/projects`
