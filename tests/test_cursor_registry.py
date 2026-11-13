@@ -131,6 +131,46 @@ def test_the_nightly_scan_registers_cursor_sessions(machine: Machine) -> None:
     assert cli is not None and "整理 Cursor CLI" in (cli.digest or "")
 
 
+def test_a_conversation_in_both_cursor_places_is_one_session(machine: Machine) -> None:
+    chats, projects = machine.tmp / "chats", machine.tmp / "projects"
+    db = store_db(chats, machine.work)
+    same = transcript(projects, SESSION)
+    stale = store_db(chats, machine.work, "older")
+    transcript(projects, "older")
+    transcript(projects, "cli-only")
+    stamp = NOW.timestamp() - 3600
+    for one in (db, same):
+        os.utime(one, (stamp, stamp))
+    # This store last changed before the scan window; its transcript changed inside it.
+    old = LONG_AGO.timestamp() - 86400
+    os.utime(stale, (old, old))
+    machine.store_dir.mkdir(parents=True, exist_ok=True)
+    state = StateStore.open(machine.db)
+    try:
+        store = AutoStore(state._connection)
+        sources = ScanSources(cursor_root=chats, cursor_cli_root=projects)
+        report = scan(state.sources, store, sources, since=LONG_AGO)
+        keys = {
+            key: store.get_session(key) is not None
+            for key in (
+                f"cursor:{SESSION}",
+                f"cursor-cli:{SESSION}",
+                "cursor-cli:older",
+                "cursor-cli:cli-only",
+            )
+        }
+    finally:
+        state.close()
+
+    assert report.by_tool == {"cursor": 1, "cursor-cli": 1}
+    assert keys == {
+        f"cursor:{SESSION}": True,
+        f"cursor-cli:{SESSION}": False,
+        "cursor-cli:older": False,
+        "cursor-cli:cli-only": True,
+    }
+
+
 def test_a_store_written_through_its_log_is_still_seen(machine: Machine) -> None:
     chats = machine.tmp / "chats"
     db = store_db(chats, machine.work)
