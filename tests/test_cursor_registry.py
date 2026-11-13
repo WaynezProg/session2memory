@@ -10,12 +10,18 @@ from pathlib import Path
 from test_adapter_cursor import _write_cursor_db
 from test_auto_pipeline import LONG_AGO, NOW, Machine
 from test_auto_pipeline import machine as machine  # noqa: F401 - pytest fixture
+from test_session_start import NOW as HOOK_NOW
+from test_session_start import Bench, claude_memory, hook_arguments
+from test_session_start import bench as bench  # noqa: F401 - pytest fixture
+from typer.testing import CliRunner
 
 from session2memory.adapters.cursor import CursorAdapter, CursorCliAdapter
 from session2memory.auto.scan import ScanSources, scan
 from session2memory.auto.store import AutoStore
+from session2memory.cli import app
 from session2memory.handoff import native_summary
 from session2memory.handoff_find import find_cursor, find_cursor_cli
+from session2memory.session_start import hook_output, run_hook
 from session2memory.source_readers import default_readers
 from session2memory.state.store import StateStore
 
@@ -155,6 +161,92 @@ def test_handoff_finds_cursor_sessions_of_a_workspace(tmp_path: Path) -> None:
     assert [f.record.session_id for f in found] == ["mine"]
     assert native_summary(found[0].record).title == "Cursor GUI Import"
     assert list(find_cursor_cli(tmp_path / "projects", here, 5)) == []
-    assert CursorCliAdapter(tmp_path / "projects").read_file(
-        transcript(tmp_path / "projects")
-    ).content_digest
+    assert (
+        CursorCliAdapter(tmp_path / "projects")
+        .read_file(transcript(tmp_path / "projects"))
+        .content_digest
+    )
+
+
+# ---- memory hook -----------------------------------------------------------------------
+
+
+def test_hook_is_a_handler_in_cursors_versioned_hooks_file(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from session2memory.hook_install import update_settings
+
+    exe = Path("/opt/s2m/bin/session2memory")
+    settings = tmp_path / ".cursor" / "hooks.json"
+    settings.parent.mkdir()
+    theirs = {
+        "version": 1,
+        "hooks": {
+            "sessionStart": [{"command": "./hooks/session-init.sh"}],
+            "stop": [{"command": "./hooks/audit.sh", "loop_limit": 10}],
+        },
+    }
+    settings.write_text(json.dumps(theirs), encoding="utf-8")
+
+    plan = update_settings(
+        settings, agent="cursor", executable=exe, apply=True, now=datetime(2026, 11, 13)
+    )
+
+    written = json.loads(settings.read_text(encoding="utf-8"))
+    assert plan.action == "add" and plan.backup_path is not None
+    assert written["version"] == 1 and written["hooks"]["stop"] == theirs["hooks"]["stop"]
+    assert written["hooks"]["sessionStart"] == [
+        {"command": "./hooks/session-init.sh"},
+        {"command": f"'{exe.as_posix()}' session-start-hook --agent cursor", "timeout": 5},
+    ], "a flat list of handlers, without Claude's matcher groups or a type"
+    assert update_settings(settings, agent="cursor", executable=exe, apply=True).action == "none"
+    moved = update_settings(
+        settings, agent="cursor", executable=Path("/new/session2memory"), apply=True
+    )
+    assert moved.action == "replace"
+    removed = update_settings(settings, agent="cursor", executable=exe, remove=True, apply=True)
+    assert removed.action == "remove"
+    assert json.loads(settings.read_text(encoding="utf-8")) == theirs
+
+
+def test_hook_creates_cursors_file_and_leaves_no_empty_event(tmp_path: Path) -> None:
+    from session2memory.hook_install import update_settings
+
+    exe = Path("/opt/s2m/bin/session2memory")
+    settings = tmp_path / "hooks.json"
+    assert update_settings(settings, agent="cursor", executable=exe).action == "add"
+    assert not settings.exists(), "nothing is written without apply"
+    update_settings(settings, agent="cursor", executable=exe, apply=True)
+    assert json.loads(settings.read_text(encoding="utf-8"))["version"] == 1
+    update_settings(settings, agent="cursor", executable=exe, remove=True, apply=True)
+    assert json.loads(settings.read_text(encoding="utf-8")) == {"version": 1, "hooks": {}}
+
+
+def test_cursor_payload_and_answer(bench: Bench) -> None:
+    claude_memory(bench.claude_root, bench.cwd)
+    payload = {
+        "session_id": "c0ffee",
+        "conversation_id": "c0ffee",
+        "hook_event_name": "sessionStart",
+        "workspace_roots": [bench.cwd.as_posix()],
+        "is_background_agent": False,
+        "composer_mode": "agent",
+    }
+
+    result = run_hook(bench.config("cursor"), payload, {}, now=HOOK_NOW)
+
+    assert result.context is not None and "匯出格式" in result.context
+    assert json.loads(hook_output(result.context, "sessionStart", style="cursor")) == {
+        "additional_context": result.context
+    }
+    assert hook_output(None, style="cursor") == "{}"
+
+
+def test_cli_answers_cursor_in_its_own_shape(bench: Bench) -> None:
+    claude_memory(bench.claude_root, bench.cwd)
+    arguments = [("cursor" if a == "claude" else a) for a in hook_arguments(bench)]
+    payload = json.dumps({"conversation_id": "c1", "workspace_roots": [bench.cwd.as_posix()]})
+
+    answer = json.loads(CliRunner().invoke(app, arguments, input=payload).output)
+
+    assert "匯出格式" in answer["additional_context"]

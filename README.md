@@ -447,7 +447,7 @@ requests unless the session has nothing else.
 uv run session2memory hook-install            # show what would change
 uv run session2memory hook-install --apply    # add the hook to ~/.claude/settings.json
 uv run session2memory hook-install --remove --apply
-uv run session2memory hook-install --agent codex --apply   # also: muse, grok
+uv run session2memory hook-install --agent codex --apply   # also: muse, grok, antigravity, cursor
 ```
 
 | Agent | Where the hook goes | When it injects |
@@ -457,6 +457,7 @@ uv run session2memory hook-install --agent codex --apply   # also: muse, grok
 | Muse | `~/.config/muse/settings.json`, `SessionStart` | session start |
 | Grok | `~/.grok/hooks/session2memory.json`, `PostToolUse` (+ a `SessionStart` watcher) | after the first tool call of a new session |
 | Antigravity CLI | `~/.gemini/config/hooks.json`, a named `session2memory` hook on `SessionStart` | once per new conversation (as an inserted system message) |
+| Cursor | `~/.cursor/hooks.json`, `sessionStart` | when a new conversation is created (as `additional_context`) |
 
 Grok shows a `SessionStart` hook's output to the person only and never to the model, so
 its hook sits on `PostToolUse` and adds the context once, after the first tool call that

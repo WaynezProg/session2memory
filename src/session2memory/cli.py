@@ -394,7 +394,7 @@ def session_start_hook(
 @app.command("hook-install", help="Add or remove the memory hook in an agent's settings.")
 def hook_install(
     agent: Annotated[
-        str, typer.Option("--agent", help="claude, codex, grok, muse or antigravity.")
+        str, typer.Option("--agent", help="claude, codex, grok, muse, antigravity or cursor.")
     ] = "claude",
     settings: Annotated[
         Path | None,

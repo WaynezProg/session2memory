@@ -42,7 +42,9 @@ class AgentHook:
     observe_event: str | None = None
     # ``claude``: a ``hooks`` object of events holding matcher groups, answered with
     # ``hookSpecificOutput``. ``antigravity``: named hooks at the top level, each event a
-    # flat list of handlers, answered with ``injectSteps``.
+    # flat list of handlers, answered with ``injectSteps``. ``cursor``: a versioned file
+    # whose ``hooks`` object holds a flat list of handlers per event, answered with
+    # ``additional_context``.
     layout: str = "claude"
 
     @property
@@ -66,8 +68,12 @@ AGENT_HOOKS: dict[str, AgentHook] = {
     "antigravity": AgentHook(
         "~/.gemini/config/hooks.json", "SessionStart", once_per_session=True, layout="antigravity"
     ),
+    # Cursor calls sessionStart when a new composer conversation is created and adds the
+    # answer's ``additional_context`` to that conversation's initial context.
+    "cursor": AgentHook("~/.cursor/hooks.json", "sessionStart", layout="cursor"),
 }
 ANTIGRAVITY_HOOK_NAME = "session2memory"
+CURSOR_HOOKS_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -171,6 +177,10 @@ def update_settings(
         return _update_named_hook(
             settings_path, command, AGENT_HOOKS[agent].event, remove=remove, apply=apply, now=now
         )
+    if AGENT_HOOKS[agent].layout == "cursor":
+        return _update_cursor_hooks(
+            settings_path, command, AGENT_HOOKS[agent].event, remove=remove, apply=apply, now=now
+        )
     entries = hook_entries(exe, agent, seen_dir)
     settings: dict[str, object] = {}
     if settings_path.exists():
@@ -270,6 +280,52 @@ def _update_named_hook(
         settings.pop(ANTIGRAVITY_HOOK_NAME, None)
     else:
         settings[ANTIGRAVITY_HOOK_NAME] = wanted
+    _write_settings(settings_path, settings)
+    return InstallPlan(settings_path, action, command, backup)
+
+
+def _update_cursor_hooks(
+    settings_path: Path,
+    command: str,
+    event: str,
+    *,
+    remove: bool,
+    apply: bool,
+    now: datetime | None,
+) -> InstallPlan:
+    """Cursor's ``hooks.json``: ``{"version": 1, "hooks": {event: [handler, ...]}}``."""
+    settings: dict[str, object] = {}
+    if settings_path.exists():
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError(f"{settings_path.as_posix()}: expected a JSON object")
+        settings = loaded
+    hooks = settings.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise ValueError(f"{settings_path.as_posix()}: expected hooks to be an object")
+    handlers = hooks.get(event, [])
+    if not isinstance(handlers, list):
+        raise ValueError(f"{settings_path.as_posix()}: expected hooks.{event} to be a list")
+    wanted = {"command": command, "timeout": HOOK_TIMEOUT_SECONDS}
+    ours = [handler for handler in handlers if _is_our_hook(handler)]
+    others = [handler for handler in handlers if not _is_our_hook(handler)]
+    if remove:
+        action = "remove" if ours else "none"
+    elif ours == [wanted]:
+        action = "none"
+    else:
+        action = "replace" if ours else "add"
+    if action == "none" or not apply:
+        return InstallPlan(settings_path, action, command)
+    backup = _backup(settings_path, now)
+    kept = others if remove else [*others, wanted]
+    hooks = dict(hooks)
+    if kept:
+        hooks[event] = kept
+    else:
+        hooks.pop(event, None)
+    settings.setdefault("version", CURSOR_HOOKS_VERSION)
+    settings["hooks"] = hooks
     _write_settings(settings_path, settings)
     return InstallPlan(settings_path, action, command, backup)
 

@@ -529,6 +529,7 @@ def run_hook(
         payload.get("workspaceRoot")
         or payload.get("cwd")
         or _first(payload.get("workspacePaths"))
+        or _first(payload.get("workspace_roots"))
         or env.get("CLAUDE_PROJECT_DIR")
         or env.get("GROK_WORKSPACE_ROOT")
         or ""
@@ -606,7 +607,7 @@ def run_hook(
 
 def payload_session_id(payload: Mapping[str, object]) -> str:
     """The session a hook payload is about, whatever this agent calls it."""
-    for key in ("session_id", "sessionId", "conversationId"):
+    for key in ("session_id", "sessionId", "conversationId", "conversation_id"):
         value = payload.get(key)
         if value:
             return str(value)
@@ -622,9 +623,12 @@ def hook_output(context: str | None, event: str = "SessionStart", *, style: str 
 
     ``claude`` is the shape Claude Code, Codex, Muse and Grok read. Antigravity takes a list
     of steps to insert into the conversation; a system message stays in it across turns.
+    Cursor reads ``additional_context`` and adds it to the conversation's initial context.
     """
     if not context:
         return "{}"
+    if style == "cursor":
+        return json.dumps({"additional_context": context}, ensure_ascii=False)
     if style == "antigravity":
         return json.dumps(
             {"injectSteps": [{"systemMessage": {"systemMessage": context}}]}, ensure_ascii=False
