@@ -12,7 +12,7 @@ import sqlite3
 import subprocess
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,11 +21,12 @@ from session2memory.auto.curate import Runner, curate, default_runner
 from session2memory.auto.export import export
 from session2memory.auto.files import archive_claude, compress_codex_rollouts, purge_holding
 from session2memory.auto.scan import DEFAULT_MAX_FILE_BYTES, ScanSources, scan
+from session2memory.auto.semantic import Embedder, embed_pending, load_embedder
 from session2memory.auto.store import AutoStore, now_iso
 from session2memory.models import SourceHome
 from session2memory.state.store import StateStore
 
-ALL_STEPS = ("scan", "compress", "archive", "curate", "export", "index")
+ALL_STEPS = ("scan", "compress", "archive", "curate", "embed", "export", "index")
 DB_NAME = "session2memory.db"
 LAST_SCAN_KEY = "last_scan_at"
 SCAN_OVERLAP = timedelta(hours=2)
@@ -51,6 +52,8 @@ class AutoConfig:
     curate_max_age_days: float = 21.0
     # Scopes whose sessions are curated; ``None`` curates every scope.
     curate_scopes: tuple[str, ...] | None = None
+    # Replaces the local embedding model of the ``embed`` step (tests).
+    embedder_factory: Callable[[], Embedder | None] | None = None
     index_command: Sequence[str] = ()
     index_env: dict[str, str] = field(default_factory=dict)
     dry_run: bool = False
@@ -224,6 +227,13 @@ def _run_step(
             older_than_days=config.stale_after_days, run_id=run_id, now=now
         )
         return result
+    if step == "embed":
+        if config.dry_run:
+            return {"skipped": "dry run"}
+        embedder = (config.embedder_factory or load_embedder)()
+        if embedder is None:
+            return {"skipped": "fastembed is not installed (optional extra `semantic`)"}
+        return embed_pending(store, embedder).as_dict()
     if step == "export":
         if config.dry_run:
             return {"skipped": "dry run"}

@@ -206,7 +206,7 @@ uv run session2memory auto run                    # scan, compress/archive, cura
 Reading memory:
 
 ```bash
-uv run session2memory auto search "<keywords>" [--workspace <path>]
+uv run session2memory auto search "<keywords or a question>" [--workspace <path>]
 uv run session2memory auto memory --workspace <path>
 ```
 

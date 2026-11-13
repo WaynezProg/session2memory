@@ -444,7 +444,22 @@ requests unless the session has nothing else.
 uv run session2memory hook-install            # show what would change
 uv run session2memory hook-install --apply    # add the hook to ~/.claude/settings.json
 uv run session2memory hook-install --remove --apply
+uv run session2memory hook-install --agent codex --apply   # also: muse, grok
 ```
+
+| Agent | Where the hook goes | When it injects |
+| --- | --- | --- |
+| Claude Code | `~/.claude/settings.json`, `SessionStart` | session start and `/clear` |
+| Codex | `~/.codex/hooks.json`, `SessionStart` | session start. Codex runs a new hook only after you approve it once (`/hooks` in the TUI) |
+| Muse | `~/.config/muse/settings.json`, `SessionStart` | session start |
+| Grok | `~/.grok/hooks/session2memory.json`, `PostToolUse` (+ a `SessionStart` watcher) | after the first tool call of a new session |
+
+Grok shows a `SessionStart` hook's output to the person only and never to the model, so
+its hook sits on `PostToolUse` and adds the context once, after the first tool call that
+actually ran (context given before a call is dropped when the call is refused). A shell
+test in front of the command answers every later call without starting Python, and a
+second entry on `SessionStart` only notes resumed sessions so that they stay silent. A
+Grok session that never runs a tool gets nothing.
 
 `hook-install` adds one `SessionStart` entry to Claude Code's settings, leaves every other
 hook as it is, and writes a timestamped backup (`settings.json.bak-session2memory-…`)
@@ -468,8 +483,8 @@ reference material, not instructions. Nothing is written to any agent's store; t
 state is the delivery ledger at `~/.local/share/session2memory/handoff-ledger.json`. Any
 error results in no injection, never in a failed session.
 
-No embeddings or reranking are involved: at session start there is no query yet, so the
-index is selected by workspace and recency.
+No embeddings or reranking are involved here: at session start there is no query yet, so
+the index is selected by workspace and recency. Search by meaning is `auto search`, below.
 
 ## Unattended pipeline (`auto`)
 
@@ -490,6 +505,7 @@ order:
 | `compress` | Cold `rollout-*.jsonl` files in Codex homes that Codex does not maintain itself are compressed in place to `.jsonl.zst` (Codex reads and re-inflates these on resume). The original is moved to `holding/` and removed only after the holding period, once the compressed file has been verified again. |
 | `archive` | Cold Claude Code transcripts are copied into `archive/claude/` as `.zst`. The originals are not touched; Claude Code deletes them itself after `cleanupPeriodDays`. |
 | `curate` | One small LLM call per project batch summarises the new sessions and maintains project memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Memory not confirmed for 120 days becomes `stale`. |
+| `embed` | Gives every active memory and session summary a vector for `auto search` (local model; skipped unless the `semantic` extra is installed). Only rows whose text changed are embedded again. |
 | `export` | Renders memory and session summaries as Markdown under `memory/` (rewritten only when changed). |
 | `index` | Optional `--index-cmd`, e.g. HKS `ks update {memory_dir}`. |
 
@@ -506,6 +522,16 @@ which removes the fixed overhead of a normal headless run (measured: 630 instead
 one. Scratch, benchmark and deleted directories are skipped, as are one-line exchanges.
 Use `--llm-cmd` or `SESSION2MEMORY_AUTO_LLM_CMD` for another command; the prompt arrives
 on stdin and the reply must contain one JSON object.
+
+**Search.** `auto search` takes keywords or a whole question. With the optional extra
+(`uv sync --extra semantic`) and after one `embed` step it ranks by meaning as well:
+local embeddings pick the candidates (keyword hits are added so an exact name or id is
+never missed), then the best 20 are re-read by a local cross-encoder (`--no-rerank` skips that, `--mode keyword` skips both). Models run on
+this machine through `fastembed` (ONNX), are downloaded once into
+`~/.cache/session2memory/models`, and can be changed with `SESSION2MEMORY_EMBED_MODEL` /
+`SESSION2MEMORY_RERANK_MODEL`. No text leaves the machine and a query costs no tokens.
+Without the extra, or before the first `embed`, search is by keywords. The reader and
+workspace filters are applied before anything is compared, as in keyword search.
 
 **Isolation.** Each session and memory has a scope: `openclaw` when it comes only from
 OpenClaw agents (their own session stores, their Codex homes, or work inside an OpenClaw
