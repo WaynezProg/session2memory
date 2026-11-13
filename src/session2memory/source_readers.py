@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
+from session2memory.adapters.antigravity import AntigravityAdapter
 from session2memory.adapters.claude import ClaudeAdapter, ClaudeDesktopAdapter
 from session2memory.adapters.codex import CodexAdapter
 from session2memory.adapters.grok import GrokAdapter
@@ -24,4 +25,5 @@ def default_readers() -> Mapping[str, SessionReader]:
         "openclaw-native": OpenClawNativeAdapter(root).read_session,
         "grok": GrokAdapter(root).read_session,
         "muse": MuseAdapter(root).read_session,
+        "antigravity": AntigravityAdapter(root).read_session,
     }

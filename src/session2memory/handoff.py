@@ -333,7 +333,15 @@ def muse_summary(record: SessionRecord) -> NativeSummary:
     return NativeSummary(title=name, origin="muse session name")
 
 
+def antigravity_summary(record: SessionRecord) -> NativeSummary:
+    from session2memory.adapters.antigravity import conversation_info, data_root
+
+    title = conversation_info(data_root(record.source_path), record.session_id).title
+    return NativeSummary(title=title, origin="antigravity conversation title")
+
+
 SUMMARY_READERS: Mapping[str, SummaryReader] = {
+    "antigravity": antigravity_summary,
     "grok": grok_summary,
     "codex": codex_summary,
     "claude": claude_summary,

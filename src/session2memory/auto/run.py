@@ -41,6 +41,9 @@ class AutoConfig:
     compress_homes: tuple[SourceHome, ...] = ()
     steps: Sequence[str] = ALL_STEPS
     since_days: float = 30.0
+    # Look back the whole ``since_days`` again instead of from the last scan: for a source
+    # added after the store already existed, whose older sessions were never seen.
+    rescan: bool = False
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     max_llm_calls: int = 20
     llm_command: str | None = None
@@ -174,7 +177,7 @@ def _run_step(
     if step == "scan":
         previous = store.get_meta(LAST_SCAN_KEY)
         since = now - timedelta(days=config.since_days)
-        if previous:
+        if previous and not config.rescan:
             since = max(since, datetime.fromisoformat(previous) - SCAN_OVERLAP)
         result = scan(
             state.sources, store, config.sources, since=since, max_bytes=config.max_file_bytes

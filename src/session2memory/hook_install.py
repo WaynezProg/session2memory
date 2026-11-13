@@ -40,6 +40,14 @@ class AgentHook:
     # A second entry on this event that only watches: it notes a resumed session, which
     # the repeating event's payload does not say, so that session stays silent.
     observe_event: str | None = None
+    # ``claude``: a ``hooks`` object of events holding matcher groups, answered with
+    # ``hookSpecificOutput``. ``antigravity``: named hooks at the top level, each event a
+    # flat list of handlers, answered with ``injectSteps``.
+    layout: str = "claude"
+
+    @property
+    def output(self) -> str:
+        return self.layout
 
 
 AGENT_HOOKS: dict[str, AgentHook] = {
@@ -53,7 +61,13 @@ AGENT_HOOKS: dict[str, AgentHook] = {
         session_env="GROK_SESSION_ID",
         observe_event="SessionStart",
     ),
+    # Antigravity fires SessionStart once per new conversation; --once also keeps a
+    # conversation that is opened again from being served twice.
+    "antigravity": AgentHook(
+        "~/.gemini/config/hooks.json", "SessionStart", once_per_session=True, layout="antigravity"
+    ),
 }
+ANTIGRAVITY_HOOK_NAME = "session2memory"
 
 
 @dataclass(frozen=True)
@@ -153,6 +167,10 @@ def update_settings(
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENT_HOOKS)}")
     exe = executable or default_executable()
     command = hook_command(exe, agent, seen_dir)
+    if AGENT_HOOKS[agent].layout == "antigravity":
+        return _update_named_hook(
+            settings_path, command, AGENT_HOOKS[agent].event, remove=remove, apply=apply, now=now
+        )
     entries = hook_entries(exe, agent, seen_dir)
     settings: dict[str, object] = {}
     if settings_path.exists():
@@ -208,6 +226,55 @@ def update_settings(
         settings["hooks"] = hooks
     else:
         settings.pop("hooks", None)
+    _write_settings(settings_path, settings)
+    return InstallPlan(settings_path, action, command, backup)
+
+
+def _backup(settings_path: Path, now: datetime | None) -> Path | None:
+    if not settings_path.exists():
+        return None
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    backup = settings_path.with_name(f"{settings_path.name}.bak-session2memory-{stamp}")
+    shutil.copy2(settings_path, backup)
+    return backup
+
+
+def _update_named_hook(
+    settings_path: Path,
+    command: str,
+    event: str,
+    *,
+    remove: bool,
+    apply: bool,
+    now: datetime | None,
+) -> InstallPlan:
+    """Antigravity's ``hooks.json``: our hook is one named entry beside the others."""
+    settings: dict[str, object] = {}
+    if settings_path.exists():
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError(f"{settings_path.as_posix()}: expected a JSON object")
+        settings = loaded
+    current = settings.get(ANTIGRAVITY_HOOK_NAME)
+    wanted = {event: [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECONDS}]}
+    if remove:
+        action = "remove" if current is not None else "none"
+    elif current == wanted:
+        action = "none"
+    else:
+        action = "replace" if current is not None else "add"
+    if action == "none" or not apply:
+        return InstallPlan(settings_path, action, command)
+    backup = _backup(settings_path, now)
+    if remove:
+        settings.pop(ANTIGRAVITY_HOOK_NAME, None)
+    else:
+        settings[ANTIGRAVITY_HOOK_NAME] = wanted
+    _write_settings(settings_path, settings)
+    return InstallPlan(settings_path, action, command, backup)
+
+
+def _write_settings(settings_path: Path, settings: dict[str, object]) -> None:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     # Settings can hold credentials: the rewritten file keeps the original's mode and is
     # never readable by others on the way.
@@ -219,4 +286,3 @@ def update_settings(
         handle.write(json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
     os.chmod(temporary, mode)
     temporary.replace(settings_path)
-    return InstallPlan(settings_path, action, command, backup)

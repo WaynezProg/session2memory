@@ -453,6 +453,7 @@ uv run session2memory hook-install --agent codex --apply   # also: muse, grok
 | Codex | `~/.codex/hooks.json`, `SessionStart` | session start. Codex runs a new hook only after you approve it once (`/hooks` in the TUI) |
 | Muse | `~/.config/muse/settings.json`, `SessionStart` | session start |
 | Grok | `~/.grok/hooks/session2memory.json`, `PostToolUse` (+ a `SessionStart` watcher) | after the first tool call of a new session |
+| Antigravity CLI | `~/.gemini/config/hooks.json`, a named `session2memory` hook on `SessionStart` | once per new conversation (as an inserted system message) |
 
 Grok shows a `SessionStart` hook's output to the person only and never to the model, so
 its hook sits on `PostToolUse` and adds the context once, after the first tool call that
@@ -501,7 +502,7 @@ order:
 
 | Step | What it does |
 | --- | --- |
-| `scan` | Registers every session changed since the last run (Codex incl. per-agent homes, Claude Code, Grok, Muse, OpenClaw native) in the source registry and stores a compact digest: the user's requests and the reply each ended with. First run looks back `--since-days` (30). |
+| `scan` | Registers every session changed since the last run (Codex incl. per-agent homes, Claude Code, Grok, Muse, Antigravity CLI, OpenClaw native) in the source registry and stores a compact digest: the user's requests and the reply each ended with. First run looks back `--since-days` (30); `--rescan` does that again once, for a store that was added later. |
 | `compress` | Cold `rollout-*.jsonl` files in Codex homes that Codex does not maintain itself are compressed in place to `.jsonl.zst` (Codex reads and re-inflates these on resume). The original is moved to `holding/` and removed only after the holding period, once the compressed file has been verified again. |
 | `archive` | Cold Claude Code transcripts are copied into `archive/claude/` as `.zst`. The originals are not touched; Claude Code deletes them itself after `cleanupPeriodDays`. |
 | `curate` | One small LLM call per project batch summarises the new sessions and maintains project memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Memory not confirmed for 120 days becomes `stale`. |
