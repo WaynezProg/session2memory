@@ -209,6 +209,7 @@ def test_rescan_picks_up_conversations_older_than_the_last_scan(machine: Machine
     path = conversation(root, machine.work)
     old = (NOW - timedelta(days=5)).timestamp()
     os.utime(path, (old, old))
+    os.utime(root / "conversation_summaries.db", (old, old))  # the index did not change either
     sources = ScanSources(antigravity_root=root)
     first = run_auto(
         machine.config(steps=("scan",), sources=ScanSources()), now=NOW - timedelta(days=1)
@@ -276,6 +277,41 @@ def test_a_workspace_that_reaches_the_index_later_is_filled_in(machine: Machine)
     assert report.sessions_unchanged == 1
     assert after is not None and after.project == machine.work.as_posix()
     assert pending == [f"antigravity:{CONVERSATION}"]
+
+
+def test_an_old_conversation_gets_its_workspace_on_an_ordinary_later_scan(
+    machine: Machine,
+) -> None:
+    """No --rescan needed: the index changing is what brings the transcript back in."""
+    root = machine.tmp / "antigravity-cli"
+    path = transcript_path(root, CONVERSATION)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(rows()[0], ensure_ascii=False) + "\n", encoding="utf-8")
+    old = (NOW - timedelta(days=3)).timestamp()
+    os.utime(path, (old, old))
+    sources = ScanSources(antigravity_root=root, openclaw_roots=openclaw_roots(machine.state_dir))
+    key = f"antigravity:{CONVERSATION}"
+    machine.store_dir.mkdir(parents=True, exist_ok=True)
+    state = StateStore.open(machine.db)
+    try:
+        store = AutoStore(state._connection)
+        scan(state.sources, store, sources, since=LONG_AGO)
+        assert store.get_session(key).project is None  # type: ignore[union-attr]
+        recent = NOW - timedelta(hours=1)
+        quiet = scan(state.sources, store, sources, since=recent)
+        conversation(root, machine.agent_work, content=[rows()[0]])
+        os.utime(path, (old, old))
+        index = root / "conversation_summaries.db"
+        os.utime(index, (NOW.timestamp(), NOW.timestamp()))
+        later = scan(state.sources, store, sources, since=recent)
+        found = store.get_session(key)
+    finally:
+        state.close()
+
+    assert quiet.files_seen == 0, "nothing changed: the old transcript is not read"
+    assert later.files_seen == 1 and found is not None
+    assert found.project == machine.agent_work.as_posix()
+    assert found.scope == "coding", "it was readable by coding agents and stays so"
 
 
 # ---- hook ------------------------------------------------------------------------------

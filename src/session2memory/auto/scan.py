@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from session2memory.adapters.antigravity import TRANSCRIPT_GLOB, AntigravityAdapter
+from session2memory.adapters.antigravity import SUMMARIES_DB, TRANSCRIPT_GLOB, AntigravityAdapter
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import ROLLOUT_PATTERNS, CodexAdapter
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
@@ -199,7 +199,16 @@ def iter_records(
     if sources.antigravity_root is not None and sources.antigravity_root.is_dir():
         antigravity = AntigravityAdapter(sources.antigravity_root)
         files = sources.antigravity_root.glob(TRANSCRIPT_GLOB)
-        yield from read_all(_recent(files, cutoff, max_bytes, report), antigravity.read_file)
+        # The workspace of a conversation lives in an index beside the transcripts. When
+        # the index changed, older transcripts are read again as well: one registered
+        # before the index listed it gets its workspace this way. The store is small and
+        # an unchanged conversation costs nothing further.
+        try:
+            index_time = (sources.antigravity_root / SUMMARIES_DB).stat().st_mtime
+        except OSError:
+            index_time = 0.0
+        since_file = 0.0 if index_time >= cutoff else cutoff
+        yield from read_all(_recent(files, since_file, max_bytes, report), antigravity.read_file)
     if sources.openclaw_agents_root is not None and sources.openclaw_agents_root.is_dir():
         native = OpenClawNativeAdapter(sources.openclaw_agents_root)
         for agent, database in native.databases():

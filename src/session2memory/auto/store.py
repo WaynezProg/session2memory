@@ -280,7 +280,10 @@ class AutoStore:
         curated, although its content did not change.
         """
         cursor = self._connection.execute(
-            "UPDATE auto_sessions SET project=?, scope=?, updated_at=? "
+            # A session already readable by coding agents stays so, wherever its
+            # workspace turns out to be: scope never narrows.
+            "UPDATE auto_sessions SET project=?, "
+            "scope=CASE WHEN scope='coding' THEN 'coding' ELSE ? END, updated_at=? "
             "WHERE source_key=? AND project IS NULL",
             (project, scope, now_iso(), source_key),
         )
