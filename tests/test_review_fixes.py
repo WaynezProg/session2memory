@@ -975,3 +975,27 @@ def test_dry_run_does_not_touch_an_existing_store_directory(tmp_path: Path) -> N
     assert isinstance(scanned, dict) and scanned["sessions_new"] == 1
     assert store_dir.stat().st_mode & 0o777 == 0o755
     assert list(store_dir.iterdir()) == []
+
+
+def test_openclaw_agent_in_a_linked_project_directory_stays_isolated(tmp_path: Path) -> None:
+    """OpenClaw's shared ``projects/<repo>`` is a link to the real repository.
+
+    A command run from there has a real working directory outside every OpenClaw root;
+    only the path as typed (the shell's ``PWD``) shows where the agent is.
+    """
+    from session2memory.auto.scope import forced_reader as forced
+
+    state_dir = tmp_path / "openclaw" / "state"
+    shared = tmp_path / "openclaw" / "workspaces" / "shared" / "projects"
+    shared.mkdir(parents=True)
+    repo = tmp_path / "code" / "repo"
+    repo.mkdir(parents=True)
+    (shared / "repo").symlink_to(repo)
+    typed = shared / "repo"
+
+    assert forced({"PWD": typed.as_posix()}, repo, state_dir) == "openclaw"
+    assert forced({}, typed, state_dir) == "openclaw"
+    assert forced({"PWD": repo.as_posix()}, repo, state_dir) is None
+    # OpenClaw's exec tool marks its shells, wherever they are.
+    assert forced({"OPENCLAW_SHELL": "exec"}, repo, state_dir) == "openclaw"
+    assert forced({"OPENCLAW_SHELL": ""}, repo, state_dir) is None
