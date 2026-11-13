@@ -445,6 +445,8 @@ def _auto_config(
         grok_root=roots["grok"],
         muse_root=roots["muse"],
         antigravity_root=roots["antigravity"],
+        cursor_root=roots["cursor"],
+        cursor_cli_root=roots["cursor-cli"],
         openclaw_agents_root=roots["openclaw-native"] if include_openclaw else None,
         codex_memory_root=DEFAULT_CODEX_MEMORY_ROOT.expanduser(),
         openclaw_roots=openclaw_roots(state_dir),

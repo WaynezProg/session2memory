@@ -21,6 +21,12 @@ from session2memory.adapters.antigravity import (
 )
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import ROLLOUT_PATTERNS, CodexAdapter
+from session2memory.adapters.cursor import (
+    STORE_GLOB,
+    TRANSCRIPT_GLOBS,
+    CursorAdapter,
+    CursorCliAdapter,
+)
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
 from session2memory.adapters.muse import SESSION_FILE, MuseAdapter
 from session2memory.adapters.openclaw_native import OpenClawNativeAdapter
@@ -48,6 +54,8 @@ class ScanSources:
     grok_root: Path | None = None
     muse_root: Path | None = None
     antigravity_root: Path | None = None
+    cursor_root: Path | None = None  # chat stores (store.db)
+    cursor_cli_root: Path | None = None  # agent transcripts (JSONL)
     openclaw_agents_root: Path | None = None
     codex_memory_root: Path | None = None
     # Sessions started in these directories belong to OpenClaw agents.
@@ -143,14 +151,32 @@ def build_digest(record: SessionRecord, *, max_chars: int = DIGEST_CHARS) -> str
     return "\n".join([*blocks, *reversed(tail)])
 
 
-def _recent(paths: Iterator[Path], since: float, max_bytes: int, report: ScanReport) -> list[Path]:
+def _store_changed(path: Path) -> float:
+    """Last write to a sqlite store: with a write-ahead log the main file's time lags."""
+    latest = path.stat().st_mtime
+    try:
+        latest = max(latest, path.with_name(path.name + "-wal").stat().st_mtime)
+    except OSError:
+        pass
+    return latest
+
+
+def _recent(
+    paths: Iterator[Path],
+    since: float,
+    max_bytes: int,
+    report: ScanReport,
+    *,
+    changed: Callable[[Path], float] | None = None,
+) -> list[Path]:
     selected: list[Path] = []
     for path in paths:
         try:
             stat = path.stat()
+            modified = changed(path) if changed is not None else stat.st_mtime
         except OSError:
             continue
-        if stat.st_mtime < since:
+        if modified < since:
             continue
         report.files_seen += 1
         if stat.st_size > max_bytes:
@@ -205,6 +231,19 @@ def iter_records(
         antigravity = AntigravityAdapter(sources.antigravity_root)
         files = sources.antigravity_root.glob(TRANSCRIPT_GLOB)
         yield from read_all(_recent(files, cutoff, max_bytes, report), antigravity.read_file)
+    if sources.cursor_root is not None and sources.cursor_root.is_dir():
+        cursor = CursorAdapter(sources.cursor_root)
+        stores = sources.cursor_root.glob(STORE_GLOB)
+        yield from read_all(
+            _recent(stores, cutoff, max_bytes, report, changed=_store_changed), cursor.read_file
+        )
+    if sources.cursor_cli_root is not None and sources.cursor_cli_root.is_dir():
+        cursor_cli = CursorCliAdapter(sources.cursor_cli_root)
+        root = sources.cursor_cli_root
+        transcripts = {path for pattern in TRANSCRIPT_GLOBS for path in root.glob(pattern)}
+        yield from read_all(
+            _recent(iter(transcripts), cutoff, max_bytes, report), cursor_cli.read_file
+        )
     if sources.openclaw_agents_root is not None and sources.openclaw_agents_root.is_dir():
         native = OpenClawNativeAdapter(sources.openclaw_agents_root)
         for agent, database in native.databases():
@@ -283,8 +322,12 @@ def scan(
             mtime: float | None = record.source_path.stat().st_mtime
         except OSError:
             mtime = None
-        # A sqlite store's file time says nothing about one session inside it.
-        file_time = mtime if record.source_path.suffix not in {".sqlite", ".db"} else None
+        # A sqlite store's file time says nothing about one session inside it, unless the
+        # store holds exactly that session (Cursor).
+        shared_store = record.source_path.suffix in {".sqlite", ".db"} and record.tool != "cursor"
+        if record.tool == "cursor" and mtime is not None:
+            mtime = _store_changed(record.source_path)
+        file_time = None if shared_store else mtime
         updated = record.updated_at if record.updated_at and record.updated_at.tzinfo else None
         started = record.started_at if record.started_at and record.started_at.tzinfo else None
         if updated is not None:

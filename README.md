@@ -387,6 +387,8 @@ sessions are agent-private and would otherwise flow into the shared output.
 | `claude`, `claude-desktop` | `<project>/<session>.jsonl` | `sessionId` | `uuid:<uuid>` |
 | `openclaw-native` | `<state>/agents/<agent>/agent/openclaw-agent.sqlite` (opened read-only) | `<agent>/<session id>` | `event:<event_id>` |
 | `grok` | `<cwd>/<session>/chat_history.jsonl` | directory name | `msg:<position>` (Grok records have no id) |
+| `cursor` | `<hash>/<session>/store.db` | `agentId` in `meta` | `blob:<blob id>` |
+| `cursor-cli` | `agent-transcripts/<session>.jsonl` | file name | `msg:<position>` |
 | `muse` | `YYYY/MM/DD/<session>/session.jsonl` | session stream id | `rec:<record id>` |
 
 `openclaw-native`, `grok` and `muse` are opt-in: they are imported only when named with
@@ -406,7 +408,8 @@ uv run session2memory handoff --workspace /path/to/workspace
 uv run session2memory handoff --workspace /path/to/workspace --from-tool codex --max-chars 2000
 ```
 
-Without `--from-tool` the latest session across codex, claude, grok and muse is used. To
+Without `--from-tool` the latest session across codex, claude, grok, muse, antigravity,
+cursor and cursor-cli is used. To
 hand off a specific session instead, add `--session <id>`: the full session id, a unique
 prefix of it, or `<tool>:<id>`. When the id is unknown or ambiguous the error lists the
 most recent session ids of the workspace. Each
@@ -502,7 +505,7 @@ order:
 
 | Step | What it does |
 | --- | --- |
-| `scan` | Registers every session changed since the last run (Codex incl. per-agent homes, Claude Code, Grok, Muse, Antigravity CLI, OpenClaw native) in the source registry and stores a compact digest: the user's requests and the reply each ended with. First run looks back `--since-days` (30); `--rescan` does that again once, for a store that was added later. |
+| `scan` | Registers every session changed since the last run (Codex incl. per-agent homes, Claude Code, Grok, Muse, Antigravity CLI, Cursor chat stores and agent transcripts, OpenClaw native) in the source registry and stores a compact digest: the user's requests and the reply each ended with. First run looks back `--since-days` (30); `--rescan` does that again once, for a store that was added later. |
 | `compress` | Cold `rollout-*.jsonl` files in Codex homes that Codex does not maintain itself are compressed in place to `.jsonl.zst` (Codex reads and re-inflates these on resume). The original is moved to `holding/` and removed only after the holding period, once the compressed file has been verified again. |
 | `archive` | Cold Claude Code transcripts are copied into `archive/claude/` as `.zst`. The originals are not touched; Claude Code deletes them itself after `cleanupPeriodDays`. |
 | `curate` | One small LLM call per project batch summarises the new sessions and maintains project memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Memory not confirmed for 120 days becomes `stale`. |
