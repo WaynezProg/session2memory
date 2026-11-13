@@ -240,7 +240,16 @@ def iter_records(
     if sources.cursor_cli_root is not None and sources.cursor_cli_root.is_dir():
         cursor_cli = CursorCliAdapter(sources.cursor_cli_root)
         root = sources.cursor_cli_root
-        transcripts = {path for pattern in TRANSCRIPT_GLOBS for path in root.glob(pattern)}
+        # Cursor writes one conversation to both places. The chat store holds more of it,
+        # so a transcript whose session has a chat store is left out, whichever of the
+        # two changed last: the conversation is then kept under one key, not two.
+        in_chat_store = _cursor_chat_sessions(sources.cursor_root)
+        transcripts = {
+            path
+            for pattern in TRANSCRIPT_GLOBS
+            for path in root.glob(pattern)
+            if path.stem not in in_chat_store
+        }
         yield from read_all(
             _recent(iter(transcripts), cutoff, max_bytes, report), cursor_cli.read_file
         )
@@ -270,6 +279,13 @@ def iter_records(
                     continue
                 if record is not None:
                     yield record
+
+
+def _cursor_chat_sessions(root: Path | None) -> set[str]:
+    """Session ids that have a Cursor chat store (the store's folder is named after it)."""
+    if root is None or not root.is_dir():
+        return set()
+    return {path.parent.name for path in root.glob(STORE_GLOB)}
 
 
 def _summaries_by_thread(memory_root: Path | None) -> dict[str, RolloutSummary]:
