@@ -340,8 +340,15 @@ def antigravity_summary(record: SessionRecord) -> NativeSummary:
     return NativeSummary(title=title, origin="antigravity conversation title")
 
 
+def cursor_summary(record: SessionRecord) -> NativeSummary:
+    from session2memory.adapters.cursor import session_title
+
+    return NativeSummary(title=session_title(record.source_path), origin="cursor chat name")
+
+
 SUMMARY_READERS: Mapping[str, SummaryReader] = {
     "antigravity": antigravity_summary,
+    "cursor": cursor_summary,
     "grok": grok_summary,
     "codex": codex_summary,
     "claude": claude_summary,

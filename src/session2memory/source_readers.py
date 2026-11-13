@@ -8,6 +8,7 @@ from pathlib import Path
 from session2memory.adapters.antigravity import AntigravityAdapter
 from session2memory.adapters.claude import ClaudeAdapter, ClaudeDesktopAdapter
 from session2memory.adapters.codex import CodexAdapter
+from session2memory.adapters.cursor import CursorAdapter, CursorCliAdapter
 from session2memory.adapters.grok import GrokAdapter
 from session2memory.adapters.muse import MuseAdapter
 from session2memory.adapters.openclaw_native import OpenClawNativeAdapter
@@ -26,4 +27,6 @@ def default_readers() -> Mapping[str, SessionReader]:
         "grok": GrokAdapter(root).read_session,
         "muse": MuseAdapter(root).read_session,
         "antigravity": AntigravityAdapter(root).read_session,
+        "cursor": CursorAdapter(root).read_session,
+        "cursor-cli": CursorCliAdapter(root).read_session,
     }

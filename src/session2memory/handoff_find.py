@@ -22,6 +22,12 @@ from session2memory.adapters.antigravity import (
 )
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import ROLLOUT_PATTERNS, CodexAdapter
+from session2memory.adapters.cursor import (
+    STORE_GLOB,
+    TRANSCRIPT_GLOBS,
+    CursorAdapter,
+    CursorCliAdapter,
+)
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
 from session2memory.adapters.muse import SESSION_FILE, MuseAdapter
 from session2memory.adapters.openclaw_native import OpenClawNativeAdapter
@@ -145,6 +151,22 @@ def find_muse(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]
             yield found
 
 
+def find_cursor(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]:
+    """Cursor's chat stores name the workspace only inside: inspect the newest ones."""
+    adapter = CursorAdapter(root)
+    for found in _read_each(_newest(root.glob(STORE_GLOB), limit * 3), adapter.read_file):
+        if _same_path(found.record.cwd, workspace):
+            yield found
+
+
+def find_cursor_cli(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]:
+    adapter = CursorCliAdapter(root)
+    paths = {path for pattern in TRANSCRIPT_GLOBS for path in root.glob(pattern)}
+    for found in _read_each(_newest(list(paths), limit * 3), adapter.read_file):
+        if _same_path(found.record.cwd, workspace):
+            yield found
+
+
 def find_openclaw_native(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]:
     """Look at the few most recent sessions of every agent store and match their cwd."""
     adapter = OpenClawNativeAdapter(root)
@@ -186,11 +208,21 @@ FINDERS: Mapping[str, Finder] = {
     "grok": find_grok,
     "muse": find_muse,
     "antigravity": find_antigravity,
+    "cursor": find_cursor,
+    "cursor-cli": find_cursor_cli,
     "openclaw-native": find_openclaw_native,
 }
 # Searched when no tool is named. ``openclaw-native`` holds agent-private sessions and is
 # only searched when asked for explicitly.
-DEFAULT_HANDOFF_TOOLS = ("codex", "claude", "grok", "muse", "antigravity")
+DEFAULT_HANDOFF_TOOLS = (
+    "codex",
+    "claude",
+    "grok",
+    "muse",
+    "antigravity",
+    "cursor",
+    "cursor-cli",
+)
 
 
 def has_conversation(record: SessionRecord) -> bool:
