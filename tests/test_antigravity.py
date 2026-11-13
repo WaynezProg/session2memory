@@ -222,6 +222,18 @@ def test_rescan_picks_up_conversations_older_than_the_last_scan(machine: Machine
     assert again["scan"]["by_tool"] == {"antigravity": 1}  # type: ignore[index]
 
 
+def test_a_named_conversation_is_found_beyond_the_newest_few(tmp_path: Path) -> None:
+    root = tmp_path / "antigravity-cli"
+    here = tmp_path / "here"
+    for day in range(1, 9):
+        conversation(root, here, f"c{day}", modified=f"2026-11-{day:02d} 00:00:00+00:00")
+
+    found = [f.record.session_id for f in find_antigravity(root, here, 200)]
+
+    assert sorted(found) == [f"c{day}" for day in range(1, 9)]
+    assert len(list(find_antigravity(root, here, 3))) == 3
+
+
 # ---- hook ------------------------------------------------------------------------------
 
 

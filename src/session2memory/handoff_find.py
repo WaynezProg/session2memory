@@ -126,7 +126,9 @@ def find_grok(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]
 def find_antigravity(root: Path, workspace: Path, limit: int) -> Iterator[FoundSession]:
     """Antigravity's own index says which conversations belong to a workspace."""
     adapter = AntigravityAdapter(root)
-    paths = [transcript_path(root, identifier) for identifier in conversations_of(root, workspace)]
+    paths = [
+        transcript_path(root, identifier) for identifier in conversations_of(root, workspace, limit)
+    ]
     yield from _read_each(_newest((p for p in paths if p.is_file()), limit), adapter.read_file)
 
 
