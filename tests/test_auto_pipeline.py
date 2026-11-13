@@ -540,8 +540,12 @@ def test_short_session_digest_has_every_turn_and_no_omission_note(machine: Machi
 def test_codex_session_with_a_rollout_summary_keeps_it_as_native_summary(
     machine: Machine,
 ) -> None:
-    machine.codex()
+    rollout = machine.codex()
     machine.claude()
+    # The summary counts only when it was written after the session's last activity. The
+    # summary is dated relative to NOW, so the rollout is too, not by the real clock.
+    ended = (NOW - timedelta(hours=2)).timestamp()
+    os.utime(rollout, (ended, ended))
     codex_summary_file(
         machine.memory_root, CODEX_ID, machine.work, "匯出增量化", hours_ago=1, name="a-export"
     )

@@ -539,6 +539,20 @@ class AutoStore:
         self._connection.commit()
         return bool(cursor.rowcount)
 
+    def restore_memory(self, memory_id: str, *, reason: str, now: datetime | None = None) -> bool:
+        """Make a retired or stale memory active again; it counts as confirmed now, so the
+        next run does not mark it stale straight away."""
+        stamp = now_iso(now)
+        cursor = self._connection.execute(
+            "UPDATE auto_memories SET status=?, last_confirmed_at=?, updated_at=? "
+            "WHERE memory_id=? AND status IN ('retired', 'stale')",
+            (ACTIVE, stamp, stamp, memory_id),
+        )
+        if cursor.rowcount:
+            self._event(memory_id, "restore", {"reason": reason}, None)
+        self._connection.commit()
+        return bool(cursor.rowcount)
+
     def confirm_memory(
         self,
         memory_id: str,
