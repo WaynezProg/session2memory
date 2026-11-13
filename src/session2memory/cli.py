@@ -51,7 +51,7 @@ from session2memory.handoff_find import (
     select_session,
     split_session_spec,
 )
-from session2memory.hook_install import update_settings
+from session2memory.hook_install import AGENT_HOOKS, DEFAULT_SEEN_DIR, update_settings
 from session2memory.llm_extract import LlmInputMode, SubprocessLlmExtractBackend
 from session2memory.llm_extract_mock import MockLlmExtractBackend
 from session2memory.memory_lifecycle import (
@@ -76,6 +76,7 @@ from session2memory.review_conflicts import ConflictResolve
 from session2memory.session_start import (
     DEFAULT_MAX_AGE_HOURS,
     HookConfig,
+    first_time,
     hook_output,
     run_hook,
 )
@@ -260,8 +261,22 @@ DEFAULT_HOOK_MAX_CHARS = 3000
 )
 def session_start_hook(
     agent: Annotated[
-        str, typer.Option("--agent", help="Agent this hook runs in (claude or codex).")
+        str,
+        typer.Option("--agent", help="Agent this hook runs in (claude, codex, grok or muse)."),
     ] = "claude",
+    event: Annotated[
+        str, typer.Option("--event", help="Hook event this command is attached to.")
+    ] = "SessionStart",
+    once: Annotated[
+        bool,
+        typer.Option(
+            "--once",
+            help="For an event that repeats within a session: only its first firing injects.",
+        ),
+    ] = False,
+    seen_dir: Annotated[
+        Path, typer.Option("--seen-dir", help="Where --once records the sessions it served.")
+    ] = Path(DEFAULT_SEEN_DIR),
     max_chars: Annotated[
         int, typer.Option("--max-chars", help="Upper bound on the injected text.")
     ] = DEFAULT_HOOK_MAX_CHARS,
@@ -302,6 +317,15 @@ def session_start_hook(
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if once:
+            session = str(payload.get("session_id") or payload.get("sessionId") or "")
+            if not first_time(seen_dir.expanduser(), agent, session):
+                typer.echo("{}")
+                return
+            # The session's first tool call stands for its start.
+            payload = {**payload, "source": "startup"}
         source_roots = _default_source_roots()
         source_roots.update(_parse_source_root(source_root or []))
         config = HookConfig(
@@ -318,7 +342,7 @@ def session_start_hook(
             auto_db=auto_store.expanduser() / AUTO_DB_NAME,
             openclaw_state_dir=_openclaw_state_dir(),
         )
-        result = run_hook(config, payload if isinstance(payload, dict) else {}, os.environ)
+        result = run_hook(config, payload, os.environ)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
         if explain:
             typer.echo(f"session-start-hook: {type(exc).__name__}: {exc}", err=True)
@@ -327,21 +351,28 @@ def session_start_hook(
     if explain:
         for note in result.notes:
             typer.echo(note, err=True)
-    typer.echo(hook_output(result.context))
+    typer.echo(hook_output(result.context, event))
 
 
-@app.command("hook-install", help="Add or remove the SessionStart hook in Claude settings.")
+@app.command("hook-install", help="Add or remove the memory hook in an agent's settings.")
 def hook_install(
+    agent: Annotated[
+        str, typer.Option("--agent", help="Agent to change: claude, codex, grok or muse.")
+    ] = "claude",
     settings: Annotated[
-        Path, typer.Option("--settings", help="Claude Code settings.json to change.")
-    ] = Path("~/.claude/settings.json"),
+        Path | None,
+        typer.Option("--settings", help="Hook settings file to change (default: the agent's)."),
+    ] = None,
     remove: Annotated[bool, typer.Option("--remove", help="Remove the hook instead.")] = False,
     apply: Annotated[
         bool, typer.Option("--apply", help="Write the change. Without it only the plan is shown.")
     ] = False,
 ) -> None:
     try:
-        plan = update_settings(settings.expanduser(), remove=remove, apply=apply)
+        if agent not in AGENT_HOOKS:
+            raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENT_HOOKS)}")
+        target = settings or Path(AGENT_HOOKS[agent].settings)
+        plan = update_settings(target.expanduser(), agent=agent, remove=remove, apply=apply)
     except (ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
