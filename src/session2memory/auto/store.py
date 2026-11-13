@@ -449,6 +449,15 @@ class AutoStore:
         ).fetchall()
         return [self._memory(row) for row in rows]
 
+    def memory_projects(self) -> list[str]:
+        """Projects that have active memory, the most recently changed first."""
+        rows = self._connection.execute(
+            "SELECT project FROM auto_memories WHERE status=? "
+            "GROUP BY project ORDER BY MAX(updated_at) DESC, project",
+            (ACTIVE,),
+        ).fetchall()
+        return [str(project) for (project,) in rows]
+
     def get_memory(self, memory_id: str) -> MemoryRow | None:
         row = self._connection.execute(
             f"SELECT {self._MEMORY_COLUMNS} FROM auto_memories WHERE memory_id=?", (memory_id,)

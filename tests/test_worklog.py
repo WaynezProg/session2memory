@@ -250,7 +250,14 @@ def test_worklog_matches_golden(tmp_path: Path) -> None:
     assert result.path.read_text(encoding="utf-8") == golden
 
 
-def test_cli_worklog_yesterday(tmp_path: Path) -> None:
+def test_cli_worklog_yesterday(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class DayAfterTheSeed(date):
+        @classmethod
+        def today(cls) -> date:
+            return date(2026, 6, 9)
+
+    # "yesterday" follows the clock; the seeded entries are from 2026-06-08.
+    monkeypatch.setattr("session2memory.worklog.date", DayAfterTheSeed)
     store, output_dir = _seed_store(tmp_path)
     store.close()
     result = CliRunner().invoke(

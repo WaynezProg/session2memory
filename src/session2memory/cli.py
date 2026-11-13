@@ -430,6 +430,7 @@ def _auto_config(
     since_days: float,
     rescan: bool,
     max_llm_calls: int,
+    max_reconcile_calls: int,
     curate_scope: list[str] | None,
     llm_cmd: str | None,
     index_cmd: str | None,
@@ -462,6 +463,7 @@ def _auto_config(
         since_days=since_days,
         rescan=rescan,
         max_llm_calls=max_llm_calls,
+        max_reconcile_calls=max_reconcile_calls,
         curate_scopes=tuple(curate_scope) if curate_scope else None,
         llm_command=llm_cmd,
         index_command=tuple(shlex.split(index_cmd)) if index_cmd else (),
@@ -502,6 +504,16 @@ def auto_run(
     max_llm_calls: Annotated[
         int, typer.Option("--max-llm-calls", help="Upper bound on curation calls in this run.")
     ] = 20,
+    max_reconcile_calls: Annotated[
+        int,
+        typer.Option(
+            "--max-reconcile-calls",
+            help=(
+                "Upper bound on calls that look for contradicting or repeated memories "
+                "(one per project whose memory changed); 0 turns the step off."
+            ),
+        ),
+    ] = 5,
     curate_scope: Annotated[
         list[str] | None,
         typer.Option(
@@ -542,6 +554,7 @@ def auto_run(
         since_days=since_days,
         rescan=rescan,
         max_llm_calls=max_llm_calls,
+        max_reconcile_calls=max_reconcile_calls,
         curate_scope=curate_scope,
         llm_cmd=llm_cmd,
         index_cmd=index_cmd,
