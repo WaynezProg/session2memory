@@ -200,8 +200,10 @@ def semantic_search(
     # Meaning leads. Measured on real memory, merging the two rankings as equals pushed
     # the right row down, so keyword hits only make sure an exact name or id that the
     # vectors missed is among the candidates the reranker reads.
-    extra = [ref for ref in by_words if ref not in by_meaning[: size - len(by_words)]]
-    head = [*by_meaning[: size - len(extra)], *extra]
+    head = by_meaning[:size]
+    missing = [ref for ref in by_words if ref in similar and ref not in set(head)]
+    if missing:
+        head = [*head[: size - len(missing)], *missing]
     if reranker is not None and head:
         scores = reranker.score(query, [rows[ref][3][:RERANK_CHARS] for ref in head])
         ranked = sorted(zip(head, scores, strict=True), key=lambda pair: -pair[1])

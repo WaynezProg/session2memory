@@ -214,3 +214,29 @@ def test_an_exact_name_the_vectors_miss_is_still_a_candidate(store: AutoStore) -
     )
 
     assert refs(hits)[0] == ticket
+
+
+def test_a_row_found_both_ways_is_returned_once(store: AutoStore) -> None:
+    """A keyword hit that is also a late vector candidate must not enter the pool twice."""
+    both = [remember(store, f"部署 deploy 上線 檢查表 {index}") for index in range(4)]
+    for index in range(20):
+        remember(store, f"上線 流程 補充 {index}")
+    late = remember(store, "部署 檢查表 例外：發票")
+    embedder = ConceptEmbedder()
+    embed_pending(store, embedder)
+
+    for limit, pool in ((3, 20), (25, 20), (8, 6)):
+        hits = refs(
+            semantic_search(
+                store,
+                "部署 檢查表",
+                embedder=embedder,
+                reranker=PreferWord("例外"),
+                limit=limit,
+                pool=pool,
+            )
+        )
+        assert len(hits) == len(set(hits)), (limit, pool)
+        assert hits[0] == late and set(both) <= set(
+            refs(semantic_search(store, "部署 檢查表", embedder=embedder, limit=30))
+        )
