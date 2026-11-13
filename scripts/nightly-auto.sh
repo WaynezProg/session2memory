@@ -11,6 +11,8 @@ Usage: scripts/nightly-auto.sh [--dry-run] [extra `session2memory auto run` opti
 Environment overrides:
   SESSION2MEMORY_AUTO_STORE           persistent store (default ~/.local/share/session2memory/store)
   SESSION2MEMORY_AUTO_MAX_LLM_CALLS   curation call budget per run (default 40)
+  SESSION2MEMORY_AUTO_CURATE_SCOPE    scopes to curate, space separated (default: coding);
+                                      "all" curates OpenClaw agents' sessions too
   SESSION2MEMORY_AUTO_INDEX_CMD       command run after export; {memory_dir} is substituted
   SESSION2MEMORY_AUTO_LLM_CMD         curation command (prompt on stdin)
   OPENCLAW_STATE_DIR                  OpenClaw state directory, for its agents' sessions
@@ -30,6 +32,14 @@ mkdir -p "$log_dir"
 report="$log_dir/run-$(date +%Y%m%d-%H%M%S).json"
 
 args=(auto run --store "$store" --max-llm-calls "$max_calls" --json)
+# OpenClaw agents produce hundreds of machine-triggered sessions a day and keep their own
+# memory; by default only sessions of coding tools are distilled.
+curate_scope="${SESSION2MEMORY_AUTO_CURATE_SCOPE:-coding}"
+if [ "$curate_scope" != "all" ]; then
+  for one in $curate_scope; do
+    args+=(--curate-scope "$one")
+  done
+fi
 if [ -n "${SESSION2MEMORY_AUTO_INDEX_CMD:-}" ]; then
   args+=(--index-cmd "$SESSION2MEMORY_AUTO_INDEX_CMD")
 fi

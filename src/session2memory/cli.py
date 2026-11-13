@@ -361,6 +361,7 @@ def _auto_config(
     steps: list[str] | None,
     since_days: float,
     max_llm_calls: int,
+    curate_scope: list[str] | None,
     llm_cmd: str | None,
     index_cmd: str | None,
     include_openclaw: bool,
@@ -388,6 +389,7 @@ def _auto_config(
         steps=tuple(steps) if steps else ALL_STEPS,
         since_days=since_days,
         max_llm_calls=max_llm_calls,
+        curate_scopes=tuple(curate_scope) if curate_scope else None,
         llm_command=llm_cmd,
         index_command=tuple(shlex.split(index_cmd)) if index_cmd else (),
         dry_run=dry_run,
@@ -417,6 +419,16 @@ def auto_run(
     max_llm_calls: Annotated[
         int, typer.Option("--max-llm-calls", help="Upper bound on curation calls in this run.")
     ] = 20,
+    curate_scope: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--curate-scope",
+            help=(
+                "Only curate sessions of this scope (coding or openclaw; repeatable). "
+                "Default: every scope. Other sessions stay registered and pending."
+            ),
+        ),
+    ] = None,
     llm_cmd: Annotated[
         str | None,
         typer.Option("--llm-cmd", help="Curation command; the prompt is written to its stdin."),
@@ -439,11 +451,14 @@ def auto_run(
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Print the full report.")] = False,
 ) -> None:
+    if curate_scope and set(curate_scope) - {"coding", "openclaw"}:
+        raise typer.BadParameter("--curate-scope must be coding or openclaw")
     config = _auto_config(
         store=store,
         steps=step,
         since_days=since_days,
         max_llm_calls=max_llm_calls,
+        curate_scope=curate_scope,
         llm_cmd=llm_cmd,
         index_cmd=index_cmd,
         include_openclaw=include_openclaw,

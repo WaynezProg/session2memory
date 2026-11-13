@@ -914,7 +914,6 @@ def test_openclaw_handoff_prefers_the_most_recently_active_session(tmp_path: Pat
     assert found and "kurisu/s0" in [f.record.session_id for f in found]
 
 
-
 # ---- eighth review round -----------------------------------------------------------------
 
 
@@ -999,3 +998,34 @@ def test_openclaw_agent_in_a_linked_project_directory_stays_isolated(tmp_path: P
     # OpenClaw's exec tool marks its shells, wherever they are.
     assert forced({"OPENCLAW_SHELL": "exec"}, repo, state_dir) == "openclaw"
     assert forced({"OPENCLAW_SHELL": ""}, repo, state_dir) is None
+
+
+def test_curation_limited_to_a_scope_leaves_other_sessions_pending(store: AutoStore) -> None:
+    """Agent runtimes produce far more sessions than a nightly budget can read.
+
+    Limited to ``coding``, an OpenClaw session costs no call and is not expired either:
+    it is still pending when the limit is lifted.
+    """
+    mine = seed(store, "mine", minute=1)
+    agent = seed(store, "agent", minute=2, scope="openclaw")
+    old = NOW + timedelta(days=60)  # far past the age at which pending sessions expire
+
+    runner = FakeRunner()
+    report = curate(store, runner, max_calls=5, now=NOW, max_age_days=21, scopes=("coding",))
+
+    assert (report.sessions_curated, report.sessions_out_of_scope) == (1, 1)
+    assert len(runner.prompts) == 1 and "agent" not in "".join(refs_of(runner.prompts))
+    assert store.get_session(mine).summary  # type: ignore[union-attr]
+    assert store.get_session(agent).summary is None  # type: ignore[union-attr]
+    assert [row.source_key for row in store.pending_sessions()] == [agent]
+
+    skipped = curate(store, FakeRunner(), max_calls=5, now=old, max_age_days=21, scopes=("coding",))
+    assert (skipped.sessions_expired, skipped.sessions_out_of_scope) == (0, 1)
+    assert [row.source_key for row in store.pending_sessions()] == [agent]
+
+    widened = curate(store, FakeRunner(), max_calls=5, now=NOW, max_age_days=21)
+    assert widened.sessions_curated == 1 and store.pending_sessions() == []
+
+
+def refs_of(prompts: list[str]) -> list[str]:
+    return [line for prompt in prompts for line in prompt.splitlines() if "codex:" in line]
