@@ -116,8 +116,8 @@ def test_reinstalling_removes_our_entry_from_an_event_no_longer_used(tmp_path: P
 
 def test_unknown_agent_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown agent"):
-        update_settings(tmp_path / "x.json", agent="cursor", executable=EXE)
-    result = CliRunner().invoke(app, ["hook-install", "--agent", "cursor"])
+        update_settings(tmp_path / "x.json", agent="windsurf", executable=EXE)
+    result = CliRunner().invoke(app, ["hook-install", "--agent", "windsurf"])
     assert result.exit_code == 1 and "unknown agent" in result.output
 
 
@@ -128,6 +128,7 @@ def test_default_settings_file_of_each_agent() -> None:
         "muse": "~/.config/muse/settings.json",
         "grok": "~/.grok/hooks/session2memory.json",
         "antigravity": "~/.gemini/config/hooks.json",
+        "cursor": "~/.cursor/hooks.json",
     }
 
 
