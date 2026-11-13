@@ -357,3 +357,162 @@ uv run pytest -q
 uv run ruff check .
 uv run mypy src/session2memory
 ```
+
+## Source registry (stable session identity)
+
+With the state DB enabled, adapters that report a content digest (currently Codex) are
+tracked in a source registry inside `session2memory.db`:
+
+- A session is `tool:native_session_id`; a message is addressed by a native locator
+  (Codex rollout `ordinal`), not by file path or line number.
+- Every on-disk copy is a *location* of that source. When Codex natively compresses
+  `rollout-….jsonl` to `rollout-….jsonl.zst`, or the same thread also exists under another
+  home, it is registered as another location and is not imported again.
+- `StateStore.sources.resolve_candidate(...)` finds the exact source message in any location
+  that is still present and verifies its digest; it reports a failure when none is left.
+
+Reading `.jsonl.zst` needs the `zstd` executable on `PATH`; files are streamed, never
+unpacked to disk.
+
+By default only the main Codex home (`--source-root codex=…`) is scanned. Pass
+`--include-openclaw-codex-homes` to `import` or `discover` to also scan every
+`$OPENCLAW_STATE_DIR/agents/<agent>/agent/codex-home/sessions`. It is opt-in because those
+sessions are agent-private and would otherwise flow into the shared output.
+
+### Registry-tracked adapters
+
+| Tool | Source | Session id | Message locator |
+| --- | --- | --- | --- |
+| `codex` | `rollout-*.jsonl` / `.jsonl.zst` | thread id | `ord:<ordinal>` |
+| `claude`, `claude-desktop` | `<project>/<session>.jsonl` | `sessionId` | `uuid:<uuid>` |
+| `openclaw-native` | `<state>/agents/<agent>/agent/openclaw-agent.sqlite` (opened read-only) | `<agent>/<session id>` | `event:<event_id>` |
+| `grok` | `<cwd>/<session>/chat_history.jsonl` | directory name | `msg:<position>` (Grok records have no id) |
+| `muse` | `YYYY/MM/DD/<session>/session.jsonl` | session stream id | `rec:<record id>` |
+
+`openclaw-native`, `grok` and `muse` are opt-in: they are imported only when named with
+`--tool`, never as part of the default tool set. `openclaw-native` reads agent-private
+session stores; the conversation source of record for OpenClaw remains LCM.
+
+The Claude adapter skips `api-request*` records: they are copies of what was sent to the
+API (system prompt, replayed turns), not turns of the conversation.
+
+## Handoff packet (manual, read-only)
+
+Run these from this repository (or add `--project <path to this repo>` to `uv run` when
+calling it from another directory, such as the workspace being handed off):
+
+```bash
+uv run session2memory handoff --workspace /path/to/workspace
+uv run session2memory handoff --workspace /path/to/workspace --from-tool codex --max-chars 2000
+```
+
+Without `--from-tool` the latest session across codex, claude, grok and muse is used. To
+hand off a specific session instead, add `--session <id>`: the full session id, a unique
+prefix of it, or `<tool>:<id>`. When the id is unknown or ambiguous the error lists the
+most recent session ids of the workspace. Each
+quoted line of the packet ends with a reference in square brackets. Copy one exactly as
+printed to read the full message:
+
+```bash
+uv run session2memory handoff-show '<reference copied from the packet>' --workspace /path/to/workspace
+```
+
+`handoff` prints a short packet for the most recent session of a workspace so another
+agent can continue it. It reads the agent's own store directly (no import, no state DB,
+no hook, no LLM) and never writes to it. The packet holds, in order of what is kept when
+space is tight: the first goal, the latest request and the last assistant reply (shortened
+to fit, never dropped), then the title, the agent's own summary where one exists, earlier
+requests and marker lines. Each quoted item ends with an evidence reference that
+`handoff-show` resolves to the full message. `--max-chars` (default 4000, minimum 600) is a
+hard upper bound.
+
+What the agents record natively is mostly a title, not a summary: Grok's `session_summary`
+repeats its title, Codex's thread `title` is the first user message (the short `name` is
+used instead), Claude Code has a real summary only after a compaction, Muse has a session
+name. Harness-injected user messages (`<system-reminder>`, `<environment_context>`, …) are
+skipped, whether they come before or after the user's words; `<user_query>` and
+`<pasted_content>` are unwrapped, and Codex's `## My request:` heading marks where the request
+starts. The summary a compacted session restarts with is shown as a summary, not a request.
+Bare acknowledgements ("Commit", "修正", "ok") are left out of the goal and the recent
+requests unless the session has nothing else.
+
+`openclaw-native` is searched only with `--from-tool openclaw-native`.
+
+## SessionStart hook (passive)
+
+```bash
+uv run session2memory hook-install            # show what would change
+uv run session2memory hook-install --apply    # add the hook to ~/.claude/settings.json
+uv run session2memory hook-install --remove --apply
+```
+
+`hook-install` adds one `SessionStart` entry to Claude Code's settings, leaves every other
+hook as it is, and writes a timestamped backup (`settings.json.bak-session2memory-…`)
+before changing the file. The entry runs `session2memory session-start-hook`, which adds
+two things to a new session of a workspace:
+
+- **Memory index, every time** (`startup` and `clear`): titles and file paths of the memory
+  *other* agents keep for this workspace: Codex's own rollout summaries and memory
+  overview for a Claude session, Claude Code's `memory/MEMORY.md` entries for a Codex
+  session. Only titles and paths are injected; the agent reads a file when it needs it.
+- **Handoff, once** (`startup` only): the previous session of the workspace across codex,
+  claude and grok, delivered once per state of that session and only if it was active in
+  the last 72 hours. When Codex wrote its own summary for that session and it is not older
+  than the session, the summary is used; otherwise the rule-based packet is.
+
+It stays silent for headless sessions (entrypoint `sdk-*`, which is how orchestrators and
+`claude -p` start Claude), temporary directories, the home directory and resumed sessions.
+A session larger than 40 MB is not parsed inside the hook; a pointer to `handoff --session`
+is given instead. The text is capped (`--max-chars`, default 3000) and is labelled as
+reference material, not instructions. Nothing is written to any agent's store; the only
+state is the delivery ledger at `~/.local/share/session2memory/handoff-ledger.json`. Any
+error results in no injection, never in a failed session.
+
+No embeddings or reranking are involved: at session start there is no query yet, so the
+index is selected by workspace and recency.
+
+## Unattended pipeline (`auto`)
+
+```bash
+uv run session2memory auto run --dry-run     # what would happen, no file changes, no LLM
+uv run session2memory auto run               # one full run
+uv run session2memory auto status            # counts and the last run's report
+uv run session2memory auto search "paperclip 暫停"
+uv run session2memory auto memory --workspace /path/to/workspace
+```
+
+`auto run` keeps one persistent store (`~/.local/share/session2memory/store`) and does, in
+order:
+
+| Step | What it does |
+| --- | --- |
+| `scan` | Registers every session changed since the last run (Codex incl. per-agent homes, Claude Code, Grok, Muse, OpenClaw native) in the source registry and stores a compact digest: the user's requests and the reply each ended with. First run looks back `--since-days` (30). |
+| `compress` | Cold `rollout-*.jsonl` files in Codex homes that Codex does not maintain itself are compressed in place to `.jsonl.zst` (Codex reads and re-inflates these on resume). The original is moved to `holding/` and removed only after the holding period, once the compressed file has been verified again. |
+| `archive` | Cold Claude Code transcripts are copied into `archive/claude/` as `.zst`. The originals are not touched; Claude Code deletes them itself after `cleanupPeriodDays`. |
+| `curate` | One small LLM call per project batch summarises the new sessions and maintains project memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Memory not confirmed for 120 days becomes `stale`. |
+| `export` | Renders memory and session summaries as Markdown under `memory/` (rewritten only when changed). |
+| `index` | Optional `--index-cmd`, e.g. HKS `ks update {memory_dir}`. |
+
+Every compressed or archived file is decompressed and compared by SHA-256 before the
+original is moved or left. Memory is never deleted: entries change status and each change
+is logged with its reason and evidence, so an automated decision can be undone
+(`auto memory --all`, `auto memory --retire <id>`).
+
+**Token use.** The model never sees transcripts or tool output, only digests (at most
+3,000 characters per session). Sessions of one project share a call. The default command
+runs `claude -p` with no tools, no MCP servers, no settings and a one-line system prompt,
+which removes the fixed overhead of a normal headless run (measured: 630 instead of about
+34,000 input tokens per call). `--max-llm-calls` bounds a run; the rest waits for the next
+one. Scratch, benchmark and deleted directories are skipped, as are one-line exchanges.
+Use `--llm-cmd` or `SESSION2MEMORY_AUTO_LLM_CMD` for another command; the prompt arrives
+on stdin and the reply must contain one JSON object.
+
+**Isolation.** Each session and memory has a scope: `openclaw` when it comes only from
+OpenClaw agents (their own session stores, their Codex homes, or work inside an OpenClaw
+workspace), `coding` otherwise. A `coding` reader sees everything. An `openclaw` reader
+sees only `openclaw` rows, and a process is forced to that reader when it runs inside an
+OpenClaw workspace, with an OpenClaw-owned `CODEX_HOME`, or with
+`SESSION2MEMORY_READER=openclaw`, whatever `--reader` says. The SessionStart hook injects
+the distilled memory of the workspace (`這個專案的記憶`) and stays silent for headless
+sessions, which is how OpenClaw starts its agents.
+
