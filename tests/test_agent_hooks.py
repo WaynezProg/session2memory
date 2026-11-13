@@ -68,22 +68,49 @@ def test_codex_and_muse_take_a_session_start_hook_beside_existing_ones(
     assert json.loads(settings.read_text(encoding="utf-8"))["hooks"]["SessionStart"] == [theirs]
 
 
-def test_grok_hook_lives_in_its_own_file_on_the_first_tool_call(tmp_path: Path) -> None:
+def test_grok_hook_lives_in_its_own_file_after_the_first_tool_call(tmp_path: Path) -> None:
     settings = tmp_path / "hooks" / "session2memory.json"
 
     plan = update_settings(settings, agent="grok", executable=EXE, apply=True, now=NOW)
 
     assert plan.action == "add" and plan.backup_path is None
     written = json.loads(settings.read_text(encoding="utf-8"))
-    assert list(written["hooks"]) == ["PreToolUse"], "Grok's SessionStart cannot reach the model"
-    command = written["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert command == (
+    assert sorted(written["hooks"]) == ["PostToolUse", "SessionStart"]
+    inject = written["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+    assert inject == (
         '[ -s "$HOME/.local/share/session2memory/hook-seen/grok-${GROK_SESSION_ID:-}" ] '
         f"&& exit 0; '{EXE.as_posix()}' session-start-hook --agent grok "
-        "--event PreToolUse --once"
+        "--event PostToolUse --once"
     )
+    watch = written["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert watch == (
+        f"'{EXE.as_posix()}' session-start-hook --agent grok --event SessionStart --observe"
+    )
+    assert update_settings(settings, agent="grok", executable=EXE, apply=True).action == "none"
     update_settings(settings, agent="grok", executable=EXE, remove=True, apply=True)
     assert json.loads(settings.read_text(encoding="utf-8")) == {}
+
+
+def test_reinstalling_removes_our_entry_from_an_event_no_longer_used(tmp_path: Path) -> None:
+    settings = tmp_path / "session2memory.json"
+    old = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"'{EXE.as_posix()}' session-start-hook --agent grok --once",
+                "timeout": 5,
+            }
+        ]
+    }
+    theirs = {"hooks": [{"type": "command", "command": "lint.sh", "timeout": 3}]}
+    settings.write_text(json.dumps({"hooks": {"PreToolUse": [theirs, old]}}), encoding="utf-8")
+
+    plan = update_settings(settings, agent="grok", executable=EXE, apply=True, now=NOW)
+
+    written = json.loads(settings.read_text(encoding="utf-8"))["hooks"]
+    assert plan.action == "replace"
+    assert written["PreToolUse"] == [theirs]
+    assert sorted(written) == ["PostToolUse", "PreToolUse", "SessionStart"]
 
 
 def test_unknown_agent_is_refused(tmp_path: Path) -> None:
@@ -247,3 +274,45 @@ def test_cli_once_keeps_a_resumed_session_silent(bench: Bench) -> None:
         payload = {"sessionId": session, "cwd": bench.cwd.as_posix(), "source": source}
         result = CliRunner().invoke(app, arguments, input=json.dumps(payload))
         assert json.loads(result.output) == {}, source
+
+
+def test_grok_session_workspace_wins_over_the_directory_of_one_step(bench: Bench) -> None:
+    claude_memory(bench.claude_root, bench.cwd)
+    payload = {
+        "sessionId": "g",
+        "cwd": bench.other.as_posix(),  # where this tool call ran
+        "workspaceRoot": bench.cwd.as_posix(),
+    }
+    context = run_hook(bench.config("grok"), payload, {}, now=NOW).context
+    assert context is not None and "匯出格式" in context
+
+
+def test_a_resumed_grok_session_noted_at_its_start_stays_silent(bench: Bench) -> None:
+    """The tool event does not say whether the session was resumed; its start did."""
+    claude_memory(bench.claude_root, bench.cwd)
+    seen = (bench.tmp / "seen").as_posix()
+    base = [("grok" if a == "claude" else a) for a in hook_arguments(bench)]
+    watch = [*base, "--event", "SessionStart", "--observe", "--seen-dir", seen]
+    inject = [*base, "--event", "PostToolUse", "--once", "--seen-dir", seen]
+
+    def start(session: str, source: str) -> str:
+        payload = {"sessionId": session, "cwd": bench.cwd.as_posix(), "source": source}
+        return CliRunner().invoke(app, watch, input=json.dumps(payload)).output
+
+    def tool(session: str) -> dict[str, object]:
+        payload = {"sessionId": session, "workspaceRoot": bench.cwd.as_posix()}
+        return json.loads(CliRunner().invoke(app, inject, input=json.dumps(payload)).output)
+
+    assert json.loads(start("old", "load")) == {} and json.loads(start("fresh", "new")) == {}
+    assert tool("old") == {}, "resumed: nothing, and no handoff is used up"
+    assert "hookSpecificOutput" in tool("fresh")
+
+
+def test_only_one_caller_takes_over_an_abandoned_claim(tmp_path: Path) -> None:
+    seen = tmp_path / "seen"
+    assert first_time(seen, "grok", "s1", NOW) is True
+    later = NOW + timedelta(seconds=CLAIM_RETRY_SECONDS + 5)
+
+    assert first_time(seen, "grok", "s1", later) is True
+    assert first_time(seen, "grok", "s1", later) is False, "the takeover is itself a fresh claim"
+    assert [p.name for p in seen.iterdir()] == ["grok-s1"], "nothing is left behind"

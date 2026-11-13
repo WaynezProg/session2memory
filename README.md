@@ -452,12 +452,14 @@ uv run session2memory hook-install --agent codex --apply   # also: muse, grok
 | Claude Code | `~/.claude/settings.json`, `SessionStart` | session start and `/clear` |
 | Codex | `~/.codex/hooks.json`, `SessionStart` | session start. Codex runs a new hook only after you approve it once (`/hooks` in the TUI) |
 | Muse | `~/.config/muse/settings.json`, `SessionStart` | session start |
-| Grok | `~/.grok/hooks/session2memory.json`, `PreToolUse` | the first tool call of a session |
+| Grok | `~/.grok/hooks/session2memory.json`, `PostToolUse` (+ a `SessionStart` watcher) | after the first tool call of a new session |
 
 Grok shows a `SessionStart` hook's output to the person only and never to the model, so
-its hook sits on `PreToolUse` and adds the context once, on the first tool call; a shell
-test in front of the command answers every later call without starting Python. A Grok
-session that never calls a tool gets nothing.
+its hook sits on `PostToolUse` and adds the context once, after the first tool call that
+actually ran (context given before a call is dropped when the call is refused). A shell
+test in front of the command answers every later call without starting Python, and a
+second entry on `SessionStart` only notes resumed sessions so that they stay silent. A
+Grok session that never runs a tool gets nothing.
 
 `hook-install` adds one `SessionStart` entry to Claude Code's settings, leaves every other
 hook as it is, and writes a timestamped backup (`settings.json.bak-session2memory-…`)

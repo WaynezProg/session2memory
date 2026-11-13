@@ -84,6 +84,7 @@ from session2memory.session_start import (
     HookConfig,
     first_time,
     hook_output,
+    is_resume,
     release,
     run_hook,
     served,
@@ -282,6 +283,13 @@ def session_start_hook(
             help="For an event that repeats within a session: only its first firing injects.",
         ),
     ] = False,
+    observe: Annotated[
+        bool,
+        typer.Option(
+            "--observe",
+            help="Inject nothing; only note a resumed session so that --once stays silent for it.",
+        ),
+    ] = False,
     seen_dir: Annotated[
         Path, typer.Option("--seen-dir", help="Where --once records the sessions it served.")
     ] = Path(DEFAULT_SEEN_DIR),
@@ -328,6 +336,12 @@ def session_start_hook(
         payload = json.loads(raw) if raw.strip() else {}
         if not isinstance(payload, dict):
             payload = {}
+        if observe:
+            session = str(payload.get("session_id") or payload.get("sessionId") or "")
+            if session and is_resume(payload):
+                served(seen_dir.expanduser(), agent, session)
+            typer.echo("{}")
+            return
         if once:
             claimed = str(payload.get("session_id") or payload.get("sessionId") or "")
             if not first_time(seen_dir.expanduser(), agent, claimed):

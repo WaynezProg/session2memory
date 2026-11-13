@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import CodexAdapter
@@ -505,9 +506,11 @@ def run_hook(
     source = str(payload.get("source") or "startup")
     source = SOURCE_ALIASES.get(source, source)
     session_id = str(payload.get("session_id") or payload.get("sessionId") or "")
+    # Grok's ``cwd`` on a tool event is where that step runs, which can be a subdirectory
+    # or another project; the session's workspace is ``workspaceRoot``.
     cwd = (
-        payload.get("cwd")
-        or payload.get("workspaceRoot")
+        payload.get("workspaceRoot")
+        or payload.get("cwd")
         or env.get("CLAUDE_PROJECT_DIR")
         or env.get("GROK_WORKSPACE_ROOT")
         or ""
@@ -624,8 +627,15 @@ def first_time(directory: Path, agent: str, session_id: str, now: datetime | Non
             state = marker.stat()
             if state.st_size > 0 or moment - state.st_mtime < CLAIM_RETRY_SECONDS:
                 return False
-            os.utime(marker, (moment, moment))  # an abandoned claim: take it over
-            return True
+            # An abandoned claim. Renaming it away succeeds for one caller only, and that
+            # caller alone goes on to make the new claim.
+            aside = marker.with_name(f"{marker.name}.taken-{os.getpid()}-{uuid4().hex[:8]}")
+            try:
+                os.rename(marker, aside)
+            except FileNotFoundError:
+                return False
+            aside.unlink(missing_ok=True)
+            descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(descriptor)
         os.utime(marker, (moment, moment))
     except OSError:
@@ -640,9 +650,15 @@ def first_time(directory: Path, agent: str, session_id: str, now: datetime | Non
     return True
 
 
+def is_resume(payload: Mapping[str, object]) -> bool:
+    source = str(payload.get("source") or "")
+    return SOURCE_ALIASES.get(source, source) == "resume"
+
+
 def served(directory: Path, agent: str, session_id: str) -> None:
     """Record that the session got its answer, so later calls stop at the shell guard."""
     try:
+        directory.mkdir(parents=True, exist_ok=True)
         seen_marker(directory, agent, session_id).write_text("done\n", encoding="utf-8")
     except OSError:
         pass
