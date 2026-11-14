@@ -27,6 +27,12 @@ case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
 
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is not on PATH ($PATH). Under launchd or cron, set PATH in the job;" >&2
+  echo "scripts/nightly-launchd-plist.sh writes one that does." >&2
+  exit 127
+fi
+
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 store="${SESSION2MEMORY_AUTO_STORE:-$HOME/.local/share/session2memory/store}"

@@ -18,6 +18,161 @@ Architecture, pipeline, session-start and data-model diagrams are in
 A native macOS console for browsing memory, sessions and runs, and for testing HKS
 queries, is in [apps/mac](apps/mac/README.md).
 
+## Contents
+
+- [Two ways to use it](#two-ways-to-use-it)
+- [Requirements](#requirements) · [Install](#install) · [Quick start](#quick-start)
+- [Nightly job](#nightly-job) · [Environment variables](#environment-variables)
+- [Supported P0 Sources](#supported-p0-sources)
+- [Generate Memory Docs](#generate-memory-docs) · [Worklog Aggregation](#worklog-aggregation)
+- [HKS Ingest (agents)](#hks-ingest-agents) · [Review And Promote](#review-and-promote)
+- [Source registry](#source-registry-stable-session-identity) · [Handoff packet](#handoff-packet-manual-read-only)
+- [SessionStart hook](#sessionstart-hook-passive) · [Unattended pipeline (`auto`)](#unattended-pipeline-auto)
+
+## Two ways to use it
+
+There are two independent pipelines; pick by what you want out of it.
+
+- **`auto`: memory for your agents, unattended.** `session2memory auto run` scans every
+  supported session store, compresses and archives old sessions, has a model distil each
+  session into short memories per project, retires contradicted or repeated ones, and
+  exports Markdown. A SessionStart hook then gives new agent sessions the memory of the
+  project they start in. State lives in `~/.local/share/session2memory/store`. Start with
+  the [Quick start](#quick-start).
+- **`import` → `review` → `promote`: reviewed Markdown for a knowledge base.** No model
+  is called. Sessions of one day are compiled into daily logs and memory candidates under
+  a folder you name; you approve candidates by hand. The output is made to be ingested by
+  [Hybrid-Knowledge-System](https://github.com/WaynezProg/Hybrid-Knowledge-System) (HKS),
+  which is optional. See [Generate Memory Docs](#generate-memory-docs).
+
+## Requirements
+
+| Need | For | Notes |
+| --- | --- | --- |
+| macOS or Linux | everything | the console app in `apps/mac` is macOS only |
+| [uv](https://docs.astral.sh/uv/) | install and run | uv downloads Python 3.12 for you |
+| Python 3.12 | only with pip or pipx instead of uv | 3.13 and later are rejected by `requires-python` |
+| `zstd` on `PATH` | reading `.jsonl.zst`, the `compress` and `archive` steps of `auto run` | `brew install zstd` / `apt-get install zstd` |
+| a logged-in `claude` CLI | the `curate` and `reconcile` steps of `auto run` (model calls) | or another command via `--llm-cmd` |
+| `semantic` extra (optional) | `auto search` by meaning | local ONNX models, about 3 GB downloaded once |
+| Swift toolchain (optional) | the macOS console | `cd apps/mac && swift build` |
+
+## Install
+
+As a command, for daily use:
+
+```bash
+uv tool install git+https://github.com/WaynezProg/session2memory
+session2memory --help
+```
+
+From a checkout, for development and for the scripts under `scripts/`:
+
+```bash
+git clone https://github.com/WaynezProg/session2memory
+cd session2memory
+uv sync
+uv run session2memory --help
+```
+
+The examples below are written for a checkout (`uv run session2memory …`); with the
+installed command, leave out `uv run`. With pip or pipx, Python 3.12 has to be the
+interpreter: `pipx install git+https://github.com/WaynezProg/session2memory` or
+`python3.12 -m venv .venv && .venv/bin/pip install .`.
+
+Optional extras in a checkout are given together, because `uv sync` removes what is not
+named: `uv sync --extra semantic --group ui`.
+
+## Quick start
+
+Steps 1 and 2 change nothing.
+
+1. See which session stores exist on this machine:
+
+   ```bash
+   uv run session2memory discover
+   ```
+
+2. Rehearse the unattended pipeline (no file changes, no model calls):
+
+   ```bash
+   uv run session2memory auto run --dry-run
+   ```
+
+   `scan` shows the sessions found per tool, `compress` and `archive` how many files a
+   real run would handle.
+
+3. Run it for real. Read this first, because it changes files and spends model calls:
+
+   - `compress` replaces rollouts older than 14 days in **OpenClaw agents' Codex homes**
+     with a `.zst` next to them; the original is kept under `<store>/holding` for 3 days
+     and then deleted. `~/.codex/sessions` itself is never compressed. `--no-openclaw`
+     leaves those homes alone.
+   - `archive` copies Claude Code sessions older than 10 days, compressed, into the
+     store; the originals stay.
+   - `curate` and `reconcile` call `claude -p` (at most 20 and 5 calls per run).
+   - Everything else is written under `~/.local/share/session2memory/store`.
+
+   ```bash
+   uv run session2memory auto run
+   uv run session2memory auto status
+   uv run session2memory auto memory --workspace "$PWD"
+   ```
+
+   `--step` limits a run to some steps, e.g. `--step scan --step archive --step curate`.
+
+4. Give new agent sessions the memory. Without `--apply` it only shows the change:
+
+   ```bash
+   uv run session2memory hook-install
+   uv run session2memory hook-install --apply
+   ```
+
+   The hook records the absolute path of the `session2memory` executable. After moving
+   the checkout or reinstalling, run `hook-install --apply` again.
+
+## Nightly job
+
+`scripts/nightly-auto.sh` (checkout only) wraps `auto run`, writes each run's report to
+`<store>/logs` and keeps the last 60. Try it by hand first:
+
+```bash
+scripts/nightly-auto.sh --dry-run
+```
+
+On macOS, `scripts/nightly-launchd-plist.sh` prints a launchd job for it. launchd starts
+jobs with a bare `PATH`, so the script writes the directories of `uv`, `claude` and
+`zstd` into the job. It installs nothing; you do:
+
+```bash
+scripts/nightly-launchd-plist.sh --hour 5 --minute 30 > ~/Library/LaunchAgents/com.session2memory.nightly.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.session2memory.nightly.plist
+```
+
+Options after `--` are passed to every run, for example
+`-- --step scan --step archive --step curate --step reconcile --step export` to leave
+`compress` out. To remove the job:
+`launchctl bootout "gui/$(id -u)/com.session2memory.nightly"` and delete the file. With
+cron, set `PATH` in the crontab line the same way.
+
+## Environment variables
+
+| Variable | Used by | Meaning |
+| --- | --- | --- |
+| `OPENCLAW_STATE_DIR` | `auto run`, discovery | OpenClaw state directory (default `~/.openclaw`) |
+| `SESSION2MEMORY_AUTO_LLM_CMD` | `auto run` | curation command; the prompt arrives on stdin |
+| `SESSION2MEMORY_LLM_CMD` | `import --llm-extract` | extraction command |
+| `SESSION2MEMORY_EMBED_MODEL`, `SESSION2MEMORY_RERANK_MODEL` | `auto search`, `embed` | local model names |
+| `SESSION2MEMORY_MODEL_CACHE` | `auto search`, `embed` | model directory (default `~/.cache/session2memory/models`) |
+| `SESSION2MEMORY_READER` | hook, `auto search` | `openclaw` restricts a reader to OpenClaw memory |
+| `SESSION2MEMORY_AUTO_STORE` | `nightly-auto.sh` | store directory |
+| `SESSION2MEMORY_AUTO_MAX_LLM_CALLS` | `nightly-auto.sh` | curation calls per run (script default 40, CLI default 20) |
+| `SESSION2MEMORY_AUTO_CURATE_SCOPE` | `nightly-auto.sh` | scopes to curate (default `coding`; `all` adds OpenClaw agents) |
+| `SESSION2MEMORY_AUTO_SEMANTIC` | `nightly-auto.sh` | `1` installs the `semantic` extra and keeps embeddings current |
+| `SESSION2MEMORY_AUTO_INDEX_CMD` | `nightly-auto.sh` | command run after export; `{memory_dir}` is substituted |
+| `SESSION2MEMORY_OUTPUT_ROOT`, `SESSION2MEMORY_TOOLS`, `HKS_REPO`, `KS_ROOT`, `HKS_EMBEDDING_MODEL` | `daily-session-memory-to-hks.sh` | see the script's `--help` |
+| `SESSION2MEMORY_HKS_ROOT` | tests | HKS checkout for the compatibility test |
+
 ## Supported P0 Sources
 
 - Claude Code JSONL under `~/.claude/projects`
@@ -120,7 +275,7 @@ Override a source root:
 ```bash
 uv run session2memory import \
   --date 2026-05-22 \
-  --source-root codex=/Users/waynetu/.codex/sessions \
+  --source-root codex="$HOME/.codex/sessions" \
   --output ./out/session-memory
 ```
 
@@ -202,10 +357,19 @@ Markdown from the export tree.
 
 ## Operator / scheduled ingest
 
-Batch jobs on this machine may use `scripts/daily-session-memory-to-hks.sh`,
-which runs `ks ingest` / `ks update` against a combined local `./out/session-memory`
-tree and a dedicated `KS_ROOT`. That path is for operators and launchd, not for
-autonomous agents following the skill contract.
+`scripts/daily-session-memory-to-hks.sh` imports one day (yesterday by default) into
+`./out/session-memory` and runs `ks update` on that tree in an HKS checkout
+(`../Hybrid-Knowledge-System` unless `HKS_REPO` says otherwise), with a `KS_ROOT` of its
+own (`./out/HKS`) and the `simple` embedding. Rehearse first:
+
+```bash
+HKS_REPO=/path/to/Hybrid-Knowledge-System scripts/daily-session-memory-to-hks.sh --dry-run
+```
+
+This is the `ks ingest` / `ks update` path: a new `KS_ROOT` has to be created once with
+`ks ingest ./out/session-memory`, because `ks update` refuses an empty one. Keep one embedding model per `KS_ROOT`: to use another model, set
+`HKS_EMBEDDING_MODEL` and a `KS_ROOT` built with it. This path is for operators and
+scheduled jobs, not for autonomous agents following the skill contract.
 
 ## Review And Promote
 
@@ -290,44 +454,44 @@ uv run session2memory review list \
 - `--date 2026-05-22`: read the review queue for that date.
 - `--output ./out/session-memory`: read the generated output folder.
 
-Inspect one candidate with its evidence preview:
+Inspect one candidate with its evidence preview (ids come from `review list`):
 
 ```bash
-uv run session2memory review inspect r000001 \
+uv run session2memory review inspect r_8c2d02942022712b \
   --date 2026-05-22 \
   --output ./out/session-memory
 ```
 
-- `review inspect r000001`: show one candidate, its evidence pointer, and a preview.
+- `review inspect r_8c2d02942022712b`: show one candidate, its evidence pointer, and a preview.
 
 Approve one candidate:
 
 ```bash
-uv run session2memory review approve r000001 \
+uv run session2memory review approve r_8c2d02942022712b \
   --date 2026-05-22 \
   --output ./out/session-memory \
   --note "keep this"
 ```
 
-- `review approve r000001`: mark the candidate as accepted.
+- `review approve r_8c2d02942022712b`: mark the candidate as accepted.
 - `--note "keep this"`: save the reviewer note in the review row.
 
 Reject one candidate:
 
 ```bash
-uv run session2memory review reject r000001 \
+uv run session2memory review reject r_8c2d02942022712b \
   --date 2026-05-22 \
   --output ./out/session-memory \
   --note "too local"
 ```
 
-- `review reject r000001`: keep the candidate out of durable memory.
+- `review reject r_8c2d02942022712b`: keep the candidate out of durable memory.
 
 If a reviewer wants a daily-only candidate to become durable memory, approve it
 with `--durable`:
 
 ```bash
-uv run session2memory review approve r000001 \
+uv run session2memory review approve r_8c2d02942022712b \
   --date 2026-05-22 \
   --output ./out/session-memory \
   --durable
@@ -514,6 +678,9 @@ the index is selected by workspace and recency. Search by meaning is `auto searc
 
 ## Unattended pipeline (`auto`)
 
+A full run changes files outside the store and calls a model; what exactly is listed in
+step 3 of the [Quick start](#quick-start).
+
 ```bash
 uv run session2memory auto run --dry-run     # what would happen, no file changes, no LLM
 uv run session2memory auto run               # one full run
@@ -565,7 +732,7 @@ Use `--llm-cmd` or `SESSION2MEMORY_AUTO_LLM_CMD` for another command; the prompt
 on stdin and the reply must contain one JSON object.
 
 **Search.** `auto search` takes keywords or a whole question. With the optional extra
-(`uv sync --extra semantic`) and after one `embed` step it ranks by meaning as well:
+(`uv sync --extra semantic`, about 3 GB of local models) and after one `embed` step it ranks by meaning as well:
 local embeddings pick the candidates (keyword hits are added so an exact name or id is
 never missed), then the best 20 are re-read by a local cross-encoder (`--no-rerank` skips that, `--mode keyword` skips both). Models run on
 this machine through `fastembed` (ONNX), are downloaded once into

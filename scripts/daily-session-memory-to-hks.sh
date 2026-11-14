@@ -8,8 +8,8 @@ Usage: scripts/daily-session-memory-to-hks.sh [--date YYYY-MM-DD] [--dry-run]
 Defaults:
   date: yesterday, for daily "整理前一天 session" runs
   session2memory output root: ./out/session-memory
-  HKS repo: ../hks
-  KS_ROOT: $HKS_REPO/.hks-runs/openai/ks
+  HKS repo: ../Hybrid-Knowledge-System, else ../hks
+  KS_ROOT: ./out/HKS
   HKS_EMBEDDING_MODEL: simple
   SESSION2MEMORY_TOOLS: claude claude-desktop codex cursor cursor-cli opencode qwen
 
@@ -82,8 +82,16 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 output_root="${SESSION2MEMORY_OUTPUT_ROOT:-"$repo_root/out/session-memory"}"
 dated_output="$output_root/$target_date"
-hks_repo="${HKS_REPO:-"$repo_root/../hks"}"
-ks_root="${KS_ROOT:-"$hks_repo/.hks-runs/openai/ks"}"
+if [ -n "${HKS_REPO:-}" ]; then
+  hks_repo="$HKS_REPO"
+elif [ -d "$repo_root/../Hybrid-Knowledge-System" ]; then
+  hks_repo="$repo_root/../Hybrid-Knowledge-System"
+else
+  hks_repo="$repo_root/../hks"
+fi
+# A knowledge base of its own: this script embeds with HKS_EMBEDDING_MODEL (default
+# `simple`), which must not be mixed into a KS_ROOT built with another model.
+ks_root="${KS_ROOT:-"$repo_root/out/HKS"}"
 hks_embedding_model="${HKS_EMBEDDING_MODEL:-simple}"
 session2memory_tools="${SESSION2MEMORY_TOOLS:-claude claude-desktop codex cursor cursor-cli opencode qwen}"
 
