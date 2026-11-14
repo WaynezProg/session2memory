@@ -86,6 +86,39 @@ def test_sync_writes_agents_and_claude_marked_sections(tmp_path: Path) -> None:
     assert "/tmp/raw" not in agents
 
 
+def test_sync_openclaw_target_defaults_to_the_home_state_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+
+    result = sync_workspace_memory(
+        output_dir=output, workspace=workspace, targets=("openclaw",), dry_run=True
+    )
+
+    assert result.writes[0].path == Path("~/.openclaw/memory").expanduser() / "repo-123.md"
+
+
+def test_sync_openclaw_target_follows_the_state_dir_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    state_dir = tmp_path / "isolated-state"
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", state_dir.as_posix())
+
+    result = sync_workspace_memory(
+        output_dir=output, workspace=workspace, targets=("openclaw",), dry_run=True
+    )
+
+    assert result.writes[0].path == state_dir / "memory" / "repo-123.md"
+
+
 def test_sync_is_idempotent(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     workspace.mkdir()

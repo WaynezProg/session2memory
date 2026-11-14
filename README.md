@@ -156,7 +156,7 @@ Options after `--` are passed to every run. To remove the job:
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `OPENCLAW_STATE_DIR` | `auto run`, discovery | OpenClaw state directory (default `~/.openclaw`) |
+| `OPENCLAW_STATE_DIR` | `auto run`, discovery, `import`, `sync` | OpenClaw state directory (default `~/.openclaw`): its `logs`, `agents` and `memory` folders are looked for under it |
 | `SESSION2MEMORY_AUTO_LLM_CMD` | `auto run` | curation command; the prompt arrives on stdin |
 | `SESSION2MEMORY_LLM_CMD` | `import --llm-extract` | extraction command |
 | `SESSION2MEMORY_EMBED_MODEL`, `SESSION2MEMORY_RERANK_MODEL` | `auto search`, `embed` | local model names |
@@ -180,7 +180,7 @@ Options after `--` are passed to every run. To remove the job:
 - OpenCode SQLite under `~/.local/share/opencode/opencode.db`
 - Cursor GUI SQLite stores under `~/.cursor/chats`
 - Cursor CLI JSONL transcripts under `~/.cursor/projects`
-- OpenClaw text logs under `~/.openclaw/logs`
+- OpenClaw text logs under `~/.openclaw/logs` (`$OPENCLAW_STATE_DIR/logs` when that is set)
 - Hermes text logs under `~/.hermes/logs`
 
 Optional **agentic-os evidence** enriches `evidence/index.jsonl` from
@@ -383,7 +383,8 @@ uv run session2memory sync \
 By default this updates `AGENTS.md`, `CLAUDE.md`, and
 `.cursor/rules/session2memory-memory.mdc` using an idempotent managed block.
 Repeat `--target` for `codex` (also `AGENTS.md`), `openclaw`, or `hermes`
-(global memory under `~/.openclaw/memory` / `~/.hermes/memory`).
+(global memory under `~/.openclaw/memory`, or `$OPENCLAW_STATE_DIR/memory` when that is set, /
+`~/.hermes/memory`).
 
 Optional LLM extraction adds review candidates without auto-writing durable memory:
 

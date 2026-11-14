@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
-from session2memory.cli import app
+from session2memory.cli import _default_source_roots, app
 
 
 def assert_summary(output: str, expected: str) -> None:
@@ -392,3 +393,24 @@ def test_import_writes_missing_source_root_reason_to_manifest(tmp_path: Path) ->
     manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
     assert any(missing_root.as_posix() in reason for reason in manifest["skipped"])
     assert any("missing source root" in reason for reason in manifest["skipped"])
+
+
+def test_openclaw_roots_default_to_the_home_state_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+
+    roots = _default_source_roots()
+
+    assert roots["openclaw"] == Path("~/.openclaw/logs").expanduser()
+    assert roots["openclaw-native"] == Path("~/.openclaw/agents").expanduser()
+
+
+def test_openclaw_roots_follow_the_state_dir_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", state_dir.as_posix())
+
+    roots = _default_source_roots()
+
+    assert roots["openclaw"] == state_dir / "logs"
+    assert roots["openclaw-native"] == state_dir / "agents"
