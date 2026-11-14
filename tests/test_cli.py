@@ -1,5 +1,7 @@
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, cast
 
 from typer.testing import CliRunner
 
@@ -8,6 +10,38 @@ from session2memory.cli import app
 
 def assert_summary(output: str, expected: str) -> None:
     assert output == expected + "\n"
+
+
+def active_agent_metadata(provider: str = "glm", model: str = "glm-5.1") -> dict[str, str]:
+    return {
+        "agent_runtime": "claude-code",
+        "agent_id": f"claude-{provider}-vscode",
+        "provider": provider,
+        "model": model,
+        "entrypoint": f"claude-{provider}-vscode",
+        "source_app": "vscode-extension",
+    }
+
+
+def write_active_agent_marker(home: Path, payload: Mapping[str, object]) -> Path:
+    marker_path = home / ".local" / "share" / "session2memory" / "active-agent.json"
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text(json.dumps(payload), encoding="utf-8")
+    return marker_path
+
+
+def write_agent_event_log(home: Path, rows: list[dict[str, object]]) -> Path:
+    log_path = home / ".local" / "share" / "session2memory" / "agent-events.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    return log_path
+
+
+def read_one_jsonl(path: Path) -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8").strip()))
 
 
 def test_import_requires_date_and_output() -> None:
@@ -241,6 +275,268 @@ def test_import_reads_claude_desktop_metadata_sessions(tmp_path: Path) -> None:
     evidence = (output_dir / "evidence" / "index.jsonl").read_text(encoding="utf-8")
     assert '"tool": "claude-desktop"' in evidence
     assert "local_metadata-session.json" in evidence
+
+
+def test_import_reads_default_active_agent_metadata(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    metadata = active_agent_metadata()
+    write_active_agent_marker(
+        home,
+        {
+            **metadata,
+            "api_key": "secret-should-not-be-stored",
+            "unknown": "drop-me",
+        },
+    )
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude",
+            "--source-root",
+            "claude=tests/fixtures/claude",
+            "--output",
+            str(output_dir),
+        ],
+        env={"HOME": str(home)},
+    )
+
+    assert result.exit_code == 0
+    review_row = read_one_jsonl(output_dir / "review" / "2026-05-22.jsonl")
+    evidence_row = read_one_jsonl(output_dir / "evidence" / "index.jsonl")
+    assert review_row["agent_metadata"] == metadata
+    assert evidence_row["agent_metadata"] == metadata
+    serialized = json.dumps(review_row, sort_keys=True)
+    assert "api_key" not in serialized
+    assert "secret-should-not-be-stored" not in serialized
+    assert "unknown" not in serialized
+
+
+def test_import_matches_agent_event_log_by_session_time_not_active_marker(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    write_active_agent_marker(home, active_agent_metadata(provider="minimax", model="MiniMax-M3"))
+    glm_metadata = active_agent_metadata(provider="glm", model="glm-5.1:cloud")
+    qwen_metadata = active_agent_metadata(provider="qwen", model="qwen3.6-plus")
+    write_agent_event_log(
+        home,
+        [
+            {"timestamp": "2026-05-22T09:00:00+00:00", **glm_metadata},
+            {"timestamp": "2026-05-22T11:00:00+00:00", **qwen_metadata},
+        ],
+    )
+    source_root = tmp_path / "claude"
+    source_root.mkdir()
+    first = source_root / "project-a" / "first.jsonl"
+    second = source_root / "project-b" / "second.jsonl"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text(
+        json.dumps(
+            {
+                "sessionId": "claude-glm-session",
+                "timestamp": "2026-05-22T09:05:00+00:00",
+                "type": "user",
+                "cwd": "/tmp/repo",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Decision: first session."}],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        json.dumps(
+            {
+                "sessionId": "claude-qwen-session",
+                "timestamp": "2026-05-22T11:05:00+00:00",
+                "type": "user",
+                "cwd": "/tmp/repo",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Decision: second session."}],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude",
+            "--source-root",
+            f"claude={source_root}",
+            "--output",
+            str(output_dir),
+        ],
+        env={"HOME": str(home)},
+    )
+
+    assert result.exit_code == 0
+    review_rows = [
+        json.loads(line)
+        for line in (output_dir / "review" / "2026-05-22.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    metadata_by_text = {row["text"]: row["agent_metadata"] for row in review_rows}
+    assert metadata_by_text == {
+        "first session.": glm_metadata,
+        "second session.": qwen_metadata,
+    }
+
+
+def test_import_accepts_agent_metadata_file_override(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    marker_path = tmp_path / "qwen-agent.json"
+    metadata = active_agent_metadata(provider="qwen", model="qwen3-coder-plus")
+    marker_path.write_text(json.dumps(metadata), encoding="utf-8")
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude",
+            "--source-root",
+            "claude=tests/fixtures/claude",
+            "--output",
+            str(output_dir),
+            "--agent-metadata-file",
+            str(marker_path),
+        ],
+        env={"HOME": str(home)},
+    )
+
+    assert result.exit_code == 0
+    review_row = read_one_jsonl(output_dir / "review" / "2026-05-22.jsonl")
+    assert review_row["agent_metadata"] == metadata
+
+
+def test_import_missing_agent_metadata_marker_does_not_fail(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude",
+            "--source-root",
+            "claude=tests/fixtures/claude",
+            "--output",
+            str(output_dir),
+        ],
+        env={"HOME": str(home)},
+    )
+
+    assert result.exit_code == 0
+    review_row = read_one_jsonl(output_dir / "review" / "2026-05-22.jsonl")
+    assert "agent_metadata" not in review_row
+
+
+def test_import_invalid_agent_metadata_marker_warns_but_does_not_fail(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    marker_path = home / ".local" / "share" / "session2memory" / "active-agent.json"
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text("{not json", encoding="utf-8")
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude",
+            "--source-root",
+            "claude=tests/fixtures/claude",
+            "--output",
+            str(output_dir),
+        ],
+        env={"HOME": str(home)},
+    )
+
+    assert result.exit_code == 0
+    assert "warning: invalid agent metadata JSON" in result.output + result.stderr
+    review_row = read_one_jsonl(output_dir / "review" / "2026-05-22.jsonl")
+    assert "agent_metadata" not in review_row
+
+
+def test_import_does_not_infer_provider_from_transcript_text(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    source_root = tmp_path / "claude"
+    transcript = source_root / "project" / "claude.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        json.dumps(
+            {
+                "sessionId": "claude-provider-text",
+                "timestamp": "2026-05-22T03:00:00.000Z",
+                "type": "user",
+                "cwd": "/tmp/repo",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Decision: provider glm model glm-5.1 "
+                                "stays in transcript text."
+                            ),
+                        }
+                    ],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "memory"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude",
+            "--source-root",
+            f"claude={source_root}",
+            "--output",
+            str(output_dir),
+        ],
+        env={"HOME": str(home)},
+    )
+
+    assert result.exit_code == 0
+    review_row = read_one_jsonl(output_dir / "review" / "2026-05-22.jsonl")
+    evidence_row = read_one_jsonl(output_dir / "evidence" / "index.jsonl")
+    assert "agent_metadata" not in review_row
+    assert "agent_metadata" not in evidence_row
 
 
 def test_import_rejects_unsupported_tool(tmp_path: Path) -> None:

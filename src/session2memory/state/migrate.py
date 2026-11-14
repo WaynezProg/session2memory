@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from session2memory.agent_metadata import sanitize_agent_metadata
 from session2memory.memory_entries import parse_memory_markdown
 from session2memory.models import EvidencePointer, MemoryCandidate
 
@@ -118,6 +119,12 @@ def _candidate_from_legacy(
         digest=digest,
     )
     extraction = review_row.get("extraction", "marker")
+    raw_agent_metadata = review_row.get("agent_metadata") or evidence_row.get("agent_metadata")
+    agent_metadata = (
+        sanitize_agent_metadata(raw_agent_metadata)
+        if isinstance(raw_agent_metadata, dict)
+        else None
+    )
     return MemoryCandidate(
         kind=review_row.get("kind", "daily"),  # type: ignore[arg-type]
         text=str(review_row.get("text", "")),
@@ -133,4 +140,5 @@ def _candidate_from_legacy(
         evidence_quote=(
             str(review_row["evidence_quote"]) if review_row.get("evidence_quote") else None
         ),
+        agent_metadata=agent_metadata,
     )

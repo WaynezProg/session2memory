@@ -9,6 +9,7 @@ from typing import Literal
 Role = Literal["user", "assistant", "tool", "system", "unknown"]
 MemoryKind = Literal["decision", "completed", "pitfall", "constraint", "verification", "daily"]
 ExtractionSource = Literal["marker", "llm"]
+AgentMetadata = dict[str, str]
 
 
 def digest_text(text: str) -> str:
@@ -105,3 +106,5 @@ class MemoryCandidate:
     extraction: ExtractionSource = "marker"
     confidence: float | None = None
     evidence_quote: str | None = None
+    agent_metadata: AgentMetadata | None = None
+    observed_at: datetime | None = None

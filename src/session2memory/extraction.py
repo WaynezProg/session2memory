@@ -48,6 +48,7 @@ def extract_candidates(
                     workspace_id=workspace.workspace_id,
                     evidence=message.raw_pointer,
                     durable=durable,
+                    observed_at=message.timestamp,
                 )
             )
             break

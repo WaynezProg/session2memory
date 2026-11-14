@@ -258,6 +258,24 @@ Daily and review rows include compact provenance such as
 `source: codex, session: <id>, lines: 2-2`. Full raw `source_path` values stay
 in `evidence/index.jsonl`.
 
+### Claude Code Provider Metadata
+
+Claude Code launchers can write the current provider/model marker to
+`~/.local/share/session2memory/active-agent.json` and append launch events to
+`~/.local/share/session2memory/agent-events.jsonl` before starting Claude Code.
+`session2memory import` reads the event log automatically and stores the
+allowlisted metadata under `agent_metadata` on Claude Code evidence/review rows;
+approved durable rows keep it when promoted into `memories/`.
+
+The event log is what makes daily bulk import reliable across multiple providers
+on the same day: import matches each Claude Code candidate to the latest launch
+event at or before that candidate's timestamp. `active-agent.json` remains a
+fallback for one-off or legacy launches when no event log exists. Missing files
+do not fail import, and invalid JSON only prints a warning. To read metadata from
+different locations, pass `--agent-metadata-log <path>` or
+`--agent-metadata-file <path>`. `session2memory` does not infer provider or model
+from transcript/session text.
+
 Limit to one tool:
 
 ```bash
