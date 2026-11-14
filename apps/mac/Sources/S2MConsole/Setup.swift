@@ -136,6 +136,7 @@ extension AppState {
         do {
             let overview = try await Backend.current().overview()
             storePath = overview.store
+            lastRunAt = overview.lastRun?.finishedAt
             setup = .ready
         } catch {
             let text = error.localizedDescription
@@ -156,41 +157,43 @@ struct SetupView: View {
         VStack(spacing: 18) {
             switch app.setup {
             case .checking:
-                ProgressView("Looking for session2memory…")
+                ProgressView("正在尋找 session2memory…")
             case .ready:
                 EmptyView()
             case .needsUv:
                 step(
-                    title: "Install uv first",
-                    text: "session2memory is installed and run with uv. Paste this into Terminal:",
+                    title: "先安裝 uv",
+                    text: "session2memory 用 uv 安裝與執行。把這兩行貼到終端機：",
                     commands: [CommandFinder.uvInstall, CommandFinder.s2mInstall])
             case .needsCommand:
                 step(
-                    title: "Install session2memory",
-                    text: "It was not found on this Mac. Paste this into Terminal:",
+                    title: "安裝 session2memory",
+                    text: "這台 Mac 上找不到它。把這行貼到終端機：",
                     commands: [CommandFinder.s2mInstall])
             case .needsStore:
                 step(
-                    title: "Nothing to show yet",
+                    title: "還沒有東西可以看",
                     text:
                         app.s2mChoice?.source == .checkout
-                        ? "session2memory has not run yet. In its folder, see what it would pick up, then run it once:"
-                        : "session2memory is installed but has not run. See what it would pick up, then run it once:",
+                        ? "session2memory 還沒跑過。在它的資料夾裡先看它會讀到什麼，再實際跑一次："
+                        : "session2memory 已安裝但還沒跑過。先看它會讀到什麼，再實際跑一次：",
                     commands: [run + " auto run --dry-run", run + " auto run"],
                     note:
-                        "The real run compresses and archives old sessions and calls the model to write memory; the README says exactly what it changes."
+                        "實際執行會壓縮並歸檔舊對話，也會呼叫模型寫記憶；README 有寫它會改動哪些東西。"
                 )
             case .failed(let message):
                 step(
-                    title: "session2memory could not be read",
+                    title: "讀不到 session2memory",
                     text: message, commands: [],
-                    note: "If it lives somewhere unusual, point to it in Settings.")
+                    note: "如果它裝在不尋常的位置，到「設定」指定它。")
             }
             if app.setup != .checking && app.setup != .ready {
                 HStack(spacing: 10) {
-                    Button("Check Again") { Task { await app.detect() } }
+                    Button("重新檢查") { Task { await app.detect() } }
+                        .buttonStyle(PrimaryButtonStyle())
                         .keyboardShortcut(.defaultAction)
-                    Button("Settings…") { app.pane = .settings }
+                    Button("設定…") { app.pane = .settings }
+                        .buttonStyle(OutlineButtonStyle())
                 }
             }
         }
@@ -203,13 +206,13 @@ struct SetupView: View {
         -> some View
     {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.title2)
-            Text(text).foregroundColor(.secondary).textSelection(.enabled)
+            Text(title).font(.system(size: 20, weight: .bold)).foregroundColor(Theme.ink)
+            Text(text).foregroundColor(Theme.secondary).textSelection(.enabled)
             ForEach(commands, id: \.self) { command in
                 CopyableCommand(command: command)
             }
             if let note {
-                Text(note).font(.callout).foregroundColor(.secondary)
+                Text(note).font(.callout).foregroundColor(Theme.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,14 +230,14 @@ struct CopyableCommand: View {
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button(copied ? "Copied" : "Copy") {
+            Button(copied ? "已複製" : "複製") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(command, forType: .string)
                 copied = true
             }
         }
-        .padding(8)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(6)
+        .padding(10)
+        .background(Theme.sidebar)
+        .cornerRadius(10)
     }
 }

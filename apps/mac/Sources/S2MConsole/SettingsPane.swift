@@ -14,56 +14,63 @@ struct SettingsPane: View {
     @State private var byHand = false
 
     var body: some View {
+        VStack(spacing: 0) {
+            PageHeader("設定", subtitle: "通常不用動：需要的東西會自動找到。")
+            form
+        }
+    }
+
+    private var form: some View {
         Form {
             Section("session2memory") {
                 status(
-                    found: app.s2mChoice, missing: "Not found",
+                    found: app.s2mChoice, missing: "找不到",
                     install: CommandFinder.s2mInstall)
                 switch app.setup {
                 case .ready:
-                    line("checkmark.circle.fill", .green, "Store: \(app.storePath ?? "default")")
+                    line("checkmark.circle.fill", Theme.accent, "記憶存放在：\(app.storePath ?? "預設位置")")
                 case .checking:
-                    line("hourglass", .secondary, "Checking…")
+                    line("hourglass", Theme.secondary, "檢查中…")
                 case .needsStore:
-                    line("exclamationmark.triangle.fill", .orange, "No store yet: it has not run.")
+                    line("exclamationmark.triangle.fill", Theme.amberText, "還沒有資料：它還沒跑過。")
                     CopyableCommand(
                         command: (app.s2mChoice?.command ?? "session2memory") + " auto run --dry-run")
                 case .failed(let message):
-                    line("exclamationmark.triangle.fill", .orange, message)
+                    line("exclamationmark.triangle.fill", Theme.amberText, message)
                 case .needsUv:
-                    line("exclamationmark.triangle.fill", .orange, "uv is not installed either.")
+                    line("exclamationmark.triangle.fill", Theme.amberText, "uv 也還沒安裝。")
                     CopyableCommand(command: CommandFinder.uvInstall)
                 case .needsCommand:
                     EmptyView()
                 }
             }
-            Section("HKS (optional, for the HKS Query pane)") {
-                status(found: app.hksChoice, missing: "Not found", install: CommandFinder.hksInstall)
+            Section("HKS 知識庫（選用，「問知識庫」才需要）") {
+                status(found: app.hksChoice, missing: "找不到", install: CommandFinder.hksInstall)
                 folderField(
-                    "Knowledge base folder (KS_ROOT)", text: $ksRoot,
-                    prompt: "empty: as the shell or HKS's own config has it")
+                    "知識庫資料夾（KS_ROOT）", text: $ksRoot,
+                    prompt: "留空：照終端機或 HKS 自己的設定")
             }
             Section {
-                Button(app.setup == .checking ? "Checking…" : "Check Again") {
+                Button(app.setup == .checking ? "檢查中…" : "重新檢查") {
                     Task { await app.detect() }
                 }
                 .disabled(app.setup == .checking)
             }
             Section {
-                DisclosureGroup("Set by hand", isExpanded: $byHand) {
+                DisclosureGroup("手動指定（給工程用）", isExpanded: $byHand) {
                     Text(
-                        "Leave these empty to let the app find the commands: first the checkout it was built in, then the commands installed on your PATH."
+                        "留空就會自動尋找：先找這個 app 是從哪個資料夾 build 的，再找 PATH 上安裝的指令。"
                     )
                     .font(.callout)
-                    .foregroundColor(.secondary)
-                    folderField("session2memory folder", text: $s2mDirectory, prompt: "automatic")
-                    TextField("session2memory command", text: $s2mCommand, prompt: Text("automatic"))
+                    .foregroundColor(Theme.secondary)
+                    folderField("session2memory 資料夾", text: $s2mDirectory, prompt: "自動")
+                    TextField("session2memory 指令", text: $s2mCommand, prompt: Text("自動"))
                     folderField(
-                        "Store folder", text: $storeDirectory,
+                        "記憶存放的資料夾", text: $storeDirectory,
                         prompt: "~/.local/share/session2memory/store")
-                    folderField("HKS folder", text: $hksDirectory, prompt: "automatic")
-                    TextField("HKS command", text: $hksCommand, prompt: Text("automatic"))
-                    Button("Clear All") {
+                    folderField("HKS 資料夾", text: $hksDirectory, prompt: "自動")
+                    TextField("HKS 指令", text: $hksCommand, prompt: Text("自動"))
+                    Button("全部清空") {
                         s2mDirectory = ""
                         s2mCommand = ""
                         storeDirectory = ""
@@ -76,14 +83,14 @@ struct SettingsPane: View {
             }
             Section {
                 Text(
-                    "Commands run in a login shell (zsh -l), so they see the same PATH as Terminal. Reading never changes the store; the changes the Memory and Sessions panes make are listed in the README."
+                    "指令在 login shell（zsh -l）裡執行，所以看到的 PATH 和終端機相同。讀取不會改動任何資料；「記憶」與「對話」會做的改動列在 README。"
                 )
                 .font(.callout)
-                .foregroundColor(.secondary)
+                .foregroundColor(Theme.secondary)
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Settings")
+        .scrollContentBackground(.hidden)
         .onAppear { byHand = anyByHand }
         .onSubmit { Task { await app.detect() } }
     }
@@ -97,11 +104,11 @@ struct SettingsPane: View {
     @ViewBuilder
     private func status(found: CommandChoice?, missing: String, install: String) -> some View {
         if let found {
-            line("checkmark.circle.fill", .green, "Using \(found.summary)")
+            line("checkmark.circle.fill", Theme.accent, "使用 \(found.summary)")
         } else if app.setup == .checking {
-            line("hourglass", .secondary, "Looking…")
+            line("hourglass", Theme.secondary, "尋找中…")
         } else {
-            line("xmark.circle.fill", .red, "\(missing). Install it in Terminal:")
+            line("xmark.circle.fill", Theme.dangerText, "\(missing)。在終端機安裝：")
             CopyableCommand(command: install)
         }
     }
@@ -116,7 +123,7 @@ struct SettingsPane: View {
     private func folderField(_ title: String, text: Binding<String>, prompt: String) -> some View {
         HStack {
             TextField(title, text: text, prompt: Text(prompt))
-            Button("Choose…") {
+            Button("選擇…") {
                 if let folder = chooseFolder() {
                     text.wrappedValue = folder
                     Task { await app.detect() }

@@ -6,37 +6,21 @@ struct ErrorBanner: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
-            Text(message).textSelection(.enabled)
+            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(Theme.amberText)
+            Text(message).foregroundColor(Theme.ink).textSelection(.enabled)
             Spacer(minLength: 0)
         }
-        .padding(8)
-        .background(Color.orange.opacity(0.12))
-        .cornerRadius(6)
+        .padding(10)
+        .background(Theme.amberTint)
+        .cornerRadius(10)
     }
 }
 
 struct StatusBadge: View {
     let status: String
 
-    private var color: Color {
-        switch status {
-        case "active": return .green
-        case "superseded": return .blue
-        case "retired": return .red
-        case "stale": return .gray
-        default: return .secondary
-        }
-    }
-
     var body: some View {
-        Text(status)
-            .font(.caption)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.18))
-            .foregroundColor(color)
-            .cornerRadius(4)
+        Tag(text: Lexicon.status(status), tone: status == "active" ? .accent : .neutral)
     }
 }
 
@@ -45,7 +29,10 @@ struct Placeholder: View {
 
     var body: some View {
         Text(text)
-            .foregroundColor(.secondary)
+            .font(.system(size: 14))
+            .foregroundColor(Theme.secondary)
+            .multilineTextAlignment(.center)
+            .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -61,8 +48,8 @@ struct Block<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.secondary)
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -78,9 +65,9 @@ struct CodeText: View {
             .font(.system(.callout, design: .monospaced))
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-            .background(Color.secondary.opacity(0.08))
-            .cornerRadius(6)
+            .padding(10)
+            .background(Theme.sidebar)
+            .cornerRadius(10)
     }
 }
 
@@ -95,6 +82,14 @@ struct BatchOutcome: Equatable {
             return "\(verb) \(done)."
         }
         return "\(verb) \(done), \(failures.count) failed: \(failures[0])"
+    }
+
+    /// "已停用 3 條。" or "已停用 2 條，1 條沒有成功：<first reason>".
+    func message(_ verb: String, unit: String) -> String {
+        if failures.isEmpty {
+            return "\(verb) \(done) \(unit)。"
+        }
+        return "\(verb) \(done) \(unit)，\(failures.count) \(unit)沒有成功：\(failures[0])"
     }
 }
 
@@ -119,6 +114,11 @@ struct ActionNote: Equatable {
         failed = !outcome.failures.isEmpty
     }
 
+    init(_ outcome: BatchOutcome, verb: String, unit: String) {
+        text = outcome.message(verb, unit: unit)
+        failed = !outcome.failures.isEmpty
+    }
+
     init(text: String, failed: Bool = false) {
         self.text = text
         self.failed = failed
@@ -133,18 +133,18 @@ struct NoteBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: note.failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .foregroundColor(note.failed ? .orange : .green)
-            Text(note.text).textSelection(.enabled)
+                .foregroundColor(note.failed ? Theme.amberText : Theme.accent)
+            Text(note.text).foregroundColor(Theme.ink).textSelection(.enabled)
             Spacer(minLength: 0)
             Button(action: dismiss) {
-                Image(systemName: "xmark")
+                Image(systemName: "xmark").foregroundColor(Theme.secondary)
             }
             .buttonStyle(.plain)
-            .help("Dismiss")
+            .help("關閉")
         }
-        .padding(8)
-        .background((note.failed ? Color.orange : Color.green).opacity(0.12))
-        .cornerRadius(6)
+        .padding(10)
+        .background(note.failed ? Theme.amberTint : Theme.accentTint)
+        .cornerRadius(10)
     }
 }
 
@@ -170,7 +170,7 @@ struct LengthCount: View {
         let count = storedLength(text)
         Text("\(count) / \(memoryTextLimit)")
             .font(.caption)
-            .foregroundColor(count > memoryTextLimit ? .red : .secondary)
+            .foregroundColor(count > memoryTextLimit ? Theme.dangerText : Theme.secondary)
     }
 }
 
@@ -200,10 +200,10 @@ struct LoadFailed: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            Text("Could not load this").font(.headline)
-            Text(message).foregroundColor(.secondary).textSelection(.enabled)
+            Text("讀不到這筆資料").font(.headline).foregroundColor(Theme.ink)
+            Text(message).foregroundColor(Theme.secondary).textSelection(.enabled)
                 .multilineTextAlignment(.center)
-            Button("Try Again", action: retry)
+            Button("再試一次", action: retry).buttonStyle(OutlineButtonStyle())
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(20)
