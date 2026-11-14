@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
 from collections.abc import Callable
 from datetime import date as Date
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -92,6 +94,8 @@ from session2memory.session_start import (
     run_hook,
     served,
 )
+from session2memory.setup import render as render_setup
+from session2memory.setup import run_setup
 from session2memory.solidify import SolidifyError, solidify_distill
 from session2memory.state.store import StateStore
 from session2memory.sync_back import SyncError, sync_workspace_memory
@@ -428,6 +432,57 @@ def hook_install(
 DEFAULT_AUTO_STORE = Path("~/.local/share/session2memory/store")
 
 
+@app.command(
+    "setup",
+    help=(
+        "After installing: add the memory hook to every agent on this machine and "
+        "schedule the nightly run. Shows the plan; --apply makes the changes."
+    ),
+)
+def setup_command(
+    apply: Annotated[
+        bool, typer.Option("--apply", help="Make the changes. Without it only the plan is shown.")
+    ] = False,
+    remove: Annotated[
+        bool, typer.Option("--remove", help="Undo: take the hook and the nightly job out again.")
+    ] = False,
+    hooks: Annotated[
+        bool, typer.Option("--hooks/--no-hooks", help="The memory hook in each agent.")
+    ] = True,
+    schedule: Annotated[
+        bool, typer.Option("--schedule/--no-schedule", help="The nightly run.")
+    ] = True,
+    hour: Annotated[
+        int, typer.Option("--hour", min=0, max=23, help="When the nightly run starts.")
+    ] = 5,
+    minute: Annotated[int, typer.Option("--minute", min=0, max=59)] = 30,
+    compress: Annotated[
+        bool,
+        typer.Option(
+            "--compress",
+            help=(
+                "Also compress old rollouts in OpenClaw agents' Codex homes each night. "
+                "Off by default: it is the one step that replaces files in place."
+            ),
+        ),
+    ] = False,
+    store: Annotated[
+        Path, typer.Option("--store", help="Directory holding the persistent state.")
+    ] = DEFAULT_AUTO_STORE,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the plan as JSON.")] = False,
+) -> None:
+    plan = run_setup(
+        store=store, apply=apply, remove=remove, hooks=hooks, schedule=schedule,
+        hour=hour, minute=minute, compress=compress,
+    )  # fmt: skip
+    if json_output:
+        typer.echo(json.dumps(plan.as_dict(), ensure_ascii=False, indent=1))
+    else:
+        typer.echo(render_setup(plan))
+    if plan.failed:
+        raise typer.Exit(code=1)
+
+
 def _auto_config(
     *,
     store: Path,
@@ -550,6 +605,16 @@ def auto_run(
         bool, typer.Option("--dry-run", help="Report what would be done; change no files.")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Print the full report.")] = False,
+    save_report: Annotated[
+        bool,
+        typer.Option(
+            "--save-report",
+            help=(
+                "Write the report to <store>/logs/run-<time>.json (the newest 60 are kept) "
+                "and print only where it is, unless --json is given; for scheduled runs."
+            ),
+        ),
+    ] = False,
 ) -> None:
     if curate_scope and set(curate_scope) - {"coding", "openclaw"}:
         raise typer.BadParameter("--curate-scope must be coding or openclaw")
@@ -567,11 +632,42 @@ def auto_run(
         dry_run=dry_run,
     )
     report = run_auto(config)
+    if save_report and not dry_run:
+        saved = _save_report(store.expanduser(), report)
+        if not json_output:
+            typer.echo(f"report={saved.as_posix()}")
+            return
     if json_output:
         typer.echo(json.dumps(report, ensure_ascii=False, indent=1))
         return
     for key, value in report.items():
         typer.echo(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+
+
+REPORTS_KEPT = 60
+# Reports of scheduled runs, as this command and scripts/nightly-auto.sh name them. Other
+# files in the folder (a report someone saved under another name) are never removed.
+_SCHEDULED_REPORT = re.compile(r"run-\d{8}-\d{6}(-\d+)?\.json")
+
+
+def _save_report(
+    store_dir: Path, report: dict[str, object], *, now: datetime | None = None
+) -> Path:
+    """Keep a run's report beside the store, and only the most recent scheduled ones."""
+    logs = store_dir / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    stem = f"run-{(now or datetime.now()).strftime('%Y%m%d-%H%M%S')}"
+    path = logs / f"{stem}.json"
+    extra = 0
+    while path.exists():  # a second run within the same second keeps its own report
+        extra += 1
+        path = logs / f"{stem}-{extra}.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    scheduled = [one for one in logs.glob("run-*.json") if _SCHEDULED_REPORT.fullmatch(one.name)]
+    scheduled.sort(key=lambda one: (one.stat().st_mtime, one.name), reverse=True)
+    for old in scheduled[REPORTS_KEPT:]:
+        old.unlink(missing_ok=True)
+    return path
 
 
 @auto_app.command("status", help="Counts and the report of the last run.")

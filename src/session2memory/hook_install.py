@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
@@ -132,11 +133,21 @@ def hook_entries(
     return entries
 
 
-def _is_our_hook(hook: object) -> bool:
-    if not isinstance(hook, dict):
+def is_our_command(command: str) -> bool:
+    """Whether ``command`` starts our hook: an executable (under whatever name it was
+    installed), then ``session-start-hook --agent`` as its first arguments. Text that
+    merely mentions those words (an ``echo``, a comment) is someone else's."""
+    # Grok's form puts a shell test in front: ``[ -s marker ] && exit 0; <command>``.
+    segment = command.rsplit(";", 1)[-1].strip()
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
         return False
-    command = str(hook.get("command", ""))
-    return HOOK_COMMAND_MARKER in command and "session2memory" in command
+    return len(tokens) >= 3 and tokens[1:3] == HOOK_COMMAND_MARKER.split()
+
+
+def _is_our_hook(hook: object) -> bool:
+    return isinstance(hook, dict) and is_our_command(str(hook.get("command", "")))
 
 
 def _without_ours(groups: list[object]) -> tuple[list[object], bool]:
@@ -249,6 +260,13 @@ def _backup(settings_path: Path, now: datetime | None) -> Path | None:
     return backup
 
 
+def _named_entry_is_ours(entry: object) -> bool:
+    if not isinstance(entry, dict) or not entry:
+        return False
+    handlers = [one for group in entry.values() if isinstance(group, list) for one in group]
+    return bool(handlers) and all(_is_our_hook(one) for one in handlers)
+
+
 def _update_named_hook(
     settings_path: Path,
     command: str,
@@ -266,6 +284,12 @@ def _update_named_hook(
             raise ValueError(f"{settings_path.as_posix()}: expected a JSON object")
         settings = loaded
     current = settings.get(ANTIGRAVITY_HOOK_NAME)
+    if current is not None and not _named_entry_is_ours(current):
+        # The name alone does not make it ours: never replace or remove it.
+        raise ValueError(
+            f"{settings_path.as_posix()}: the entry named {ANTIGRAVITY_HOOK_NAME} was not "
+            "written by this tool; it is left as it is"
+        )
     wanted = {event: [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECONDS}]}
     if remove:
         action = "remove" if current is not None else "none"
