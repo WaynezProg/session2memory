@@ -47,11 +47,12 @@ the schema can change without the app.
 ## Status
 
 It builds with Swift 6.4 (Xcode 27) on macOS 27 and `swift test` passes. After the
-redesign every page was opened against a copy of a real store, an HKS query was run, and
-one entry was retired through its sheet. The other changes (restore, reword, add, several
-at once, the session queue buttons), the context menus and the keyboard shortcuts were
-clicked through before the redesign and not again since; the code behind them did not
-change.
+redesign every page was opened against a copy of a real store and an HKS query was run.
+In the installed app, against that copy, these were done by hand: add, reword, retire and
+restore one entry, retire and restore several at once, 再整理一次 and 略過，不整理 on a
+session, the context menu of both lists (restore several; curate again), and ⌘E, ⇧⌘N and
+Delete. Not clicked: 停用… and 改寫… in the memory list's context menu (they call what the
+buttons call), 複製文字, and the first-run screens.
 
 ## Install and open
 
