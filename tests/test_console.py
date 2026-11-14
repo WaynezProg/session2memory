@@ -298,6 +298,9 @@ def real_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(curate_module, "EPHEMERAL_MARKERS", ())
 
 
+FINE = {"blocked": [], "expires": False, "by_hand": False, "notes": []}
+
+
 @pytest.mark.usefixtures("real_paths")
 def test_a_session_can_be_sent_back_to_curation_or_past_it(tmp_path: Path) -> None:
     store_dir, _ = build(tmp_path)
@@ -310,25 +313,25 @@ def test_a_session_can_be_sent_back_to_curation_or_past_it(tmp_path: Path) -> No
     waiting = data(store_dir, "sessions", "--pending")
     passed = data(store_dir, "skip", "--key", "codex:live")
 
-    assert before["curation"] == {"blocked": [], "note": None}  # type: ignore[index]
+    assert before["curation"] == FINE  # type: ignore[index]
     assert back["pending"] is True and back["summary"] == "摘要"  # type: ignore[index]
+    assert back["curation"]["by_hand"] is True  # type: ignore[index]
     assert "codex:live" in {s["key"] for s in waiting}  # type: ignore[union-attr]
     assert passed["pending"] is False  # type: ignore[index]
+    assert passed["curation"] == FINE, "skipping takes the request back"  # type: ignore[index]
     assert call(store_dir, "requeue", "--key", "codex:nope")[0] == 1
 
 
 @pytest.mark.usefixtures("real_paths")
-def test_a_session_the_run_would_pass_over_is_not_queued(tmp_path: Path) -> None:
+def test_a_session_no_run_would_read_is_not_queued(tmp_path: Path) -> None:
     store_dir, _ = build(tmp_path)
     work = tmp_path / "real-workspace"
     work.mkdir()
-    add_session(store_dir, "codex:old", work.as_posix(), days_ago=30)
     add_session(store_dir, "codex:short", work.as_posix(), digest="U: 好\nA: 好")
     add_session(store_dir, "codex:gone", (tmp_path / "deleted").as_posix())
     add_session(store_dir, "codex:nowhere", None)
 
     for key, why in [
-        ("codex:old", "more than 21 days ago"),
         ("codex:short", "too little to distil"),
         ("codex:gone", "scratch, benchmark or deleted"),
         ("codex:nowhere", "workspace is unknown"),
@@ -337,9 +340,63 @@ def test_a_session_the_run_would_pass_over_is_not_queued(tmp_path: Path) -> None
         shown = data(store_dir, "session", "--key", key)
         assert code == 1 and why in str(payload["error"]), key
         assert shown["pending"] is False, "refused, so nothing changed"  # type: ignore[index]
+        assert shown["curation"]["by_hand"] is False  # type: ignore[index]
         assert any(why in one for one in shown["curation"]["blocked"])  # type: ignore[index]
     # Leaving the queue is always possible.
-    assert data(store_dir, "skip", "--key", "codex:old")["pending"] is False  # type: ignore[index]
+    assert data(store_dir, "skip", "--key", "codex:short")["pending"] is False  # type: ignore[index]
+
+
+@pytest.mark.usefixtures("real_paths")
+def test_an_old_session_sent_back_by_hand_is_read_by_the_run(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+    work = tmp_path / "real-workspace"
+    work.mkdir()
+    add_session(store_dir, "codex:asked", work.as_posix(), days_ago=30)
+    add_session(store_dir, "codex:waiting", work.as_posix(), days_ago=30)
+    store = AutoStore.open(store_dir / DB_NAME)
+    try:
+        # One waits because nobody curated it; the other a person asks for.
+        store._connection.execute(
+            "UPDATE auto_sessions SET curated_version=0 WHERE source_key='codex:waiting'"
+        )
+        store._connection.commit()
+    finally:
+        store.close()
+
+    left = data(store_dir, "session", "--key", "codex:waiting")
+    asked = data(store_dir, "requeue", "--key", "codex:asked")
+    assert left["curation"]["expires"] is True  # type: ignore[index]
+    assert "more than 21 days" in left["curation"]["notes"][0]  # type: ignore[index]
+    assert asked["curation"]["expires"] is False  # type: ignore[index]
+    assert asked["curation"]["by_hand"] is True  # type: ignore[index]
+
+    seen: list[str] = []
+
+    def runner(prompt: str) -> curate_module.LlmReply:
+        seen.append(prompt)
+        read = [{"ref": "S1", "title": "標題", "summary": "重新整理過"}]
+        return curate_module.LlmReply(text=json.dumps({"sessions": read, "memory": []}))
+
+    store = AutoStore.open(store_dir / DB_NAME)
+    try:
+        report = curate_module.curate(store, runner, max_calls=5, max_age_days=21)
+        by_hand_after = store.curate_by_hand()
+        still = {one.source_key for one in store.pending_sessions()}
+    finally:
+        store.close()
+
+    assert report.sessions_expired == 1, "the one nobody asked for"
+    assert len(seen) == 1 and report.llm_calls == 1, "the one a person asked for was read"
+    assert "codex:asked" not in still and by_hand_after == set(), "and the marker is gone"
+
+
+def test_age_is_compared_as_a_moment_not_as_text() -> None:
+    now = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+
+    assert console._older_than("2026-10-24T18:00:00+08:00", 21, now), "10:00 UTC that day"
+    assert not console._older_than("2026-10-24T08:00:00-08:00", 21, now), "16:00 UTC that day"
+    assert not console._older_than("2026-11-01T00:00:00", 21, now), "no offset: taken as UTC"
+    assert console._older_than(None, 21, now)
 
 
 def test_sessions_are_filtered_by_scope(tmp_path: Path) -> None:

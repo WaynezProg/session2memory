@@ -126,11 +126,21 @@ struct SessionSummary: Decodable, Identifiable, Hashable {
     }
 }
 
-/// Whether a run would read a session that waits for curation. `blocked` lists what
-/// makes it pass over the session; `note` is something that depends on how it is run.
+/// Whether a run would read a session that waits for curation.
 struct Curation: Decodable, Equatable {
+    /// What makes every run pass over the session.
     let blocked: [String]
-    let note: String?
+    /// It waits, but a run with the default age limit drops it unread.
+    let expires: Bool?
+    /// A person sent it back: the run reads it whatever its age.
+    let byHand: Bool?
+    /// What depends on how the run is started.
+    let notes: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case blocked, expires, notes
+        case byHand = "by_hand"
+    }
 }
 
 struct SessionDetail: Decodable {

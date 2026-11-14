@@ -12,6 +12,10 @@ struct SessionsPane: View {
     @State private var sessions: [SessionSummary] = []
     @State private var selection: Set<String> = []
     @State private var detail: SessionDetail?
+    /// Why the selected session could not be loaded.
+    @State private var detailError: String?
+    /// Counts detail requests: only the answer to the latest one is shown.
+    @State private var detailRequest = 0
     /// Why the last load failed, if it did.
     @State private var message: String?
     /// What the last change came to.
@@ -222,29 +226,41 @@ struct SessionsPane: View {
                 }
                 .padding(16)
             }
+        } else if let detailError, !selection.isEmpty {
+            LoadFailed(message: detailError) { Task { await loadDetail() } }
         } else {
             Placeholder(text: selection.isEmpty ? "Choose a session" : "Loading…")
         }
     }
 
-    /// The queue state of one session, the button that changes it, and, when the run
-    /// would pass over the session anyway, why.
+    /// The queue state of one session, the buttons that change it, and what the run would
+    /// do with it.
     private func queueControls(_ detail: SessionDetail) -> some View {
         let blocked = detail.curation?.blocked ?? []
+        let expires = detail.curation?.expires == true
         let waiting = detail.pending == true
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 if waiting {
                     PendingBadge()
-                    Text(blocked.isEmpty ? "The next run reads it." : "The next run passes over it.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Text(
+                        blocked.isEmpty && !expires
+                            ? "The next run reads it." : "The next run passes over it."
+                    )
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 } else {
                     Text("Not in the curation queue").font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
                 if waiting {
+                    if expires {
+                        Button("Curate Anyway") {
+                            Task { await change(keys: [detail.key], requeue: true) }
+                        }
+                        .help("Have the run read it although it is older than the age limit")
+                    }
                     Button("Skip Curation") {
                         Task { await change(keys: [detail.key], requeue: false) }
                     }
@@ -256,8 +272,8 @@ struct SessionsPane: View {
                     .disabled(!blocked.isEmpty)
                     .help(
                         blocked.isEmpty
-                            ? "The next run reads this session again"
-                            : "The run would pass over it; see below")
+                            ? "The next run reads this session again, whatever its age"
+                            : "No run would read it; see below")
                 }
             }
             .disabled(working)
@@ -266,7 +282,7 @@ struct SessionsPane: View {
                     .font(.caption)
                     .foregroundColor(.orange)
             }
-            if let note = detail.curation?.note {
+            ForEach(detail.curation?.notes ?? [], id: \.self) { note in
                 Text(note).font(.caption).foregroundColor(.secondary)
             }
         }
@@ -346,20 +362,23 @@ struct SessionsPane: View {
 
     @MainActor
     private func loadDetail() async {
+        // A later request, or a change made meanwhile, makes this one's answer stale.
+        detailRequest += 1
+        let request = detailRequest
         guard selection.count == 1, let key = selection.first else {
             detail = nil
+            detailError = nil
             return
         }
         do {
             let loaded = try await Backend.current().session(key: key)
-            // The selection may have moved on while the command ran.
-            guard !Task.isCancelled, selection == [key] else { return }
+            guard request == detailRequest, selection == [key] else { return }
             detail = loaded
-            message = nil
+            detailError = nil
         } catch {
-            guard !Task.isCancelled, selection == [key] else { return }
+            guard request == detailRequest, selection == [key] else { return }
             detail = nil
-            message = error.localizedDescription
+            detailError = error.localizedDescription
         }
     }
 
@@ -367,6 +386,7 @@ struct SessionsPane: View {
     private func change(keys: [String], requeue: Bool) async {
         guard !working, !keys.isEmpty else { return }
         working = true
+        detailRequest += 1  // what is being loaded now predates this change
         defer { working = false }
         outcome = nil
         let backend = Backend.current()

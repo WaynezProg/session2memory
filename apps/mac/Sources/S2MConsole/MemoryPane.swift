@@ -13,6 +13,10 @@ struct MemoryPane: View {
     @State private var memories: [Memory] = []
     @State private var selection: Set<String> = []
     @State private var detail: MemoryDetail?
+    /// Why the selected entry could not be loaded.
+    @State private var detailError: String?
+    /// Counts detail requests: only the answer to the latest one is shown.
+    @State private var detailRequest = 0
     /// Why the last load failed, if it did.
     @State private var message: String?
     /// What the last change came to.
@@ -316,6 +320,8 @@ struct MemoryPane: View {
                 }
                 .padding(16)
             }
+        } else if let detailError, !selection.isEmpty {
+            LoadFailed(message: detailError) { Task { await loadDetail() } }
         } else {
             Placeholder(text: selection.isEmpty ? "Choose a memory" : "Loading…")
         }
@@ -438,7 +444,7 @@ struct MemoryPane: View {
     private var tidyDraft: String { tidyText(draft) }
 
     private var draftFits: Bool {
-        !tidyDraft.isEmpty && tidyDraft.count <= memoryTextLimit
+        !tidyDraft.isEmpty && storedLength(draft) <= memoryTextLimit
     }
 
     private func statusSheet(ids: [String], restore: Bool) -> some View {
@@ -689,20 +695,23 @@ struct MemoryPane: View {
 
     @MainActor
     private func loadDetail() async {
+        // A later request, or a change made meanwhile, makes this one's answer stale.
+        detailRequest += 1
+        let request = detailRequest
         guard selection.count == 1, let id = selection.first else {
             detail = nil
+            detailError = nil
             return
         }
         do {
             let loaded = try await Backend.current().memory(id: id)
-            // The selection may have moved on while the command ran.
-            guard !Task.isCancelled, selection == [id] else { return }
+            guard request == detailRequest, selection == [id] else { return }
             detail = loaded
-            message = nil
+            detailError = nil
         } catch {
-            guard !Task.isCancelled, selection == [id] else { return }
+            guard request == detailRequest, selection == [id] else { return }
             detail = nil
-            message = error.localizedDescription
+            detailError = error.localizedDescription
         }
     }
 
@@ -710,6 +719,7 @@ struct MemoryPane: View {
     private func change(ids: [String], restore: Bool, reason: String) async {
         guard !working, !ids.isEmpty else { return }
         working = true
+        detailRequest += 1  // what is being loaded now predates this change
         defer { working = false }
         outcome = nil
         let backend = Backend.current()
@@ -737,6 +747,7 @@ struct MemoryPane: View {
     private func saveEdit(id: String, text: String, reason: String) async {
         guard !working else { return }
         working = true
+        detailRequest += 1  // what is being loaded now predates this change
         defer { working = false }
         outcome = nil
         do {
@@ -766,9 +777,8 @@ struct MemoryPane: View {
             // Make sure the new entry is in the list that is reloaded.
             if status != "active" && status != "all" { status = "active" }
             if !self.kind.isEmpty && self.kind != kind { self.kind = "" }
-            if selectedProject == project && !searching {
-                await loadMemories(wait: false)
-            }
+            // Also while searching: the new entry may match what is being looked for.
+            await loadMemories(wait: false)
             await loadProjects()
             reveal = added.id
             selection = [added.id]

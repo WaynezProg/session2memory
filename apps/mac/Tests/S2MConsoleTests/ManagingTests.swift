@@ -69,7 +69,9 @@ final class ManagingTests: XCTestCase {
     func testMemoryTextIsCountedAsItWillBeStored() {
         XCTAssertEqual(tidyText("  第一行\n  第二行\t結尾 "), "第一行 第二行 結尾")
         XCTAssertEqual(tidyText(" \n "), "")
-        XCTAssertEqual(tidyText(String(repeating: "長", count: 241)).count, memoryTextLimit + 1)
+        XCTAssertEqual(storedLength(String(repeating: "長", count: 241)), memoryTextLimit + 1)
+        // Counted as the Python side does: a letter plus a combining accent is two.
+        XCTAssertEqual(storedLength(String(repeating: "e\u{301}", count: 121)), 242)
     }
 
     func testAChangeThatPartlyFailedIsShownAsAFailure() {
@@ -83,11 +85,14 @@ final class ManagingTests: XCTestCase {
     func testASessionSaysWhyTheRunWouldPassOverIt() throws {
         let json = """
             {"key": "codex:s1", "tool": "codex", "pending": false, "digest": "U: hi", "memories": [],
-             "curation": {"blocked": ["it is one short exchange, too little to distil"], "note": null}}
+             "curation": {"blocked": ["it is one short exchange, too little to distil"],
+                          "expires": false, "by_hand": true, "notes": ["Sent back by hand."]}}
             """
         let detail = try JSONDecoder().decode(SessionDetail.self, from: Data(json.utf8))
         XCTAssertEqual(detail.curation?.blocked.count, 1)
-        XCTAssertNil(detail.curation?.note)
+        XCTAssertEqual(detail.curation?.expires, false)
+        XCTAssertEqual(detail.curation?.byHand, true)
+        XCTAssertEqual(detail.curation?.notes, ["Sent back by hand."])
 
         // An older command line does not send the field.
         let older = try JSONDecoder().decode(

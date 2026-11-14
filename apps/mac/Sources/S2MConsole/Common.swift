@@ -156,12 +156,18 @@ func tidyText(_ text: String) -> String {
     text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
 }
 
+/// The length the limit is checked against: code points, as the Python side counts them
+/// (an accented letter typed as letter plus accent is two).
+func storedLength(_ text: String) -> Int {
+    tidyText(text).unicodeScalars.count
+}
+
 /// "128 / 240", red past the limit.
 struct LengthCount: View {
     let text: String
 
     var body: some View {
-        let count = tidyText(text).count
+        let count = storedLength(text)
         Text("\(count) / \(memoryTextLimit)")
             .font(.caption)
             .foregroundColor(count > memoryTextLimit ? .red : .secondary)
@@ -185,6 +191,23 @@ func parentFolder(of path: String, home: String = NSHomeDirectory()) -> String {
     if parent == home { return "~" }
     if parent.hasPrefix(home + "/") { return "~" + parent.dropFirst(home.count) }
     return parent
+}
+
+/// Shown where one entry's detail could not be loaded.
+struct LoadFailed: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Text("Could not load this").font(.headline)
+            Text(message).foregroundColor(.secondary).textSelection(.enabled)
+                .multilineTextAlignment(.center)
+            Button("Try Again", action: retry)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(20)
+    }
 }
 
 /// A row of ready-made reasons that fill the reason field.

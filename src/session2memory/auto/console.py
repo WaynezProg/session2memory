@@ -30,8 +30,8 @@ from session2memory.auto.store import (
 STATUSES = ("active", "superseded", "retired", "stale")
 # By hand, a memory can come back only from a state nothing replaced it in.
 RESTORABLE = ("retired", "stale")
-# The unattended run's default (``RunConfig.curate_max_age_days``): a session that has
-# waited longer is passed over, so sending an older one back would change nothing.
+# The unattended run's default age limit (``curate_max_age_days`` in ``auto/run.py``). A
+# run can be started with another one, which the console cannot know.
 CURATE_MAX_AGE_DAYS = 21.0
 
 
@@ -241,15 +241,29 @@ def session(store: AutoStore, source_key: str) -> dict[str, object] | None:
             (source_key,),
         )
     ]
-    return {**_session(row, full=True), "memories": fed, "curation": _curation(row)}
+    return {**_session(row, full=True), "memories": fed, "curation": _curation(store, row)}
 
 
-def _curation(row: SessionRow, *, now: datetime | None = None) -> dict[str, object]:
-    """Whether a run would read this session if it were waiting, and if not, why.
+def _older_than(stamp: str | None, days: float, now: datetime) -> bool:
+    """Compared as moments in time; a stamp without an offset is taken as UTC."""
+    try:
+        seen = datetime.fromisoformat(stamp or "")
+    except ValueError:
+        return True
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=UTC)
+    return seen < now - timedelta(days=days)
 
-    ``blocked`` lists what makes the run pass over it whatever its place in the queue
-    (the same checks as ``curate``). ``note`` is something that depends on how the run is
-    started.
+
+def _curation(
+    store: AutoStore, row: SessionRow, *, now: datetime | None = None
+) -> dict[str, object]:
+    """Whether a run would read this session if it were waiting.
+
+    ``blocked``: what makes any run pass over it (the same checks as ``curate``).
+    ``expires``: it waits, but is older than the run's default age limit and nobody asked
+    for it, so a run with that default drops it unread. ``notes``: what depends on how the
+    run is started, which the console cannot know.
     """
     blocked: list[str] = []
     if not row.digest:
@@ -258,22 +272,29 @@ def _curation(row: SessionRow, *, now: datetime | None = None) -> dict[str, obje
         blocked.append("its workspace is unknown")
     elif is_ephemeral_project(row.project):
         blocked.append("its workspace is a scratch, benchmark or deleted directory")
-    cutoff = ((now or datetime.now(UTC)) - timedelta(days=CURATE_MAX_AGE_DAYS)).isoformat(
-        timespec="seconds"
-    )
-    if (row.last_activity or "") < cutoff:
-        blocked.append(
-            f"its last activity is more than {CURATE_MAX_AGE_DAYS:g} days ago; "
-            "the run marks such sessions done without reading them"
-        )
     if row.digest and row.summary_origin != "native" and len(row.digest) < TRIVIAL_DIGEST_CHARS:
         blocked.append("it is one short exchange, too little to distil")
-    note = (
-        "It belongs to OpenClaw agents; the run curates it only when started with that scope."
-        if row.scope == "openclaw"
-        else None
+    waiting = row.digest_version > row.curated_version
+    by_hand = row.source_key in store.curate_by_hand()
+    expires = (
+        waiting
+        and not blocked
+        and not by_hand
+        and _older_than(row.last_activity, CURATE_MAX_AGE_DAYS, now or datetime.now(UTC))
     )
-    return {"blocked": blocked, "note": note}
+    notes: list[str] = []
+    if expires:
+        notes.append(
+            f"It has waited more than {CURATE_MAX_AGE_DAYS:g} days: a run with the default "
+            "age limit drops it from the queue unread. Curate Anyway keeps it."
+        )
+    if waiting and by_hand:
+        notes.append("Sent back by hand: the run reads it whatever its age.")
+    if row.scope == "openclaw":
+        notes.append(
+            "It belongs to OpenClaw agents; a run curates it only when started with that scope."
+        )
+    return {"blocked": blocked, "expires": expires, "by_hand": by_hand, "notes": notes}
 
 
 def runs(store: AutoStore, *, limit: int = 30) -> list[dict[str, object]]:
@@ -420,24 +441,30 @@ def _set_curated(store: AutoStore, source_key: str, *, pending: bool) -> dict[st
     if row is None:
         raise ValueError(f"no session {source_key}")
     if pending:
-        blocked = _curation(row)["blocked"]
+        blocked = _curation(store, row)["blocked"]
         assert isinstance(blocked, list)
         if blocked:
-            # Saying "queued" would be untrue: the run would pass over it.
+            # Saying "queued" would be untrue: every run would pass over it.
             raise ValueError(f"{source_key} would not be curated: {'; '.join(blocked)}")
-    version = row.digest_version - 1 if pending else row.digest_version
+    if pending and row.digest_version > row.curated_version:
+        version = row.curated_version  # already waiting: only the marker below is new
+    else:
+        version = row.digest_version - 1 if pending else row.digest_version
     store._connection.execute(
         "UPDATE auto_sessions SET curated_version=?, updated_at=? WHERE source_key=?",
         (version, now_iso(), source_key),
     )
-    store._connection.commit()
+    by_hand = store.curate_by_hand()
+    # Asked for by a person, the session is read whatever its age; skipped, it is not.
+    store.set_curate_by_hand(by_hand | {source_key} if pending else by_hand - {source_key})
     updated = session(store, source_key)
     assert updated is not None
     return updated
 
 
 def requeue(store: AutoStore, source_key: str) -> dict[str, object]:
-    """Have the next run curate this session again. Memory it already led to stays."""
+    """Have the next run curate this session, also one older than the run's age limit.
+    Memory it already led to stays."""
     return _set_curated(store, source_key, pending=True)
 
 

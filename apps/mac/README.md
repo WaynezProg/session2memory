@@ -19,9 +19,11 @@ HKS queries. It has five panes:
   the title or summary, and whether they still wait for curation. Each shows its summary,
   the digest the model was shown, and the memory it is evidence for.
   - **Curate Again** sends a session back to curation and **Skip Curation** takes it out
-    of the queue, for one session or several.
-  - A session the run would pass over anyway says why (older than 21 days, too short, a
-    scratch or deleted workspace, no workspace), and cannot be sent back.
+    of the queue, for one session or several. A session sent back by hand is read by the
+    next run whatever its age; left alone, a run drops sessions that have waited more
+    than 21 days, which the session then says, with **Curate Anyway** to keep it.
+  - A session no run would read says why (too short to distil, a scratch or deleted
+    workspace, no workspace) and cannot be sent back.
 - Memory and sessions link to each other: an evidence session opens in Sessions, and a
   memory listed under a session opens in Memory, with its workspace and row in view.
 - **Runs**: store totals and every unattended run, step by step.
@@ -93,7 +95,8 @@ deleted: an entry changes status, an edited entry stays as superseded with a lin
 new wording, and every change is written to the history.
 
 In the Sessions pane: **Curate Again** and **Skip Curation** (`auto console
-requeue|skip`). They only move a session into or out of the queue the next run reads;
-the session's summary and the memory it already led to stay.
+requeue|skip`). They only move a session into or out of the queue the next run reads,
+and note that a person asked for it; the session's summary and the memory it already led
+to stay.
 
 Everything else is read-only, and HKS queries always run with `--writeback=no`.

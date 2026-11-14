@@ -201,6 +201,20 @@ class AutoStore:
         )
         self._connection.commit()
 
+    # Sessions a person sent back to curation: the run reads them whatever their age.
+    _BY_HAND_KEY = "curate_by_hand"
+
+    def curate_by_hand(self) -> set[str]:
+        raw = self.get_meta(self._BY_HAND_KEY)
+        try:
+            found = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            return set()
+        return {str(key) for key in found} if isinstance(found, list) else set()
+
+    def set_curate_by_hand(self, keys: set[str]) -> None:
+        self.set_meta(self._BY_HAND_KEY, json.dumps(sorted(keys)))
+
     # ---- sessions ------------------------------------------------------------
     def upsert_session(
         self,
