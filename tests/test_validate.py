@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from session2memory.validate import validate_distill
 
 
-def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
@@ -12,15 +13,18 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
-def read_jsonl(path: Path) -> list[dict[str, object]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [
+        cast(dict[str, Any], json.loads(line))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
 
 
 def write_distill(
     distill_dir: Path,
     *,
-    evidence: list[dict[str, object]],
-    candidates: list[dict[str, object]],
+    evidence: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
 ) -> None:
     write_jsonl(distill_dir / "evidence_index.jsonl", evidence)
     write_jsonl(distill_dir / "candidates.jsonl", candidates)
@@ -37,8 +41,8 @@ def evidence_row(
     source_available: bool = True,
     source_unavailable_reason: str | None = None,
     contradicts_candidate_ids: list[str] | None = None,
-) -> dict[str, object]:
-    row: dict[str, object] = {
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
         "evidence_id": evidence_id,
         "source_path": source_path or Path(__file__).as_posix(),
         "source_type": source_type,
@@ -65,7 +69,7 @@ def candidate(
     risk_level: str = "medium",
     claim_mode: str = "real_completion",
     source_review_ids: list[str] | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     return {
         "candidate_id": candidate_id,
         "candidate_type": candidate_type,
