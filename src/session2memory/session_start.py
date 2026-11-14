@@ -35,7 +35,14 @@ from session2memory.adapters.antigravity import (
 )
 from session2memory.adapters.claude import ClaudeAdapter
 from session2memory.adapters.codex import CodexAdapter
+from session2memory.adapters.cursor import (
+    STORE_GLOB,
+    TRANSCRIPT_GLOBS,
+    CursorAdapter,
+    CursorCliAdapter,
+)
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
+from session2memory.adapters.muse import SESSION_FILE, MuseAdapter
 from session2memory.handoff import _clip, build_packet, native_summary
 from session2memory.handoff_find import has_conversation
 from session2memory.models import SessionRecord
@@ -45,6 +52,9 @@ DEFAULT_MAX_AGE_HOURS = 72.0
 DEFAULT_MEMORY_ITEMS = 8
 # Sessions larger than this are not parsed inside a hook; they get a pointer instead.
 MAX_PARSE_BYTES = 40_000_000
+# Muse and Cursor keep no index of sessions by workspace: the hook opens only this many of
+# their newest sessions to see which belong to the workspace it runs in.
+MAX_OPENED_SESSIONS = 8
 # Below this a handoff cannot carry its essentials, so it is held back, not truncated.
 MIN_HANDOFF_CHARS = 600
 LEDGER_KEEP_DAYS = 30
@@ -74,13 +84,15 @@ class MemoryItem:
 
 @dataclass(frozen=True)
 class Candidate:
-    """A session of the workspace, known without parsing it."""
+    """A session of the workspace, known without parsing it where the agent keeps an index."""
 
     tool: str
     session_id: str
     path: Path
     recency: float
     size: int
+    # Set when finding the session meant reading it: it is not read a second time.
+    record: SessionRecord | None = field(default=None, compare=False, repr=False)
 
     @property
     def source_key(self) -> str:
@@ -300,6 +312,58 @@ def _file_candidate(tool: str, session_id: str, path: Path) -> Candidate | None:
     return Candidate(tool, session_id, path, stat.st_mtime, stat.st_size)
 
 
+def _opened_candidates(
+    tool: str,
+    paths: list[Path],
+    reader: Callable[[Path], SessionRecord],
+    workspace: Path,
+    since: float,
+) -> list[Candidate]:
+    """Sessions of the workspace in a store that has no index by workspace.
+
+    Only files changed since ``since`` are looked at, newest first, and at most
+    ``MAX_OPENED_SESSIONS`` of them are opened: a hook has seconds, not minutes.
+    """
+    dated: list[tuple[float, int, Path]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if stat.st_mtime >= since and stat.st_size <= MAX_PARSE_BYTES:
+            dated.append((stat.st_mtime, stat.st_size, path))
+    found: list[Candidate] = []
+    for mtime, size, path in sorted(dated, reverse=True)[:MAX_OPENED_SESSIONS]:
+        try:
+            record = reader(path)
+        except (OSError, UnicodeError, ValueError, sqlite3.Error):
+            continue
+        if _same(record.cwd, workspace):
+            found.append(Candidate(tool, record.session_id, path, mtime, size, record))
+    return found
+
+
+def _muse_candidates(root: Path, workspace: Path, since: float) -> list[Candidate]:
+    paths = [
+        path
+        for path in root.glob(f"*/*/*/*/{SESSION_FILE}")
+        if not any(part.startswith(".") for part in path.relative_to(root).parts[:-1])
+    ]
+    return _opened_candidates("muse", paths, MuseAdapter(root).read_file, workspace, since)
+
+
+def _cursor_candidates(root: Path, workspace: Path, since: float) -> list[Candidate]:
+    paths = list(root.glob(STORE_GLOB))
+    return _opened_candidates("cursor", paths, CursorAdapter(root).read_file, workspace, since)
+
+
+def _cursor_cli_candidates(root: Path, workspace: Path, since: float) -> list[Candidate]:
+    paths = list({path for pattern in TRANSCRIPT_GLOBS for path in root.glob(pattern)})
+    return _opened_candidates(
+        "cursor-cli", paths, CursorCliAdapter(root).read_file, workspace, since
+    )
+
+
 def _claude_candidates(root: Path, workspace: Path) -> list[Candidate]:
     paths = claude_project_dir(root, workspace).glob("*.jsonl")
     return [c for p in paths if (c := _file_candidate("claude", p.stem, p)) is not None]
@@ -357,17 +421,45 @@ CANDIDATE_FINDERS: Mapping[str, Callable[[Path, Path], list[Candidate]]] = {
 }
 
 
+# Stores without an index by workspace: their newest sessions are opened to find out.
+OPENING_FINDERS: Mapping[str, Callable[[Path, Path, float], list[Candidate]]] = {
+    "cursor": _cursor_candidates,
+    "cursor-cli": _cursor_cli_candidates,
+    "muse": _muse_candidates,
+}
+# One agent, two stores: a Cursor session is the same session in either.
+SAME_AGENT = {"cursor": "cursor", "cursor-cli": "cursor"}
+
+
+def _is_starting_session(candidate: Candidate, exclude: tuple[str, str]) -> bool:
+    agent, session_id = exclude
+    same_agent = SAME_AGENT.get(candidate.tool, candidate.tool) == SAME_AGENT.get(agent, agent)
+    return same_agent and candidate.session_id == session_id
+
+
 def previous_sessions(
-    roots: Mapping[str, Path], workspace: Path, *, exclude: tuple[str, str] | None
+    roots: Mapping[str, Path],
+    workspace: Path,
+    *,
+    exclude: tuple[str, str] | None,
+    since: float = 0.0,
 ) -> list[Candidate]:
-    """Sessions of the workspace across agents, newest first, without the starting one."""
+    """Sessions of the workspace across agents, newest first, without the starting one.
+
+    ``since`` (seconds since the epoch) bounds how far back the stores without an index by
+    workspace are looked through; an older session would not be handed off anyway.
+    """
     found: list[Candidate] = []
     for tool, finder in CANDIDATE_FINDERS.items():
         root = roots.get(tool)
         if root is not None and root.exists():
             found += finder(root, workspace)
+    for tool, opener in OPENING_FINDERS.items():
+        root = roots.get(tool)
+        if root is not None and root.exists():
+            found += opener(root, workspace, since)
     if exclude is not None:
-        found = [c for c in found if (c.tool, c.session_id) != exclude]
+        found = [c for c in found if not _is_starting_session(c, exclude)]
     return sorted(found, key=lambda candidate: candidate.recency, reverse=True)
 
 
@@ -388,6 +480,8 @@ def _claude_cwd(path: Path, *, lines: int = 200) -> str | None:
 
 
 def _read_candidate(candidate: Candidate) -> SessionRecord | None:
+    if candidate.record is not None:
+        return candidate.record
     readers: Mapping[str, Callable[[Path], SessionRecord]] = {
         "claude": ClaudeAdapter(candidate.path.parent)._read_file,
         "codex": CodexAdapter(candidate.path.parent).read_file,
@@ -455,7 +549,8 @@ def _handoff_section(
 ) -> tuple[str, str, str] | None:
     """``(text, source_key, marker)`` for the previous session, or ``None``."""
     exclude = (config.agent, session_id) if session_id else None
-    candidates = previous_sessions(config.session_roots, workspace, exclude=exclude)
+    since = now.timestamp() - config.max_age_hours * 3600
+    candidates = previous_sessions(config.session_roots, workspace, exclude=exclude, since=since)
     if not candidates:
         notes.append("handoff: no previous session in this workspace")
         return None

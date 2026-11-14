@@ -375,7 +375,16 @@ def session_start_hook(
         config = HookConfig(
             agent=agent,
             session_roots={
-                tool: source_roots[tool] for tool in ("claude", "codex", "grok", "antigravity")
+                tool: source_roots[tool]
+                for tool in (
+                    "claude",
+                    "codex",
+                    "grok",
+                    "antigravity",
+                    "muse",
+                    "cursor",
+                    "cursor-cli",
+                )
             },
             codex_memory_root=codex_memory_root.expanduser(),
             claude_projects_root=source_roots["claude"],

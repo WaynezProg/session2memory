@@ -676,9 +676,11 @@ two things to a new session of a workspace:
   *other* agents keep for this workspace: Codex's own rollout summaries and memory
   overview for a Claude session, Claude Code's `memory/MEMORY.md` entries for a Codex
   session. Only titles and paths are injected; the agent reads a file when it needs it.
-- **Handoff, once** (`startup` only): the previous session of the workspace across codex,
-  claude and grok, delivered once per state of that session and only if it was active in
-  the last 72 hours. When Codex wrote its own summary for that session and it is not older
+- **Handoff, once** (`startup` only): the previous session of the workspace, whichever
+  agent it was in (Codex, Claude Code, Grok, Antigravity, Muse, Cursor chats and Cursor
+  transcripts), delivered once per state of that session and only if it was active in the
+  last 72 hours. Muse and Cursor keep no index of sessions by workspace, so the hook opens
+  at most their 8 most recently changed sessions to find the workspace's own. When Codex wrote its own summary for that session and it is not older
   than the session, the summary is used; otherwise the rule-based packet is.
 
 It stays silent for headless sessions (entrypoint `sdk-*`, which is how orchestrators and
