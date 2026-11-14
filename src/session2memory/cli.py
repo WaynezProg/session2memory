@@ -715,14 +715,18 @@ def auto_memory(
 
 
 CONSOLE_VIEWS = (
-    "overview", "projects", "memories", "memory", "sessions", "session", "runs",
-    "retire", "restore",
+    "overview", "projects", "memories", "memory", "search", "sessions", "session", "runs",
+    "retire", "restore", "edit", "add", "requeue", "skip",
 )  # fmt: skip
+CONSOLE_WRITES = ("retire", "restore", "edit", "add", "requeue", "skip")
 
 
 @auto_app.command(
     "console",
-    help="JSON views of the store for the operator console; retire and restore change it.",
+    help=(
+        "JSON views of the store for the operator console; retire, restore, edit, add, "
+        "requeue and skip change it."
+    ),
 )
 def auto_console(
     view: Annotated[str, typer.Argument(help=", ".join(CONSOLE_VIEWS))],
@@ -733,7 +737,17 @@ def auto_console(
         str, typer.Option("--status", help="active, superseded, retired, stale or all.")
     ] = "active",
     tool: Annotated[str | None, typer.Option("--tool")] = None,
-    reason: Annotated[str, typer.Option("--reason", help="Why, for retire and restore.")] = "",
+    reason: Annotated[
+        str, typer.Option("--reason", help="Why, for retire, restore, edit and add.")
+    ] = "",
+    query: Annotated[
+        str | None, typer.Option("--query", help="Words to look for (search, sessions).")
+    ] = None,
+    text: Annotated[str | None, typer.Option("--text", help="Memory text (edit, add).")] = None,
+    kind: Annotated[str | None, typer.Option("--kind", help="Memory kind (add).")] = None,
+    pending: Annotated[
+        bool, typer.Option("--pending", help="Only sessions waiting for curation (sessions).")
+    ] = False,
     limit: Annotated[int, typer.Option("--limit")] = 200,
     offset: Annotated[int, typer.Option("--offset")] = 0,
     store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
@@ -757,7 +771,7 @@ def auto_console(
         fail(f"unknown status {status}")
     store_dir = store.expanduser()
     database = store_dir / AUTO_DB_NAME
-    writes = view in ("retire", "restore")
+    writes = view in CONSOLE_WRITES
     if not database.is_file():
         fail(f"no store at {store_dir.as_posix()}; run `session2memory auto run` first")
     opened = AutoStore.open(database) if writes else AutoStore.open_read_only(database)
@@ -774,16 +788,44 @@ def auto_console(
             data = console.memories(opened, need(project, "--project"), status=status)
         elif view == "memory":
             data = console.memory(opened, need(memory_id, "--id"))
+        elif view == "search":
+            data = console.search(
+                opened, need(query, "--query"), project=project, status=status, limit=limit
+            )
         elif view == "sessions":
-            data = console.sessions(opened, project=project, tool=tool, limit=limit, offset=offset)
+            data = console.sessions(
+                opened,
+                project=project,
+                tool=tool,
+                query=query,
+                pending=pending,
+                limit=limit,
+                offset=offset,
+            )
         elif view == "session":
             data = console.session(opened, need(key, "--key"))
         elif view == "runs":
             data = console.runs(opened, limit=limit)
         elif view == "retire":
             data = console.retire(opened, need(memory_id, "--id"), need(reason, "--reason"))
-        else:
+        elif view == "restore":
             data = console.restore(opened, need(memory_id, "--id"), need(reason, "--reason"))
+        elif view == "edit":
+            data = console.edit(
+                opened, need(memory_id, "--id"), need(text, "--text"), need(reason, "--reason")
+            )
+        elif view == "add":
+            data = console.add(
+                opened,
+                need(project, "--project"),
+                need(kind, "--kind"),
+                need(text, "--text"),
+                need(reason, "--reason"),
+            )
+        elif view == "requeue":
+            data = console.requeue(opened, need(key, "--key"))
+        else:
+            data = console.skip(opened, need(key, "--key"))
     except ValueError as exc:
         fail(str(exc))
     finally:

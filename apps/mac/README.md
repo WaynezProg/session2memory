@@ -3,11 +3,20 @@
 A native macOS app (SwiftUI) for looking at what session2memory keeps and for testing
 HKS queries. It has five panes:
 
-- **Memory**: workspaces, their memory by status, and for one entry its history, what it
-  replaced or was replaced by, and the sessions it rests on. An active entry can be
-  retired and a retired or stale one restored; both ask for a reason, which is recorded.
-- **Sessions**: the sessions of every agent, filtered by workspace and tool, with the
-  summary, the digest the model was shown, and the memory each session is evidence for.
+- **Memory**: workspaces (with a filter field), their memory by status, and for one entry
+  its history, what it replaced or was replaced by, and the sessions it rests on. The
+  search field looks through the chosen workspace or, with **All workspaces**, through
+  every one. Entries can be retired, restored, reworded (**Edit…**) and written by hand
+  (**New Memory**); several can be selected and retired or restored together, from the
+  detail side, the context menu or the Delete key. Every change asks for a reason, with a
+  few ready-made ones, and is recorded.
+- **Sessions**: the sessions of every agent, filtered by workspace, tool, words in the
+  title or summary, and whether they still wait for curation. Each shows its summary, the
+  digest the model was shown, and the memory it is evidence for. A session can be sent
+  back to curation (**Curate Again**) or taken out of the queue (**Skip Curation**), one
+  at a time or several together.
+- Memory and sessions link to each other: an evidence session opens in Sessions, and a
+  memory listed under a session opens in Memory.
 - **Runs**: store totals and every unattended run, step by step.
 - **HKS Query**: runs `ks query … --writeback=no` and shows the answer, the route it came
   from, the evidence and the trace.
@@ -21,9 +30,13 @@ the schema can change without the app.
 
 It builds with Swift 6.4 (Xcode 27) on macOS 27 and `swift test` passes. The models in
 `Models.swift` were checked against what `auto console` and `ks query` print for a real
-store. All five panes were opened against that store: Memory with one entry's detail,
-Sessions with a digest, Runs with a report, HKS Query with a hit and a no-hit, and
-Settings with **Check both commands**. Retire and Restore have not been pressed.
+store. The first version's five panes were opened against that store, and Retire and
+Restore were pressed there.
+
+Search, editing, adding, changing several entries at once, the session filters, Curate
+Again / Skip Curation and the links between the two panes were added later. The commands
+behind them were run against a copy of a real store and are covered by tests; the new
+controls themselves have not been clicked through in the running app yet.
 
 ## Build and run
 
@@ -54,7 +67,13 @@ and `uv run ks`. Values are passed single-quoted.
 
 ## What changes data
 
-Only **Retire…** and **Restore…** in the Memory pane. They call
-`session2memory auto console retire|restore --id … --reason …`. Nothing is deleted: the
-entry changes status and the change is written to its history. Everything else is
-read-only, and HKS queries always run with `--writeback=no`.
+In the Memory pane: **Retire…**, **Restore…**, **Edit…** and **New Memory**. They call
+`session2memory auto console retire|restore|edit|add` with the reason typed. Nothing is
+deleted: an entry changes status, an edited entry stays as superseded with a link to its
+new wording, and every change is written to the history.
+
+In the Sessions pane: **Curate Again** and **Skip Curation** (`auto console
+requeue|skip`). They only move a session into or out of the queue the next run reads;
+the session's summary and the memory it already led to stay.
+
+Everything else is read-only, and HKS queries always run with `--writeback=no`.

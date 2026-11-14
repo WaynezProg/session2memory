@@ -47,23 +47,48 @@ enum Pane: String, CaseIterable, Identifiable {
     }
 }
 
+/// A memory to show, from another pane.
+struct MemoryTarget: Equatable {
+    let project: String
+    let id: String
+}
+
+/// Which pane is shown, and what one pane asked another to show.
+@MainActor
+final class AppState: ObservableObject {
+    @Published var pane: Pane? = .memory
+    @Published var memoryTarget: MemoryTarget?
+    @Published var sessionTarget: String?
+
+    func show(memory id: String, in project: String) {
+        memoryTarget = MemoryTarget(project: project, id: id)
+        pane = .memory
+    }
+
+    func show(session key: String) {
+        sessionTarget = key
+        pane = .sessions
+    }
+}
+
 struct ContentView: View {
-    @State private var pane: Pane? = .memory
+    @StateObject private var app = AppState()
 
     var body: some View {
         NavigationSplitView {
-            List(Pane.allCases, selection: $pane) { item in
+            List(Pane.allCases, selection: $app.pane) { item in
                 Label(item.title, systemImage: item.icon).tag(item)
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
         } detail: {
             detail
         }
+        .environmentObject(app)
     }
 
     @ViewBuilder
     private var detail: some View {
-        switch pane ?? .memory {
+        switch app.pane ?? .memory {
         case .memory: MemoryPane()
         case .sessions: SessionsPane()
         case .runs: RunsPane()

@@ -184,11 +184,35 @@ struct Backend {
         try await console(["memory", "--id", id])
     }
 
-    func sessions(project: String?, tool: String?, limit: Int) async throws -> [SessionSummary] {
+    /// Memory whose text holds every word of `query`, in one workspace or (nil) in all.
+    func search(query: String, project: String?, status: String) async throws -> [Memory] {
+        try await console(Self.searchArguments(query: query, project: project, status: status))
+    }
+
+    static func searchArguments(query: String, project: String?, status: String) -> [String] {
+        var arguments = ["search", "--query", query, "--status", status]
+        if let project, !project.isEmpty { arguments += ["--project", project] }
+        return arguments
+    }
+
+    func sessions(
+        project: String?, tool: String?, query: String = "", pendingOnly: Bool = false, limit: Int
+    ) async throws -> [SessionSummary] {
+        try await console(
+            Self.sessionsArguments(
+                project: project, tool: tool, query: query, pendingOnly: pendingOnly, limit: limit))
+    }
+
+    static func sessionsArguments(
+        project: String?, tool: String?, query: String, pendingOnly: Bool, limit: Int
+    ) -> [String] {
         var arguments = ["sessions", "--limit", String(limit)]
         if let project, !project.isEmpty { arguments += ["--project", project] }
         if let tool, !tool.isEmpty { arguments += ["--tool", tool] }
-        return try await console(arguments)
+        let words = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !words.isEmpty { arguments += ["--query", words] }
+        if pendingOnly { arguments.append("--pending") }
+        return arguments
     }
 
     func session(key: String) async throws -> SessionDetail {
@@ -205,6 +229,28 @@ struct Backend {
 
     func restore(id: String, reason: String) async throws -> MemoryDetail {
         try await console(["restore", "--id", id, "--reason", reason])
+    }
+
+    /// Reword an active memory; the answer is the new entry, the old one is superseded.
+    func edit(id: String, text: String, reason: String) async throws -> MemoryDetail {
+        try await console(["edit", "--id", id, "--text", text, "--reason", reason])
+    }
+
+    func add(project: String, kind: String, text: String, reason: String) async throws
+        -> MemoryDetail
+    {
+        try await console(
+            ["add", "--project", project, "--kind", kind, "--text", text, "--reason", reason])
+    }
+
+    /// Have the next run curate the session again.
+    func requeue(key: String) async throws -> SessionDetail {
+        try await console(["requeue", "--key", key])
+    }
+
+    /// Take the session out of the curation queue.
+    func skip(key: String) async throws -> SessionDetail {
+        try await console(["skip", "--key", key])
     }
 
     // MARK: HKS
