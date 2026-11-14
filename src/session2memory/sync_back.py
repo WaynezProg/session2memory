@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -359,7 +360,9 @@ def _destination_path(
     if target == "cursor":
         return workspace / ".cursor" / "rules" / "session2memory-memory.mdc", True
     if target == "openclaw":
-        return Path("~/.openclaw/memory").expanduser() / f"{workspace_id}.md", False
+        # Where the rest of the tool looks for OpenClaw: OPENCLAW_STATE_DIR, else ~/.openclaw.
+        state_dir = Path(os.environ.get("OPENCLAW_STATE_DIR", "~/.openclaw")).expanduser()
+        return state_dir / "memory" / f"{workspace_id}.md", False
     if target == "hermes":
         return Path("~/.hermes/memory").expanduser() / f"{workspace_id}.md", False
     raise SyncError(f"Unsupported sync target: {target}")

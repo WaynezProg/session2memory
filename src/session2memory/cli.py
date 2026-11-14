@@ -1007,6 +1007,8 @@ def _openclaw_state_dir() -> Path:
 
 def _default_source_roots() -> dict[str, Path]:
     roots = {tool: path.expanduser() for tool, path in DEFAULT_SOURCE_ROOTS.items()}
+    # Both OpenClaw roots follow OPENCLAW_STATE_DIR, so a moved state directory is read whole.
+    roots["openclaw"] = _openclaw_state_dir() / "logs"
     roots["openclaw-native"] = _openclaw_state_dir() / "agents"
     return roots
 
