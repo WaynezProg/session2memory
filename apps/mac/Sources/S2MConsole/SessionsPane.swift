@@ -5,14 +5,17 @@ struct SessionsPane: View {
     @State private var projects: [Project] = []
     @State private var project = ""
     @State private var tool = ""
+    @State private var scope = ""
     @State private var query = ""
     @State private var pendingOnly = false
     @State private var limit = pageSize
     @State private var sessions: [SessionSummary] = []
     @State private var selection: Set<String> = []
     @State private var detail: SessionDetail?
+    /// Why the last load failed, if it did.
     @State private var message: String?
-    @State private var note: String?
+    /// What the last change came to.
+    @State private var outcome: ActionNote?
     @State private var loading = false
     @State private var working = false
 
@@ -26,12 +29,13 @@ struct SessionsPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if let message {
-                ErrorBanner(message: message).padding(8)
-            } else if let note {
-                InfoBanner(message: note).padding(8)
+                ErrorBanner(message: message).padding([.horizontal, .top], 8)
+            }
+            if let outcome {
+                NoteBanner(note: outcome) { self.outcome = nil }.padding([.horizontal, .top], 8)
             }
             HSplitView {
-                listColumn.frame(minWidth: 340, idealWidth: 420)
+                listColumn.frame(minWidth: 360, idealWidth: 430)
                 detailView.frame(minWidth: 380, maxWidth: .infinity)
             }
         }
@@ -40,11 +44,16 @@ struct SessionsPane: View {
         .toolbar {
             ToolbarItem {
                 Button {
-                    Task { await loadSessions(wait: false) }
+                    Task {
+                        await loadSessions(wait: false)
+                        await loadDetail()
+                    }
                 } label: {
                     Label("Reload", systemImage: "arrow.clockwise")
                 }
+                .keyboardShortcut("r", modifiers: .command)
                 .disabled(loading)
+                .help("Reload (⌘R)")
             }
         }
         .task { await loadProjects() }
@@ -52,11 +61,17 @@ struct SessionsPane: View {
         .task(id: selection) { await loadDetail() }
         .onAppear { takeTarget() }
         .onChange(of: app.sessionTarget) { _ in takeTarget() }
+        .onChange(of: filterKey) { _ in
+            // Another set of sessions: start again from the first page.
+            limit = Self.pageSize
+        }
     }
 
-    private var listKey: String {
-        [project, tool, query, pendingOnly ? "1" : "0", String(limit)].joined(separator: "|")
+    private var filterKey: String {
+        [project, tool, scope, query, pendingOnly ? "1" : "0"].joined(separator: "|")
     }
+
+    private var listKey: String { filterKey + "|" + String(limit) }
 
     private var listColumn: some View {
         VStack(spacing: 0) {
@@ -72,7 +87,14 @@ struct SessionsPane: View {
                         Text(item.isEmpty ? "All tools" : item).tag(item)
                     }
                 }
-                .frame(maxWidth: 170)
+                .frame(maxWidth: 150)
+                Picker("Scope", selection: $scope) {
+                    Text("All scopes").tag("")
+                    Text("coding").tag("coding")
+                    Text("openclaw").tag("openclaw")
+                }
+                .frame(maxWidth: 120)
+                .help("coding: sessions of coding tools. openclaw: OpenClaw agents' own sessions.")
             }
             .labelsHidden()
             .padding([.horizontal, .top], 8)
@@ -105,7 +127,7 @@ struct SessionsPane: View {
     }
 
     private var countLine: String {
-        var line = "\(sessions.count) shown"
+        var line = sessions.count >= limit ? "first \(sessions.count) shown" : "\(sessions.count) shown"
         if selection.count > 1 { line += " · \(selection.count) selected" }
         return line
     }
@@ -114,6 +136,9 @@ struct SessionsPane: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text(session.tool ?? "?").font(.caption).foregroundColor(.secondary)
+                if session.scope == "openclaw" {
+                    Text("openclaw").font(.caption).foregroundColor(.secondary)
+                }
                 if session.pending == true {
                     PendingBadge()
                 }
@@ -138,11 +163,13 @@ struct SessionsPane: View {
             Button(waiting.count == 1 ? "Skip Curation" : "Skip Curation for \(waiting.count)") {
                 Task { await change(keys: waiting, requeue: false) }
             }
+            .disabled(working)
         }
         if !done.isEmpty {
             Button(done.count == 1 ? "Curate Again" : "Curate \(done.count) Again") {
                 Task { await change(keys: done, requeue: true) }
             }
+            .disabled(working)
         }
     }
 
@@ -150,28 +177,11 @@ struct SessionsPane: View {
     private var detailView: some View {
         if selection.count > 1 {
             batchView
-        } else if let detail {
+        } else if let detail, selection.contains(detail.key) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            if detail.pending == true {
-                                PendingBadge()
-                            }
-                            Spacer()
-                            if detail.pending == true {
-                                Button("Skip Curation") {
-                                    Task { await change(keys: [detail.key], requeue: false) }
-                                }
-                                .help("Take it out of the queue; the next run leaves it alone")
-                            } else {
-                                Button("Curate Again") {
-                                    Task { await change(keys: [detail.key], requeue: true) }
-                                }
-                                .help("The next run reads this session again")
-                            }
-                        }
-                        .disabled(working)
+                        queueControls(detail)
                         Text(detail.title ?? detail.key).font(.title3).textSelection(.enabled)
                         Text(
                             "\(detail.key) · \(detail.scope ?? "–") · \(shortTime(detail.lastActivity))"
@@ -213,7 +223,52 @@ struct SessionsPane: View {
                 .padding(16)
             }
         } else {
-            Placeholder(text: "Choose a session")
+            Placeholder(text: selection.isEmpty ? "Choose a session" : "Loading…")
+        }
+    }
+
+    /// The queue state of one session, the button that changes it, and, when the run
+    /// would pass over the session anyway, why.
+    private func queueControls(_ detail: SessionDetail) -> some View {
+        let blocked = detail.curation?.blocked ?? []
+        let waiting = detail.pending == true
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                if waiting {
+                    PendingBadge()
+                    Text(blocked.isEmpty ? "The next run reads it." : "The next run passes over it.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Not in the curation queue").font(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+                if working { ProgressView().controlSize(.small) }
+                if waiting {
+                    Button("Skip Curation") {
+                        Task { await change(keys: [detail.key], requeue: false) }
+                    }
+                    .help("Take it out of the queue; the run leaves it alone")
+                } else {
+                    Button("Curate Again") {
+                        Task { await change(keys: [detail.key], requeue: true) }
+                    }
+                    .disabled(!blocked.isEmpty)
+                    .help(
+                        blocked.isEmpty
+                            ? "The next run reads this session again"
+                            : "The run would pass over it; see below")
+                }
+            }
+            .disabled(working)
+            ForEach(blocked, id: \.self) { why in
+                Text("Would not be curated: \(why).")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+            if let note = detail.curation?.note {
+                Text(note).font(.caption).foregroundColor(.secondary)
+            }
         }
     }
 
@@ -251,6 +306,7 @@ struct SessionsPane: View {
         app.sessionTarget = nil
         project = ""
         tool = ""
+        scope = ""
         query = ""
         pendingOnly = false
         selection = [key]
@@ -276,7 +332,8 @@ struct SessionsPane: View {
         defer { loading = false }
         do {
             let found = try await Backend.current().sessions(
-                project: project, tool: tool, query: query, pendingOnly: pendingOnly, limit: limit)
+                project: project, tool: tool, scope: scope, query: query,
+                pendingOnly: pendingOnly, limit: limit)
             if Task.isCancelled { return }
             sessions = found
             message = nil
@@ -295,11 +352,12 @@ struct SessionsPane: View {
         }
         do {
             let loaded = try await Backend.current().session(key: key)
-            if Task.isCancelled { return }
+            // The selection may have moved on while the command ran.
+            guard !Task.isCancelled, selection == [key] else { return }
             detail = loaded
             message = nil
         } catch {
-            if Task.isCancelled { return }
+            guard !Task.isCancelled, selection == [key] else { return }
             detail = nil
             message = error.localizedDescription
         }
@@ -307,32 +365,24 @@ struct SessionsPane: View {
 
     @MainActor
     private func change(keys: [String], requeue: Bool) async {
-        guard !keys.isEmpty else { return }
+        guard !working, !keys.isEmpty else { return }
         working = true
         defer { working = false }
+        outcome = nil
         let backend = Backend.current()
-        var outcome = BatchOutcome()
-        var last: SessionDetail?
+        var result = BatchOutcome()
         for key in keys {
             do {
-                last =
-                    requeue
-                    ? try await backend.requeue(key: key) : try await backend.skip(key: key)
-                outcome.done += 1
+                _ = requeue ? try await backend.requeue(key: key) : try await backend.skip(key: key)
+                result.done += 1
             } catch {
-                outcome.failures.append(error.localizedDescription)
+                result.failures.append(error.localizedDescription)
             }
         }
-        let text = outcome.summary(verb: requeue ? "Queued for curation:" : "Skipped:")
-        if outcome.failures.isEmpty {
-            message = nil
-            note = text
-        } else {
-            note = nil
-            message = text
-        }
-        if keys.count == 1, let last { detail = last }
+        outcome = ActionNote(result, verb: requeue ? "Queued for curation:" : "Skipped:")
         await loadSessions(wait: false)
+        // What is selected now, which need not be what was changed.
+        await loadDetail()
     }
 }
 

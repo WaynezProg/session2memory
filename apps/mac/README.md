@@ -3,20 +3,27 @@
 A native macOS app (SwiftUI) for looking at what session2memory keeps and for testing
 HKS queries. It has five panes:
 
-- **Memory**: workspaces (with a filter field), their memory by status, and for one entry
-  its history, what it replaced or was replaced by, and the sessions it rests on. The
-  search field looks through the chosen workspace or, with **All workspaces**, through
-  every one. Entries can be retired, restored, reworded (**Edit…**) and written by hand
-  (**New Memory**); several can be selected and retired or restored together, from the
-  detail side, the context menu or the Delete key. Every change asks for a reason, with a
-  few ready-made ones, and is recorded.
-- **Sessions**: the sessions of every agent, filtered by workspace, tool, words in the
-  title or summary, and whether they still wait for curation. Each shows its summary, the
-  digest the model was shown, and the memory it is evidence for. A session can be sent
-  back to curation (**Curate Again**) or taken out of the queue (**Skip Curation**), one
-  at a time or several together.
+- **Memory**: workspaces, their memory by status and kind, and for one entry its
+  history, what it replaced or was replaced by, and the sessions it rests on.
+  - Workspaces that have no memory yet are left out until **Without memory too** is
+    ticked; a field filters them by name or path, and each shows the folder it lies in.
+  - The search field looks through the chosen workspace or, with **All workspaces**,
+    through every one (every word must be in the text; at most 500 are shown).
+  - Entries can be retired, restored, reworded (**Edit…**, ⌘E) and written by hand
+    (**New Memory**, ⇧⌘N). Several can be selected and retired or restored together,
+    from the detail side, the context menu or the Delete key.
+  - Every change asks for a reason, with a few ready-made ones, and is recorded. What a
+    change came to stays on screen until dismissed, also when part of it failed.
+  - Memory text is one line of at most 240 characters; the sheets count as you type.
+- **Sessions**: the sessions of every agent, filtered by workspace, tool, scope, words in
+  the title or summary, and whether they still wait for curation. Each shows its summary,
+  the digest the model was shown, and the memory it is evidence for.
+  - **Curate Again** sends a session back to curation and **Skip Curation** takes it out
+    of the queue, for one session or several.
+  - A session the run would pass over anyway says why (older than 21 days, too short, a
+    scratch or deleted workspace, no workspace), and cannot be sent back.
 - Memory and sessions link to each other: an evidence session opens in Sessions, and a
-  memory listed under a session opens in Memory.
+  memory listed under a session opens in Memory, with its workspace and row in view.
 - **Runs**: store totals and every unattended run, step by step.
 - **HKS Query**: runs `ks query … --writeback=no` and shows the answer, the route it came
   from, the evidence and the trace.
@@ -35,8 +42,10 @@ Restore were pressed there.
 
 Search, editing, adding, changing several entries at once, the session filters, Curate
 Again / Skip Curation and the links between the two panes were added later. The commands
-behind them were run against a copy of a real store and are covered by tests; the new
-controls themselves have not been clicked through in the running app yet.
+behind them were run against a copy of a real store and are covered by tests. The two
+panes were drawn off screen against that copy (lists, one entry's detail, and arriving
+from the other pane with the workspace and row scrolled into view). The sheets, context
+menus and buttons have not been clicked through in the running app yet.
 
 ## Build and run
 

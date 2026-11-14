@@ -748,6 +748,9 @@ def auto_console(
     pending: Annotated[
         bool, typer.Option("--pending", help="Only sessions waiting for curation (sessions).")
     ] = False,
+    scope: Annotated[
+        str | None, typer.Option("--scope", help="coding or openclaw (sessions).")
+    ] = None,
     limit: Annotated[int, typer.Option("--limit")] = 200,
     offset: Annotated[int, typer.Option("--offset")] = 0,
     store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
@@ -769,6 +772,8 @@ def auto_console(
         fail(f"unknown view {view}; choose from {', '.join(CONSOLE_VIEWS)}")
     if status not in (*console.STATUSES, "all"):
         fail(f"unknown status {status}")
+    if scope not in (None, "coding", "openclaw"):
+        fail(f"unknown scope {scope}")
     store_dir = store.expanduser()
     database = store_dir / AUTO_DB_NAME
     writes = view in CONSOLE_WRITES
@@ -797,6 +802,7 @@ def auto_console(
                 opened,
                 project=project,
                 tool=tool,
+                scope=scope,
                 query=query,
                 pending=pending,
                 limit=limit,

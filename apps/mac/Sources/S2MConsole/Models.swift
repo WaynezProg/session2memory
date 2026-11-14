@@ -126,6 +126,13 @@ struct SessionSummary: Decodable, Identifiable, Hashable {
     }
 }
 
+/// Whether a run would read a session that waits for curation. `blocked` lists what
+/// makes it pass over the session; `note` is something that depends on how it is run.
+struct Curation: Decodable, Equatable {
+    let blocked: [String]
+    let note: String?
+}
+
 struct SessionDetail: Decodable {
     let key: String
     let tool: String?
@@ -140,9 +147,11 @@ struct SessionDetail: Decodable {
     let pending: Bool?
     let digest: String?
     let memories: [Memory]
+    let curation: Curation?
 
     enum CodingKeys: String, CodingKey {
         case key, tool, agent, scope, project, title, summary, pending, digest, memories
+        case curation
         case sessionId = "session_id"
         case summaryOrigin = "summary_origin"
         case lastActivity = "last_activity"

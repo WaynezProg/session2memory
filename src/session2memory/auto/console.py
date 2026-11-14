@@ -11,8 +11,11 @@ with the person's reason; nothing is deleted.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from session2memory.auto.curate import MAX_TEXT_CHARS, TRIVIAL_DIGEST_CHARS, is_ephemeral_project
+from session2memory.auto.secrets import scrub_secrets
 from session2memory.auto.store import (
     ACTIVE,
     MEMORY_KINDS,
@@ -20,12 +23,16 @@ from session2memory.auto.store import (
     MemoryRow,
     Scope,
     SessionRow,
+    memory_id_for,
     now_iso,
 )
 
 STATUSES = ("active", "superseded", "retired", "stale")
 # By hand, a memory can come back only from a state nothing replaced it in.
 RESTORABLE = ("retired", "stale")
+# The unattended run's default (``RunConfig.curate_max_age_days``): a session that has
+# waited longer is passed over, so sending an older one back would change nothing.
+CURATE_MAX_AGE_DAYS = 21.0
 
 
 def _memory(row: MemoryRow) -> dict[str, object]:
@@ -158,6 +165,7 @@ def sessions(
     *,
     project: str | None = None,
     tool: str | None = None,
+    scope: str | None = None,
     query: str | None = None,
     pending: bool = False,
     limit: int = 200,
@@ -173,6 +181,9 @@ def sessions(
     if tool is not None:
         sql += " AND tool=?"
         args.append(tool)
+    if scope is not None:
+        sql += " AND scope=?"
+        args.append(scope)
     if pending:
         sql += " AND digest_version > curated_version"
     for word in _words(query or ""):
@@ -230,7 +241,39 @@ def session(store: AutoStore, source_key: str) -> dict[str, object] | None:
             (source_key,),
         )
     ]
-    return {**_session(row, full=True), "memories": fed}
+    return {**_session(row, full=True), "memories": fed, "curation": _curation(row)}
+
+
+def _curation(row: SessionRow, *, now: datetime | None = None) -> dict[str, object]:
+    """Whether a run would read this session if it were waiting, and if not, why.
+
+    ``blocked`` lists what makes the run pass over it whatever its place in the queue
+    (the same checks as ``curate``). ``note`` is something that depends on how the run is
+    started.
+    """
+    blocked: list[str] = []
+    if not row.digest:
+        blocked.append("it has no digest to read")
+    if row.project is None:
+        blocked.append("its workspace is unknown")
+    elif is_ephemeral_project(row.project):
+        blocked.append("its workspace is a scratch, benchmark or deleted directory")
+    cutoff = ((now or datetime.now(UTC)) - timedelta(days=CURATE_MAX_AGE_DAYS)).isoformat(
+        timespec="seconds"
+    )
+    if (row.last_activity or "") < cutoff:
+        blocked.append(
+            f"its last activity is more than {CURATE_MAX_AGE_DAYS:g} days ago; "
+            "the run marks such sessions done without reading them"
+        )
+    if row.digest and row.summary_origin != "native" and len(row.digest) < TRIVIAL_DIGEST_CHARS:
+        blocked.append("it is one short exchange, too little to distil")
+    note = (
+        "It belongs to OpenClaw agents; the run curates it only when started with that scope."
+        if row.scope == "openclaw"
+        else None
+    )
+    return {"blocked": blocked, "note": note}
 
 
 def runs(store: AutoStore, *, limit: int = 30) -> list[dict[str, object]]:
@@ -279,6 +322,24 @@ def restore(store: AutoStore, memory_id: str, reason: str) -> dict[str, object]:
     return updated
 
 
+def _tidy(text: str) -> str:
+    """Memory text as the run writes it: one line, within the length the prompts allow.
+    A line break would split the entry where memory is listed one per line."""
+    tidy = " ".join(text.split())
+    if not tidy:
+        raise ValueError("the text is empty")
+    if len(tidy) > MAX_TEXT_CHARS:
+        raise ValueError(
+            f"the text has {len(tidy)} characters; a memory holds at most {MAX_TEXT_CHARS}"
+        )
+    return tidy
+
+
+def _same_text(store: AutoStore, project: str, kind: str, text: str) -> MemoryRow | None:
+    """The entry that already holds this text for the workspace and kind, in any status."""
+    return store.get_memory(memory_id_for(project, kind, scrub_secrets(text)))
+
+
 def edit(store: AutoStore, memory_id: str, text: str, reason: str) -> dict[str, object]:
     """Reword an active memory. The old wording is kept as superseded and the new entry
     points back at it, so the change can be read in both histories."""
@@ -287,8 +348,14 @@ def edit(store: AutoStore, memory_id: str, text: str, reason: str) -> dict[str, 
         raise ValueError(f"no memory {memory_id}")
     if row.status != ACTIVE:
         raise ValueError(f"{memory_id} is {row.status}; only an active memory can be edited")
-    if not text.strip():
-        raise ValueError("the new text is empty")
+    text = _tidy(text)
+    # Checked before anything is written: adding the text of an existing entry would
+    # confirm (and reactivate) that entry instead of creating one.
+    taken = _same_text(store, row.project, row.kind, text)
+    if taken is not None:
+        if taken.memory_id == memory_id:
+            raise ValueError("the text did not change")
+        raise ValueError(f"{taken.memory_id} ({taken.status}) already says this")
     new_id, _created = store.add_memory(
         project=row.project,
         scope="openclaw" if row.scope == "openclaw" else "coding",
@@ -298,8 +365,6 @@ def edit(store: AutoStore, memory_id: str, text: str, reason: str) -> dict[str, 
         run_id=None,
         supersedes_id=memory_id,
     )
-    if new_id == memory_id:
-        raise ValueError("the text did not change")
     store.set_memory_status(
         memory_id,
         "superseded",
@@ -329,9 +394,13 @@ def add(store: AutoStore, project: str, kind: str, text: str, reason: str) -> di
     """Write a memory by hand. It has no session behind it, which its history says."""
     if kind not in MEMORY_KINDS:
         raise ValueError(f"unknown kind {kind}; choose from {', '.join(MEMORY_KINDS)}")
-    if not text.strip():
-        raise ValueError("the text is empty")
-    memory_id, created = store.add_memory(
+    if not project.strip():
+        raise ValueError("the workspace is empty")
+    text = _tidy(text)
+    taken = _same_text(store, project, kind, text)
+    if taken is not None:
+        raise ValueError(f"{taken.memory_id} ({taken.status}) already says this")
+    memory_id, _created = store.add_memory(
         project=project,
         scope=_scope_of(store, project),
         kind=kind,
@@ -339,8 +408,6 @@ def add(store: AutoStore, project: str, kind: str, text: str, reason: str) -> di
         evidence=[],
         run_id=None,
     )
-    if not created:
-        raise ValueError(f"{memory_id} already says this")
     store._event(memory_id, "note", {"reason": f"by hand: {reason}".strip()}, None)
     store._connection.commit()
     updated = memory(store, memory_id)
@@ -352,8 +419,12 @@ def _set_curated(store: AutoStore, source_key: str, *, pending: bool) -> dict[st
     row = store.get_session(source_key)
     if row is None:
         raise ValueError(f"no session {source_key}")
-    if pending and not row.digest:
-        raise ValueError(f"{source_key} has no digest to curate")
+    if pending:
+        blocked = _curation(row)["blocked"]
+        assert isinstance(blocked, list)
+        if blocked:
+            # Saying "queued" would be untrue: the run would pass over it.
+            raise ValueError(f"{source_key} would not be curated: {'; '.join(blocked)}")
     version = row.digest_version - 1 if pending else row.digest_version
     store._connection.execute(
         "UPDATE auto_sessions SET curated_version=?, updated_at=? WHERE source_key=?",

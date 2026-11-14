@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from test_auto_pipeline import NOW
 from typer.testing import CliRunner
 
 from session2memory.auto import console
+from session2memory.auto import curate as curate_module
 from session2memory.auto.run import DB_NAME
 from session2memory.auto.store import AutoStore
 from session2memory.cli import app
@@ -268,14 +270,122 @@ def test_a_memory_added_by_hand_says_so_in_its_history(tmp_path: Path) -> None:
     assert wrong_kind[0] == 1 and "unknown kind" in str(wrong_kind[1]["error"])
 
 
+def add_session(
+    store_dir: Path,
+    key: str,
+    project: str | None,
+    *,
+    days_ago: float = 1,
+    digest: str = "U: 問題\nA: " + "回覆" * 120,
+) -> None:
+    """A curated session whose age is counted from today, as the console counts it."""
+    seen = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+    store = AutoStore.open(store_dir / DB_NAME)
+    try:
+        store.upsert_session(
+            source_key=key, tool="codex", session_id=key.partition(":")[2], agent="codex",
+            scope="coding", project=project, title=None, digest=digest, version_no=1,
+            last_activity=seen, native_summary=None,
+        )  # fmt: skip
+        store.mark_curated(key, 1, title="標題", summary="摘要")
+    finally:
+        store.close()
+
+
+@pytest.fixture
+def real_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pytest's temporary directories lie under a path the run takes for scratch."""
+    monkeypatch.setattr(curate_module, "EPHEMERAL_MARKERS", ())
+
+
+@pytest.mark.usefixtures("real_paths")
 def test_a_session_can_be_sent_back_to_curation_or_past_it(tmp_path: Path) -> None:
     store_dir, _ = build(tmp_path)
+    work = tmp_path / "real-workspace"
+    work.mkdir()
+    add_session(store_dir, "codex:live", work.as_posix())
 
-    back = data(store_dir, "requeue", "--key", "codex:s1")
-    passed = data(store_dir, "skip", "--key", "claude:s2")
-
-    assert back["pending"] is True and back["summary"] == "改用 Parquet"  # type: ignore[index]
-    assert passed["pending"] is False  # type: ignore[index]
+    before = data(store_dir, "session", "--key", "codex:live")
+    back = data(store_dir, "requeue", "--key", "codex:live")
     waiting = data(store_dir, "sessions", "--pending")
-    assert {s["key"] for s in waiting} == {"codex:s1", "cursor:s3"}  # type: ignore[union-attr]
+    passed = data(store_dir, "skip", "--key", "codex:live")
+
+    assert before["curation"] == {"blocked": [], "note": None}  # type: ignore[index]
+    assert back["pending"] is True and back["summary"] == "摘要"  # type: ignore[index]
+    assert "codex:live" in {s["key"] for s in waiting}  # type: ignore[union-attr]
+    assert passed["pending"] is False  # type: ignore[index]
     assert call(store_dir, "requeue", "--key", "codex:nope")[0] == 1
+
+
+@pytest.mark.usefixtures("real_paths")
+def test_a_session_the_run_would_pass_over_is_not_queued(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+    work = tmp_path / "real-workspace"
+    work.mkdir()
+    add_session(store_dir, "codex:old", work.as_posix(), days_ago=30)
+    add_session(store_dir, "codex:short", work.as_posix(), digest="U: 好\nA: 好")
+    add_session(store_dir, "codex:gone", (tmp_path / "deleted").as_posix())
+    add_session(store_dir, "codex:nowhere", None)
+
+    for key, why in [
+        ("codex:old", "more than 21 days ago"),
+        ("codex:short", "too little to distil"),
+        ("codex:gone", "scratch, benchmark or deleted"),
+        ("codex:nowhere", "workspace is unknown"),
+    ]:
+        code, payload = call(store_dir, "requeue", "--key", key)
+        shown = data(store_dir, "session", "--key", key)
+        assert code == 1 and why in str(payload["error"]), key
+        assert shown["pending"] is False, "refused, so nothing changed"  # type: ignore[index]
+        assert any(why in one for one in shown["curation"]["blocked"])  # type: ignore[index]
+    # Leaving the queue is always possible.
+    assert data(store_dir, "skip", "--key", "codex:old")["pending"] is False  # type: ignore[index]
+
+
+def test_sessions_are_filtered_by_scope(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+
+    assert len(data(store_dir, "sessions", "--scope", "coding")) == 3  # type: ignore[arg-type]
+    assert data(store_dir, "sessions", "--scope", "openclaw") == []
+    assert call(store_dir, "sessions", "--scope", "other")[0] == 1
+
+
+def test_memory_text_is_kept_to_one_line_and_a_length(tmp_path: Path) -> None:
+    store_dir, ids = build(tmp_path)
+
+    added = data(
+        store_dir, "add", "--project", ALPHA, "--kind", "fact",
+        "--text", "第一行\n  第二行\t結尾 ", "--reason", "x",
+    )  # fmt: skip
+    too_long = call(store_dir, "edit", "--id", ids["new"], "--text", "長" * 241, "--reason", "x")
+    blank = call(
+        store_dir, "add", "--project", ALPHA, "--kind", "fact", "--text", " \n ", "--reason", "x"
+    )
+
+    assert added["text"] == "第一行 第二行 結尾"  # type: ignore[index]
+    assert too_long[0] == 1 and "at most 240" in str(too_long[1]["error"])
+    assert blank[0] == 1 and "empty" in str(blank[1]["error"])
+    assert data(store_dir, "memory", "--id", ids["new"])["status"] == "active"  # type: ignore[index]
+
+
+def test_text_another_entry_already_holds_is_refused_before_anything_changes(
+    tmp_path: Path,
+) -> None:
+    store_dir, ids = build(tmp_path)
+
+    # "gone" is retired and says "CI 用 Python 3.11"; neither path may bring it back.
+    as_edit = call(
+        store_dir, "edit", "--id", ids["new"], "--text", "CI 用 Python 3.11", "--reason", "x"
+    )
+    as_add = call(
+        store_dir, "add", "--project", ALPHA, "--kind", "decision",
+        "--text", " CI 用 Python 3.11 ", "--reason", "x",
+    )  # fmt: skip
+
+    for code, payload in (as_edit, as_add):
+        assert code == 1 and f"{ids['gone']} (retired) already says this" in str(payload["error"])
+    gone = data(store_dir, "memory", "--id", ids["gone"])
+    untouched = data(store_dir, "memory", "--id", ids["new"])
+    assert gone["status"] == "retired"  # type: ignore[index]
+    assert [event["op"] for event in gone["events"]] == ["add", "retired"]  # type: ignore[index]
+    assert untouched["status"] == "active"  # type: ignore[index]

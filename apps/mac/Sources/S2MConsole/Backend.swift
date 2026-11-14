@@ -189,26 +189,35 @@ struct Backend {
         try await console(Self.searchArguments(query: query, project: project, status: status))
     }
 
+    /// How many search results are asked for; as many shown means there may be more.
+    static let searchLimit = 500
+
     static func searchArguments(query: String, project: String?, status: String) -> [String] {
-        var arguments = ["search", "--query", query, "--status", status]
+        var arguments = [
+            "search", "--query", query, "--status", status, "--limit", String(searchLimit),
+        ]
         if let project, !project.isEmpty { arguments += ["--project", project] }
         return arguments
     }
 
     func sessions(
-        project: String?, tool: String?, query: String = "", pendingOnly: Bool = false, limit: Int
+        project: String?, tool: String?, scope: String = "", query: String = "",
+        pendingOnly: Bool = false, limit: Int
     ) async throws -> [SessionSummary] {
         try await console(
             Self.sessionsArguments(
-                project: project, tool: tool, query: query, pendingOnly: pendingOnly, limit: limit))
+                project: project, tool: tool, scope: scope, query: query,
+                pendingOnly: pendingOnly, limit: limit))
     }
 
     static func sessionsArguments(
-        project: String?, tool: String?, query: String, pendingOnly: Bool, limit: Int
+        project: String?, tool: String?, scope: String = "", query: String, pendingOnly: Bool,
+        limit: Int
     ) -> [String] {
         var arguments = ["sessions", "--limit", String(limit)]
         if let project, !project.isEmpty { arguments += ["--project", project] }
         if let tool, !tool.isEmpty { arguments += ["--tool", tool] }
+        if !scope.isEmpty { arguments += ["--scope", scope] }
         let words = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !words.isEmpty { arguments += ["--query", words] }
         if pendingOnly { arguments.append("--pending") }

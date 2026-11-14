@@ -108,20 +108,83 @@ func filterProjects(_ projects: [Project], by text: String) -> [Project] {
     }
 }
 
-/// A note that something was done (not an error).
-struct InfoBanner: View {
-    let message: String
+/// What a change came to. Kept apart from loading errors, so a reload that succeeds
+/// afterwards does not wipe out what failed.
+struct ActionNote: Equatable {
+    let text: String
+    let failed: Bool
+
+    init(_ outcome: BatchOutcome, verb: String) {
+        text = outcome.summary(verb: verb)
+        failed = !outcome.failures.isEmpty
+    }
+
+    init(text: String, failed: Bool = false) {
+        self.text = text
+        self.failed = failed
+    }
+}
+
+/// Shows an `ActionNote` until it is dismissed or the next change replaces it.
+struct NoteBanner: View {
+    let note: ActionNote
+    let dismiss: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-            Text(message).textSelection(.enabled)
+            Image(systemName: note.failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundColor(note.failed ? .orange : .green)
+            Text(note.text).textSelection(.enabled)
             Spacer(minLength: 0)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
         }
         .padding(8)
-        .background(Color.green.opacity(0.12))
+        .background((note.failed ? Color.orange : Color.green).opacity(0.12))
         .cornerRadius(6)
     }
+}
+
+/// The most characters a memory holds (`MAX_TEXT_CHARS` in the Python package).
+let memoryTextLimit = 240
+
+/// Memory text as it will be stored: runs of spaces and line breaks become one space.
+func tidyText(_ text: String) -> String {
+    text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+}
+
+/// "128 / 240", red past the limit.
+struct LengthCount: View {
+    let text: String
+
+    var body: some View {
+        let count = tidyText(text).count
+        Text("\(count) / \(memoryTextLimit)")
+            .font(.caption)
+            .foregroundColor(count > memoryTextLimit ? .red : .secondary)
+    }
+}
+
+/// The workspaces the Memory pane lists: those matching the filter, and, unless asked
+/// otherwise, only those that have memory in some status. The chosen one always stays.
+func workspacesToList(
+    _ projects: [Project], filter: String, withoutMemory: Bool, keeping chosen: String?
+) -> [Project] {
+    filterProjects(projects, by: filter).filter { project in
+        withoutMemory || project.project == chosen
+            || project.active + project.superseded + project.retired + project.stale > 0
+    }
+}
+
+/// The folder a workspace lies in, with the home folder written as "~".
+func parentFolder(of path: String, home: String = NSHomeDirectory()) -> String {
+    let parent = (path as NSString).deletingLastPathComponent
+    if parent == home { return "~" }
+    if parent.hasPrefix(home + "/") { return "~" + parent.dropFirst(home.count) }
+    return parent
 }
 
 /// A row of ready-made reasons that fill the reason field.
