@@ -8,7 +8,14 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from session2memory.models import ExtractionSource, MemoryCandidate, MemoryKind, WorkspaceIdentity
+from session2memory.agent_metadata import AGENT_METADATA_KEYS, sanitize_agent_metadata
+from session2memory.models import (
+    AgentMetadata,
+    ExtractionSource,
+    MemoryCandidate,
+    MemoryKind,
+    WorkspaceIdentity,
+)
 from session2memory.review_normalize import normalize_review_text
 from session2memory.state.ids import (
     candidate_id_for,
@@ -129,6 +136,7 @@ class StateStore:
         candidate: MemoryCandidate,
     ) -> StoredCandidate:
         normalized = normalize_review_text(candidate.text)
+        agent_metadata_json = _agent_metadata_json(candidate.agent_metadata)
         evidence_id = evidence_id_for(
             tool=candidate.evidence.tool,
             session_id=candidate.evidence.session_id,
@@ -158,8 +166,8 @@ class StateStore:
                 candidate_id, import_date, workspace_id, kind, text, text_normalized,
                 extraction, confidence, evidence_quote, durable, evidence_id, review_id,
                 review_status, review_note, tool, session_id, source_path,
-                message_start, message_end, message_digest, workspace_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                message_start, message_end, message_digest, workspace_path, agent_metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(candidate_id) DO UPDATE SET
                 import_date=excluded.import_date,
                 text=excluded.text,
@@ -167,7 +175,8 @@ class StateStore:
                 extraction=excluded.extraction,
                 confidence=excluded.confidence,
                 evidence_quote=excluded.evidence_quote,
-                durable=excluded.durable
+                durable=excluded.durable,
+                agent_metadata_json=excluded.agent_metadata_json
             """,
             (
                 candidate_id,
@@ -193,6 +202,7 @@ class StateStore:
                 candidate.evidence.workspace_path.as_posix()
                 if candidate.evidence.workspace_path
                 else None,
+                agent_metadata_json,
             ),
         )
         self._connection.commit()
@@ -274,6 +284,7 @@ class StateStore:
         session_id: str = "unknown",
         message_start: int | None = None,
         message_end: int | None = None,
+        agent_metadata: AgentMetadata | None = None,
         supersedes_id: str | None = None,
     ) -> str:
         memory_entry_id = memory_entry_id_for(
@@ -287,8 +298,8 @@ class StateStore:
             INSERT INTO memory_entries (
                 memory_entry_id, workspace_id, candidate_id, kind, text,
                 evidence_id, review_ref, tool, session_id, message_start, message_end,
-                status, supersedes_id, promoted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                agent_metadata_json, status, supersedes_id, promoted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
             ON CONFLICT(memory_entry_id) DO NOTHING
             """,
             (
@@ -303,6 +314,7 @@ class StateStore:
                 session_id,
                 message_start,
                 message_end,
+                _agent_metadata_json(agent_metadata),
                 supersedes_id,
                 promoted_at,
             ),
@@ -513,7 +525,17 @@ class StateStore:
         )
         self._connection.executescript(schema)
         self._drop_legacy_evidence_unique_index(schema)
-        self._ensure_memory_entry_columns()
+        self._ensure_columns("candidates", {"agent_metadata_json": "TEXT"})
+        self._ensure_columns(
+            "memory_entries",
+            {
+                "tool": "TEXT",
+                "session_id": "TEXT",
+                "message_start": "INTEGER",
+                "message_end": "INTEGER",
+                "agent_metadata_json": "TEXT",
+            },
+        )
         self._connection.commit()
 
     def _drop_legacy_evidence_unique_index(self, schema: str) -> None:
@@ -549,20 +571,12 @@ class StateStore:
         )
         self._connection.execute("DROP TABLE _candidates_legacy")
 
-    def _ensure_memory_entry_columns(self) -> None:
-        rows = self._connection.execute("PRAGMA table_info(memory_entries)").fetchall()
+    def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
+        rows = self._connection.execute(f"PRAGMA table_info({table})").fetchall()
         existing = {str(row["name"]) for row in rows if isinstance(row, sqlite3.Row)}
-        columns = {
-            "tool": "TEXT",
-            "session_id": "TEXT",
-            "message_start": "INTEGER",
-            "message_end": "INTEGER",
-        }
         for name, column_type in columns.items():
             if name not in existing:
-                self._connection.execute(
-                    f"ALTER TABLE memory_entries ADD COLUMN {name} {column_type}"
-                )
+                self._connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
 
     def _row_to_stored(self, row: sqlite3.Row) -> StoredCandidate:
         from session2memory.models import EvidencePointer
@@ -600,6 +614,7 @@ class StateStore:
             extraction=extraction,
             confidence=float(row["confidence"]) if row["confidence"] is not None else None,
             evidence_quote=str(row["evidence_quote"]) if row["evidence_quote"] else None,
+            agent_metadata=_agent_metadata_from_json(row["agent_metadata_json"]),
         )
         return StoredCandidate(
             candidate=candidate,
@@ -628,20 +643,27 @@ def _render_memory_markdown(*, workspace_id: str, rows: list[sqlite3.Row]) -> st
 
 
 def _memory_entry_line(row: sqlite3.Row) -> str:
-    metadata = {
-        "workspace_id": str(row["workspace_id"]),
-        "memory_kind": str(row["kind"]),
-        "tool": str(row["tool"] or "unknown"),
-        "session_id": str(row["session_id"] or "unknown"),
-        "evidence_id": str(row["evidence_id"]),
-        "lines": _line_range(row),
-        "review": str(row["review_ref"]),
-        "memory_id": str(row["memory_entry_id"]),
-    }
+    metadata = [
+        ("workspace_id", str(row["workspace_id"])),
+        ("memory_kind", str(row["kind"])),
+        ("tool", str(row["tool"] or "unknown")),
+        ("session_id", str(row["session_id"] or "unknown")),
+        ("evidence_id", str(row["evidence_id"])),
+        ("lines", _line_range(row)),
+        ("review", str(row["review_ref"])),
+        ("memory_id", str(row["memory_entry_id"])),
+    ]
+    agent_metadata = _agent_metadata_from_json(row["agent_metadata_json"])
+    if agent_metadata:
+        metadata.extend(
+            (key, agent_metadata[key])
+            for key in AGENT_METADATA_KEYS
+            if key in agent_metadata
+        )
     supersedes = row["supersedes_id"]
     if supersedes:
-        metadata["supersedes"] = str(supersedes)
-    meta = " ".join(f"{key}={value}" for key, value in metadata.items())
+        metadata.append(("supersedes", str(supersedes)))
+    meta = " ".join(f"{key}={value}" for key, value in metadata)
     return f"- [{row['kind']}] {row['text']} {{{meta}}}"
 
 
@@ -653,3 +675,21 @@ def _line_range(row: sqlite3.Row) -> str:
     if end is None:
         end = start
     return f"{start}-{end}"
+
+
+def _agent_metadata_json(agent_metadata: AgentMetadata | None) -> str | None:
+    if not agent_metadata:
+        return None
+    return json.dumps(agent_metadata, ensure_ascii=False, sort_keys=True)
+
+
+def _agent_metadata_from_json(raw: object) -> AgentMetadata | None:
+    if not raw:
+        return None
+    try:
+        loaded = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    return sanitize_agent_metadata(loaded)

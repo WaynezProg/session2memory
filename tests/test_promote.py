@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -98,6 +99,76 @@ def write_review_fixture(output: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def test_promote_preserves_agent_metadata_on_memory_record(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    metadata = {
+        "agent_runtime": "claude-code",
+        "agent_id": "claude-glm-vscode",
+        "provider": "glm",
+        "model": "glm-5.1",
+        "entrypoint": "claude-glm-vscode",
+        "source_app": "vscode-extension",
+    }
+    marker_path = home / ".local" / "share" / "session2memory" / "active-agent.json"
+    marker_path.parent.mkdir(parents=True)
+    marker_path.write_text(json.dumps(metadata), encoding="utf-8")
+    output = tmp_path / "session-memory"
+    runner = CliRunner()
+
+    imported = runner.invoke(
+        app,
+        [
+            "import",
+            "--date",
+            "2026-05-22",
+            "--tool",
+            "claude",
+            "--source-root",
+            "claude=tests/fixtures/claude",
+            "--output",
+            str(output),
+        ],
+        env={"HOME": str(home)},
+    )
+    review_row = json.loads((output / "review" / "2026-05-22.jsonl").read_text(encoding="utf-8"))
+    approved = runner.invoke(
+        app,
+        [
+            "review",
+            "approve",
+            str(review_row["id"]),
+            "--date",
+            "2026-05-22",
+            "--output",
+            str(output),
+        ],
+    )
+    promoted = runner.invoke(
+        app,
+        ["review", "promote", "--date", "2026-05-22", "--output", str(output)],
+    )
+
+    assert imported.exit_code == 0
+    assert approved.exit_code == 0
+    assert promoted.exit_code == 0
+    memory_path = next((output / "memories").glob("*.md"))
+    memory = memory_path.read_text(encoding="utf-8")
+    assert "agent_runtime=claude-code" in memory
+    assert "agent_id=claude-glm-vscode" in memory
+    assert "provider=glm" in memory
+    assert "model=glm-5.1" in memory
+
+    connection = sqlite3.connect(output / "session2memory.db")
+    try:
+        stored = connection.execute(
+            "SELECT agent_metadata_json FROM memory_entries"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert stored is not None
+    assert json.loads(stored[0]) == metadata
 
 
 def test_promote_approved_review_entries_to_workspace_memories(tmp_path: Path) -> None:

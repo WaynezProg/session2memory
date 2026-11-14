@@ -99,6 +99,7 @@ def items_to_candidates(
                 extraction="llm",
                 confidence=item.confidence,
                 evidence_quote=item.evidence_quote,
+                observed_at=message.timestamp,
             )
         )
     return candidates

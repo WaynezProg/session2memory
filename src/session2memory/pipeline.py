@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol
 
+from session2memory.agent_metadata import AgentMetadataResolver
 from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.extraction import extract_candidates
 from session2memory.filtering import is_noise
@@ -37,6 +39,7 @@ def run_pipeline(
     agentic_os_sessions_only: bool = False,
     llm_backend: LlmExtractBackend | None = None,
     state_store: StateStore | None = None,
+    agent_metadata_resolver: AgentMetadataResolver | None = None,
 ) -> tuple[int, int]:
     session_count = 0
     message_count = 0
@@ -101,6 +104,10 @@ def run_pipeline(
             session_candidates = marker_candidates + merge_llm_candidates(
                 existing=marker_candidates,
                 llm_candidates=llm_candidates,
+            )
+            session_candidates = _attach_agent_metadata(
+                session_candidates,
+                agent_metadata_resolver=agent_metadata_resolver,
             )
             if state_store is not None:
                 locators = {
@@ -176,6 +183,27 @@ def _extract_llm_candidates(
         messages=messages,
         workspace_id=workspace.workspace_id,
     )
+
+
+def _attach_agent_metadata(
+    candidates: list[MemoryCandidate],
+    *,
+    agent_metadata_resolver: AgentMetadataResolver | None,
+) -> list[MemoryCandidate]:
+    if agent_metadata_resolver is None:
+        return candidates
+    attached: list[MemoryCandidate] = []
+    for candidate in candidates:
+        if candidate.evidence.tool != "claude":
+            attached.append(candidate)
+            continue
+        metadata = agent_metadata_resolver.metadata_for(candidate.observed_at)
+        attached.append(
+            replace(candidate, agent_metadata=metadata)
+            if metadata is not None
+            else candidate
+        )
+    return attached
 
 
 def _has_other_roots(adapter: PipelineAdapter, source_root: Path) -> bool:

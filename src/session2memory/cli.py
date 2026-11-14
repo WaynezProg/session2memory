@@ -29,6 +29,11 @@ from session2memory.adapters import (
 )
 from session2memory.adapters.codex import discover_codex_homes
 from session2memory.adapters.registry import load_plugin_adapters
+from session2memory.agent_metadata import (
+    DEFAULT_AGENT_METADATA_FILE,
+    DEFAULT_AGENT_METADATA_LOG_FILE,
+    load_agent_metadata_resolver,
+)
 from session2memory.agentic_os_index import AgenticOsIndex
 from session2memory.auto import console
 from session2memory.auto.run import ALL_STEPS, AutoConfig, run_auto
@@ -1194,6 +1199,20 @@ def import_sessions(
         Path | None,
         typer.Option("--state-db", help="Override state database path."),
     ] = None,
+    agent_metadata_file: Annotated[
+        Path,
+        typer.Option(
+            "--agent-metadata-file",
+            help="Read optional launcher metadata marker JSON fallback.",
+        ),
+    ] = DEFAULT_AGENT_METADATA_FILE,
+    agent_metadata_log: Annotated[
+        Path,
+        typer.Option(
+            "--agent-metadata-log",
+            help="Read optional launcher metadata event log JSONL.",
+        ),
+    ] = DEFAULT_AGENT_METADATA_LOG_FILE,
     include_openclaw_codex_homes: Annotated[
         bool,
         typer.Option(
@@ -1208,6 +1227,14 @@ def import_sessions(
     parsed_date = _parse_date(date)
     overrides = _parse_source_root(source_root or [])
     selected_tools = _selected_tools(tool, overrides)
+    agent_metadata_resolver = None
+    if "claude" in selected_tools:
+        agent_metadata_resolver, agent_metadata_warnings = load_agent_metadata_resolver(
+            marker_path=agent_metadata_file,
+            log_path=agent_metadata_log,
+        )
+        for warning in agent_metadata_warnings:
+            typer.echo(f"warning: {warning}", err=True)
     source_roots = _default_source_roots()
     source_roots.update(overrides)
     selected_source_roots = {tool_name: source_roots[tool_name] for tool_name in selected_tools}
@@ -1250,6 +1277,7 @@ def import_sessions(
             agentic_os_sessions_only=agentic_os_sessions_only,
             llm_backend=llm_backend_instance,
             state_store=state_store,
+            agent_metadata_resolver=agent_metadata_resolver,
         )
     finally:
         if state_store is not None:

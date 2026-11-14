@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from session2memory.adapters.base import iter_text_lines
 from session2memory.adapters.cursor import cursor_clean_text, cursor_texts_from_content
+from session2memory.agent_metadata import AGENT_METADATA_KEYS, sanitize_agent_metadata
 from session2memory.memory_lifecycle import open_state_store
 from session2memory.review_conflicts import (
     ConflictResolve,
@@ -804,6 +805,11 @@ def _memory_metadata(*, row: dict[str, Any], evidence_id: str, review_ref: str) 
         f"lines={message_start}-{message_end}",
         f"review={review_ref}",
     ]
+    agent_metadata = _row_agent_metadata(row)
+    if agent_metadata:
+        metadata.extend(
+            f"{key}={agent_metadata[key]}" for key in AGENT_METADATA_KEYS if key in agent_metadata
+        )
     memory_entry_id = row.get("memory_entry_id")
     if memory_entry_id:
         metadata.append(f"memory_id={memory_entry_id}")
@@ -835,7 +841,15 @@ def _insert_memory_entry_from_review(
         session_id=str(source.get("session_id", "unknown")),
         message_start=_positive_int(source.get("message_start")),
         message_end=_positive_int(source.get("message_end")),
+        agent_metadata=_row_agent_metadata(row),
     )
+
+
+def _row_agent_metadata(row: dict[str, Any]) -> dict[str, str] | None:
+    raw = row.get("agent_metadata")
+    if not isinstance(raw, dict):
+        return None
+    return sanitize_agent_metadata(raw)
 
 
 def _promotion_key(row: dict[str, Any]) -> str:

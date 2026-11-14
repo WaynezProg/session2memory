@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS candidates (
     message_start INTEGER NOT NULL,
     message_end INTEGER NOT NULL,
     message_digest TEXT NOT NULL,
-    workspace_path TEXT
+    workspace_path TEXT,
+    agent_metadata_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_candidates_import_date ON candidates (import_date);
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     session_id TEXT,
     message_start INTEGER,
     message_end INTEGER,
+    agent_metadata_json TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     supersedes_id TEXT,
     promoted_at TEXT NOT NULL

@@ -290,7 +290,7 @@ def _evidence_record(
     *,
     agentic_os_index: AgenticOsIndex | None = None,
 ) -> dict[str, Any]:
-    record = candidate.evidence.to_json()
+    record: dict[str, Any] = candidate.evidence.to_json()
     record.update(
         {
             "id": evidence_id,
@@ -305,6 +305,8 @@ def _evidence_record(
             record,
             source_path=candidate.evidence.source_path,
         )
+    if candidate.agent_metadata:
+        record["agent_metadata"] = dict(candidate.agent_metadata)
     return record
 
 
@@ -338,6 +340,8 @@ def _review_record(
         record["confidence"] = candidate.confidence
     if candidate.evidence_quote:
         record["evidence_quote"] = candidate.evidence_quote
+    if candidate.agent_metadata:
+        record["agent_metadata"] = dict(candidate.agent_metadata)
     return record
 
 
