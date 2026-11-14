@@ -403,12 +403,18 @@ def curate(
         else None
     )
     by_project: dict[str, list[SessionRow]] = {}
+    # Sent back by a person (the console's "Curate Again"): read whatever their age.
+    by_hand = store.curate_by_hand()
     for session in store.pending_sessions():
         assert session.project is not None
         if scopes is not None and session.scope not in scopes:
             report.sessions_out_of_scope += 1
             continue
-        if cutoff is not None and (session.last_activity or "") < cutoff:
+        if (
+            cutoff is not None
+            and (session.last_activity or "") < cutoff
+            and session.source_key not in by_hand
+        ):
             # Too old to be worth a call now; the backlog must not grow without bound.
             store.mark_curated(session.source_key, session.digest_version)
             report.sessions_expired += 1
@@ -455,4 +461,7 @@ def curate(
                 report.sessions_left += len(batch)
                 continue
             apply_reply(store, project, batch, parsed, report, run_id=run_id, now=now)
+    if by_hand:
+        # Those that were read (or left the queue another way) need no marker any more.
+        store.set_curate_by_hand(by_hand & {one.source_key for one in store.pending_sessions()})
     return report

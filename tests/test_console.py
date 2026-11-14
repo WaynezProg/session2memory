@@ -1,15 +1,17 @@
-"""The JSON views the operator console reads, and its two write operations."""
+"""The JSON views the operator console reads, and the operations that change the store."""
 
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from test_auto_pipeline import NOW
 from typer.testing import CliRunner
 
 from session2memory.auto import console
+from session2memory.auto import curate as curate_module
 from session2memory.auto.run import DB_NAME
 from session2memory.auto.store import AutoStore
 from session2memory.cli import app
@@ -193,3 +195,254 @@ def test_reading_does_not_change_the_store(tmp_path: Path) -> None:
         assert console.memory(store, "m_missing") is None
     finally:
         store.close()
+
+
+def test_memory_is_searched_by_every_word_across_workspaces(tmp_path: Path) -> None:
+    store_dir, ids = build(tmp_path)
+
+    everywhere = data(store_dir, "search", "--query", "匯出 Parquet")
+    one_place = data(store_dir, "search", "--query", "migration", "--project", ALPHA)
+    any_status = data(store_dir, "search", "--query", "匯出格式", "--status", "all")
+    literal = data(store_dir, "search", "--query", "%")
+
+    assert [m["id"] for m in everywhere] == [ids["new"]]  # type: ignore[union-attr]
+    assert one_place == [], "the match is in the other workspace"
+    assert {m["id"] for m in any_status} == {ids["old"], ids["new"]}  # type: ignore[union-attr]
+    assert literal == [], "a percent sign is a character, not a wildcard"
+    assert call(store_dir, "search", "--query", "  ")[0] == 1
+
+
+def test_sessions_are_filtered_by_words_and_by_waiting_for_curation(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+
+    named = data(store_dir, "sessions", "--query", "Parquet")
+    waiting = data(store_dir, "sessions", "--pending")
+
+    assert [s["key"] for s in named] == ["codex:s1"]  # type: ignore[union-attr]
+    assert {s["key"] for s in waiting} == {"claude:s2", "cursor:s3"}  # type: ignore[union-attr]
+
+
+def test_editing_keeps_the_old_wording_as_superseded(tmp_path: Path) -> None:
+    store_dir, ids = build(tmp_path)
+
+    edited = data(
+        store_dir, "edit", "--id", ids["new"], "--text", "匯出一律用 Parquet", "--reason", "講清楚"
+    )
+    before = data(store_dir, "memory", "--id", ids["new"])
+
+    assert edited["id"] != ids["new"] and edited["status"] == "active"  # type: ignore[index]
+    assert edited["text"] == "匯出一律用 Parquet"  # type: ignore[index]
+    assert edited["supersedes_id"] == ids["new"]  # type: ignore[index]
+    assert edited["evidence"] == ["claude:s2"], "it rests on the same sessions"  # type: ignore[index]
+    assert "講清楚" in json.dumps(edited["events"], ensure_ascii=False)  # type: ignore[index]
+    assert before["status"] == "superseded"  # type: ignore[index]
+    assert before["replaced_by"] == [edited["id"]]  # type: ignore[index]
+    assert "講清楚" in json.dumps(before["events"], ensure_ascii=False)  # type: ignore[index]
+
+    same = call(
+        store_dir, "edit", "--id", edited["id"], "--text", "匯出一律用 Parquet", "--reason", "x"
+    )  # type: ignore[index]
+    not_active = call(store_dir, "edit", "--id", ids["gone"], "--text", "別的", "--reason", "x")
+    assert same[0] == 1 and "did not change" in str(same[1]["error"])
+    assert not_active[0] == 1 and "only an active memory" in str(not_active[1]["error"])
+
+
+def test_a_memory_added_by_hand_says_so_in_its_history(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+
+    added = data(
+        store_dir, "add", "--project", ALPHA, "--kind", "constraint",
+        "--text", "不要在 main 上直接 push", "--reason", "團隊規定",
+    )  # fmt: skip
+
+    assert (added["status"], added["kind"], added["evidence"]) == ("active", "constraint", [])  # type: ignore[index]
+    assert "團隊規定" in json.dumps(added["events"], ensure_ascii=False)  # type: ignore[index]
+    listed = data(store_dir, "memories", "--project", ALPHA)
+    assert added["id"] in [m["id"] for m in listed]  # type: ignore[index, union-attr]
+    again = call(
+        store_dir, "add", "--project", ALPHA, "--kind", "constraint",
+        "--text", "不要在 main 上直接 push", "--reason", "x",
+    )  # fmt: skip
+    wrong_kind = call(
+        store_dir, "add", "--project", ALPHA, "--kind", "rumour", "--text", "x", "--reason", "x"
+    )
+    assert again[0] == 1 and "already says this" in str(again[1]["error"])
+    assert wrong_kind[0] == 1 and "unknown kind" in str(wrong_kind[1]["error"])
+
+
+def add_session(
+    store_dir: Path,
+    key: str,
+    project: str | None,
+    *,
+    days_ago: float = 1,
+    digest: str = "U: 問題\nA: " + "回覆" * 120,
+) -> None:
+    """A curated session whose age is counted from today, as the console counts it."""
+    seen = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+    store = AutoStore.open(store_dir / DB_NAME)
+    try:
+        store.upsert_session(
+            source_key=key, tool="codex", session_id=key.partition(":")[2], agent="codex",
+            scope="coding", project=project, title=None, digest=digest, version_no=1,
+            last_activity=seen, native_summary=None,
+        )  # fmt: skip
+        store.mark_curated(key, 1, title="標題", summary="摘要")
+    finally:
+        store.close()
+
+
+@pytest.fixture
+def real_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """pytest's temporary directories lie under a path the run takes for scratch."""
+    monkeypatch.setattr(curate_module, "EPHEMERAL_MARKERS", ())
+
+
+FINE = {"blocked": [], "expires": False, "by_hand": False, "notes": []}
+
+
+@pytest.mark.usefixtures("real_paths")
+def test_a_session_can_be_sent_back_to_curation_or_past_it(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+    work = tmp_path / "real-workspace"
+    work.mkdir()
+    add_session(store_dir, "codex:live", work.as_posix())
+
+    before = data(store_dir, "session", "--key", "codex:live")
+    back = data(store_dir, "requeue", "--key", "codex:live")
+    waiting = data(store_dir, "sessions", "--pending")
+    passed = data(store_dir, "skip", "--key", "codex:live")
+
+    assert before["curation"] == FINE  # type: ignore[index]
+    assert back["pending"] is True and back["summary"] == "摘要"  # type: ignore[index]
+    assert back["curation"]["by_hand"] is True  # type: ignore[index]
+    assert "codex:live" in {s["key"] for s in waiting}  # type: ignore[union-attr]
+    assert passed["pending"] is False  # type: ignore[index]
+    assert passed["curation"] == FINE, "skipping takes the request back"  # type: ignore[index]
+    assert call(store_dir, "requeue", "--key", "codex:nope")[0] == 1
+
+
+@pytest.mark.usefixtures("real_paths")
+def test_a_session_no_run_would_read_is_not_queued(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+    work = tmp_path / "real-workspace"
+    work.mkdir()
+    add_session(store_dir, "codex:short", work.as_posix(), digest="U: 好\nA: 好")
+    add_session(store_dir, "codex:gone", (tmp_path / "deleted").as_posix())
+    add_session(store_dir, "codex:nowhere", None)
+
+    for key, why in [
+        ("codex:short", "too little to distil"),
+        ("codex:gone", "scratch, benchmark or deleted"),
+        ("codex:nowhere", "workspace is unknown"),
+    ]:
+        code, payload = call(store_dir, "requeue", "--key", key)
+        shown = data(store_dir, "session", "--key", key)
+        assert code == 1 and why in str(payload["error"]), key
+        assert shown["pending"] is False, "refused, so nothing changed"  # type: ignore[index]
+        assert shown["curation"]["by_hand"] is False  # type: ignore[index]
+        assert any(why in one for one in shown["curation"]["blocked"])  # type: ignore[index]
+    # Leaving the queue is always possible.
+    assert data(store_dir, "skip", "--key", "codex:short")["pending"] is False  # type: ignore[index]
+
+
+@pytest.mark.usefixtures("real_paths")
+def test_an_old_session_sent_back_by_hand_is_read_by_the_run(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+    work = tmp_path / "real-workspace"
+    work.mkdir()
+    add_session(store_dir, "codex:asked", work.as_posix(), days_ago=30)
+    add_session(store_dir, "codex:waiting", work.as_posix(), days_ago=30)
+    store = AutoStore.open(store_dir / DB_NAME)
+    try:
+        # One waits because nobody curated it; the other a person asks for.
+        store._connection.execute(
+            "UPDATE auto_sessions SET curated_version=0 WHERE source_key='codex:waiting'"
+        )
+        store._connection.commit()
+    finally:
+        store.close()
+
+    left = data(store_dir, "session", "--key", "codex:waiting")
+    asked = data(store_dir, "requeue", "--key", "codex:asked")
+    assert left["curation"]["expires"] is True  # type: ignore[index]
+    assert "more than 21 days" in left["curation"]["notes"][0]  # type: ignore[index]
+    assert asked["curation"]["expires"] is False  # type: ignore[index]
+    assert asked["curation"]["by_hand"] is True  # type: ignore[index]
+
+    seen: list[str] = []
+
+    def runner(prompt: str) -> curate_module.LlmReply:
+        seen.append(prompt)
+        read = [{"ref": "S1", "title": "標題", "summary": "重新整理過"}]
+        return curate_module.LlmReply(text=json.dumps({"sessions": read, "memory": []}))
+
+    store = AutoStore.open(store_dir / DB_NAME)
+    try:
+        report = curate_module.curate(store, runner, max_calls=5, max_age_days=21)
+        by_hand_after = store.curate_by_hand()
+        still = {one.source_key for one in store.pending_sessions()}
+    finally:
+        store.close()
+
+    assert report.sessions_expired == 1, "the one nobody asked for"
+    assert len(seen) == 1 and report.llm_calls == 1, "the one a person asked for was read"
+    assert "codex:asked" not in still and by_hand_after == set(), "and the marker is gone"
+
+
+def test_age_is_compared_as_a_moment_not_as_text() -> None:
+    now = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+
+    assert console._older_than("2026-10-24T18:00:00+08:00", 21, now), "10:00 UTC that day"
+    assert not console._older_than("2026-10-24T08:00:00-08:00", 21, now), "16:00 UTC that day"
+    assert not console._older_than("2026-11-01T00:00:00", 21, now), "no offset: taken as UTC"
+    assert console._older_than(None, 21, now)
+
+
+def test_sessions_are_filtered_by_scope(tmp_path: Path) -> None:
+    store_dir, _ = build(tmp_path)
+
+    assert len(data(store_dir, "sessions", "--scope", "coding")) == 3  # type: ignore[arg-type]
+    assert data(store_dir, "sessions", "--scope", "openclaw") == []
+    assert call(store_dir, "sessions", "--scope", "other")[0] == 1
+
+
+def test_memory_text_is_kept_to_one_line_and_a_length(tmp_path: Path) -> None:
+    store_dir, ids = build(tmp_path)
+
+    added = data(
+        store_dir, "add", "--project", ALPHA, "--kind", "fact",
+        "--text", "第一行\n  第二行\t結尾 ", "--reason", "x",
+    )  # fmt: skip
+    too_long = call(store_dir, "edit", "--id", ids["new"], "--text", "長" * 241, "--reason", "x")
+    blank = call(
+        store_dir, "add", "--project", ALPHA, "--kind", "fact", "--text", " \n ", "--reason", "x"
+    )
+
+    assert added["text"] == "第一行 第二行 結尾"  # type: ignore[index]
+    assert too_long[0] == 1 and "at most 240" in str(too_long[1]["error"])
+    assert blank[0] == 1 and "empty" in str(blank[1]["error"])
+    assert data(store_dir, "memory", "--id", ids["new"])["status"] == "active"  # type: ignore[index]
+
+
+def test_text_another_entry_already_holds_is_refused_before_anything_changes(
+    tmp_path: Path,
+) -> None:
+    store_dir, ids = build(tmp_path)
+
+    # "gone" is retired and says "CI 用 Python 3.11"; neither path may bring it back.
+    as_edit = call(
+        store_dir, "edit", "--id", ids["new"], "--text", "CI 用 Python 3.11", "--reason", "x"
+    )
+    as_add = call(
+        store_dir, "add", "--project", ALPHA, "--kind", "decision",
+        "--text", " CI 用 Python 3.11 ", "--reason", "x",
+    )  # fmt: skip
+
+    for code, payload in (as_edit, as_add):
+        assert code == 1 and f"{ids['gone']} (retired) already says this" in str(payload["error"])
+    gone = data(store_dir, "memory", "--id", ids["gone"])
+    untouched = data(store_dir, "memory", "--id", ids["new"])
+    assert gone["status"] == "retired"  # type: ignore[index]
+    assert [event["op"] for event in gone["events"]] == ["add", "retired"]  # type: ignore[index]
+    assert untouched["status"] == "active"  # type: ignore[index]

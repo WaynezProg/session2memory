@@ -14,30 +14,26 @@ enum SettingKey {
     static let hksCommand = "hksCommand"
     static let ksRoot = "ksRoot"
 
+    /// Everything empty: the commands are found without asking (`CommandFinder`), and a
+    /// value typed in Settings overrides what is found.
     static var defaults: [String: Any] {
-        let s2m = RepositoryFinder.session2memory()
-        return [
-            s2mDirectory: s2m ?? "",
-            s2mCommand: "uv run session2memory",
-            storeDirectory: "",
-            hksDirectory: s2m.flatMap(RepositoryFinder.hks(beside:)) ?? "",
-            hksCommand: "uv run ks",
-            ksRoot: "",
+        [
+            s2mDirectory: "", s2mCommand: "", storeDirectory: "", hksDirectory: "",
+            hksCommand: "", ksRoot: "",
         ]
     }
 }
 
-/// Finds the two repositories for the first start, so no personal path is built in.
-/// Settings override whatever is found here.
+/// Finds the checkout the app belongs to, if any, so no personal path is built in.
 enum RepositoryFinder {
     /// The session2memory checkout this app was built in or started from: the nearest
     /// folder above the executable or the working directory that holds its sources.
     static func session2memory(
         from starts: [String] = [
-            Bundle.main.bundlePath, FileManager.default.currentDirectoryPath,
+            Bundle.main.bundlePath, FileManager.default.currentDirectoryPath, builtFrom,
         ]
     ) -> String? {
-        for start in starts {
+        for start in starts where !start.isEmpty {
             var url = URL(fileURLWithPath: start).standardizedFileURL
             while url.path != "/" {
                 if isDirectory(url.appendingPathComponent("src/session2memory")) {
@@ -47,6 +43,12 @@ enum RepositoryFinder {
             }
         }
         return nil
+    }
+
+    /// The checkout `scripts/make-app.sh` built this bundle from, so a copy of the app
+    /// in /Applications still finds it. Empty for any other build.
+    static var builtFrom: String {
+        Bundle.main.object(forInfoDictionaryKey: "S2MBuiltFrom") as? String ?? ""
     }
 
     /// An HKS checkout next to the session2memory one, under its repository name.
@@ -133,19 +135,28 @@ struct Backend {
     let hksDirectory: String
     let hksCommand: String
     let ksRoot: String
+    /// False when no `ks` was found: a query then says how to get one.
+    var hksFound = true
 
+    /// The commands as last found (`AppState.detect`), with the settings that are not
+    /// found automatically. Before the first check, what Settings holds is used as is.
     static func current() -> Backend {
         let defaults = UserDefaults.standard
         func value(_ key: String) -> String {
             (defaults.string(forKey: key) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        let s2m = Detected.shared.s2m
+        let hks = Detected.shared.hks
+        let s2mCommand = value(SettingKey.s2mCommand)
+        let hksCommand = value(SettingKey.hksCommand)
         return Backend(
-            s2mDirectory: value(SettingKey.s2mDirectory),
-            s2mCommand: value(SettingKey.s2mCommand),
+            s2mDirectory: s2m?.directory ?? value(SettingKey.s2mDirectory),
+            s2mCommand: s2m?.command ?? (s2mCommand.isEmpty ? "uv run session2memory" : s2mCommand),
             storeDirectory: value(SettingKey.storeDirectory),
-            hksDirectory: value(SettingKey.hksDirectory),
-            hksCommand: value(SettingKey.hksCommand),
-            ksRoot: value(SettingKey.ksRoot))
+            hksDirectory: hks?.directory ?? value(SettingKey.hksDirectory),
+            hksCommand: hks?.command ?? (hksCommand.isEmpty ? "uv run ks" : hksCommand),
+            ksRoot: value(SettingKey.ksRoot),
+            hksFound: hks != nil || !Detected.shared.checked)
     }
 
     // MARK: session2memory
@@ -184,11 +195,44 @@ struct Backend {
         try await console(["memory", "--id", id])
     }
 
-    func sessions(project: String?, tool: String?, limit: Int) async throws -> [SessionSummary] {
+    /// Memory whose text holds every word of `query`, in one workspace or (nil) in all.
+    func search(query: String, project: String?, status: String) async throws -> [Memory] {
+        try await console(Self.searchArguments(query: query, project: project, status: status))
+    }
+
+    /// How many search results are asked for; as many shown means there may be more.
+    static let searchLimit = 500
+
+    static func searchArguments(query: String, project: String?, status: String) -> [String] {
+        var arguments = [
+            "search", "--query", query, "--status", status, "--limit", String(searchLimit),
+        ]
+        if let project, !project.isEmpty { arguments += ["--project", project] }
+        return arguments
+    }
+
+    func sessions(
+        project: String?, tool: String?, scope: String = "", query: String = "",
+        pendingOnly: Bool = false, limit: Int
+    ) async throws -> [SessionSummary] {
+        try await console(
+            Self.sessionsArguments(
+                project: project, tool: tool, scope: scope, query: query,
+                pendingOnly: pendingOnly, limit: limit))
+    }
+
+    static func sessionsArguments(
+        project: String?, tool: String?, scope: String = "", query: String, pendingOnly: Bool,
+        limit: Int
+    ) -> [String] {
         var arguments = ["sessions", "--limit", String(limit)]
         if let project, !project.isEmpty { arguments += ["--project", project] }
         if let tool, !tool.isEmpty { arguments += ["--tool", tool] }
-        return try await console(arguments)
+        if !scope.isEmpty { arguments += ["--scope", scope] }
+        let words = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !words.isEmpty { arguments += ["--query", words] }
+        if pendingOnly { arguments.append("--pending") }
+        return arguments
     }
 
     func session(key: String) async throws -> SessionDetail {
@@ -207,9 +251,38 @@ struct Backend {
         try await console(["restore", "--id", id, "--reason", reason])
     }
 
+    /// Reword an active memory; the answer is the new entry, the old one is superseded.
+    func edit(id: String, text: String, reason: String) async throws -> MemoryDetail {
+        try await console(["edit", "--id", id, "--text", text, "--reason", reason])
+    }
+
+    func add(project: String, kind: String, text: String, reason: String) async throws
+        -> MemoryDetail
+    {
+        try await console(
+            ["add", "--project", project, "--kind", kind, "--text", text, "--reason", reason])
+    }
+
+    /// Have the next run curate the session again.
+    func requeue(key: String) async throws -> SessionDetail {
+        try await console(["requeue", "--key", key])
+    }
+
+    /// Take the session out of the curation queue.
+    func skip(key: String) async throws -> SessionDetail {
+        try await console(["skip", "--key", key])
+    }
+
     // MARK: HKS
 
     func query(_ question: String) async throws -> QueryResponse {
+        guard hksFound else {
+            throw BackendError(
+                message: "HKS (`ks`) was not found. Install it in Terminal with: "
+                    + CommandFinder.hksInstall
+                    + " — then press Check Again in Settings. Queries are optional; the rest of the app does not need it."
+            )
+        }
         var command = ""
         if !ksRoot.isEmpty {
             command += "KS_ROOT=" + Shell.quote((ksRoot as NSString).expandingTildeInPath) + " "

@@ -126,6 +126,23 @@ struct SessionSummary: Decodable, Identifiable, Hashable {
     }
 }
 
+/// Whether a run would read a session that waits for curation.
+struct Curation: Decodable, Equatable {
+    /// What makes every run pass over the session.
+    let blocked: [String]
+    /// It waits, but a run with the default age limit drops it unread.
+    let expires: Bool?
+    /// A person sent it back: the run reads it whatever its age.
+    let byHand: Bool?
+    /// What depends on how the run is started.
+    let notes: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case blocked, expires, notes
+        case byHand = "by_hand"
+    }
+}
+
 struct SessionDetail: Decodable {
     let key: String
     let tool: String?
@@ -140,9 +157,11 @@ struct SessionDetail: Decodable {
     let pending: Bool?
     let digest: String?
     let memories: [Memory]
+    let curation: Curation?
 
     enum CodingKeys: String, CodingKey {
         case key, tool, agent, scope, project, title, summary, pending, digest, memories
+        case curation
         case sessionId = "session_id"
         case summaryOrigin = "summary_origin"
         case lastActivity = "last_activity"

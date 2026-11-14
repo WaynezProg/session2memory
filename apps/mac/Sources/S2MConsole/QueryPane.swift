@@ -35,7 +35,7 @@ struct QueryPane: View {
                 }
             } else if !running {
                 Placeholder(
-                    text: "Runs `ks query … --writeback=no` in the HKS folder set in Settings.")
+                    text: "Asks HKS with `ks query … --writeback=no`; nothing is written back.")
             }
             if running {
                 // Nothing below fills the pane while a query runs; keep the field at the top.
