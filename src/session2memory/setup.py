@@ -182,11 +182,28 @@ def nightly_command(executable: Path, store: Path, *, compress: bool) -> list[st
     return command
 
 
+def _job_environment() -> dict[str, str]:
+    """What a run needs from the environment setup is called in, for a job that starts
+    with almost none of it."""
+    environment = {"HOME": str(Path.home()), "PATH": job_path()}
+    for name in ("OPENCLAW_STATE_DIR", "SESSION2MEMORY_AUTO_LLM_CMD"):
+        if os.environ.get(name):
+            environment[name] = os.environ[name]
+    return environment
+
+
 def job_path() -> str:
     """PATH for the job: where the programs a run starts are now, then the system's own.
     launchd and cron start jobs with a bare PATH."""
+    programs = ["claude", "zstd", "uv"]
+    try:
+        custom = shlex.split(os.environ.get("SESSION2MEMORY_AUTO_LLM_CMD", ""))
+    except ValueError:
+        custom = []
+    if custom:
+        programs.insert(0, custom[0])
     found: list[str] = []
-    for program in ("claude", "zstd", "uv"):
+    for program in programs:
         located = shutil.which(program)
         if located and (directory := str(Path(located).parent)) not in found:
             found.append(directory)
@@ -194,16 +211,12 @@ def job_path() -> str:
 
 
 def launchd_plist(command: list[str], store: Path, *, hour: int, minute: int) -> bytes:
-    environment = {"HOME": str(Path.home()), "PATH": job_path()}
-    for name in ("OPENCLAW_STATE_DIR", "SESSION2MEMORY_AUTO_LLM_CMD"):
-        if os.environ.get(name):
-            environment[name] = os.environ[name]
     logs = store / "logs"
     return plistlib.dumps(
         {
             "Label": LABEL,
             "ProgramArguments": command,
-            "EnvironmentVariables": environment,
+            "EnvironmentVariables": _job_environment(),
             "StartCalendarInterval": {"Hour": hour, "Minute": minute},
             "StandardOutPath": (logs / "launchd.out.log").as_posix(),
             "StandardErrorPath": (logs / "launchd.err.log").as_posix(),
@@ -212,19 +225,63 @@ def launchd_plist(command: list[str], store: Path, *, hour: int, minute: int) ->
     )
 
 
+def _job_tokens(job: object) -> list[str]:
+    """The words of a launchd job's command, also when it is given to a shell as one
+    string (``bash -c "exec session2memory auto run"``)."""
+    arguments = job.get("ProgramArguments") if isinstance(job, dict) else None
+    if not isinstance(arguments, list):
+        return []
+    words = [str(one) for one in arguments]
+    if words and Path(words[0]).name in {"sh", "bash", "zsh"}:
+        # ``-c`` may be grouped with other flags (``zsh -lc``); its argument follows.
+        for index, word in enumerate(words[1:], start=1):
+            if word.startswith("-") and not word.startswith("--") and "c" in word:
+                try:
+                    return shlex.split(words[index + 1])
+                except (ValueError, IndexError):
+                    return words
+            if not word.startswith("-"):
+                break
+    return words
+
+
+def runs_the_pipeline(job: object) -> bool:
+    """Whether a launchd job runs the unattended pipeline: ``session2memory auto run``, or
+    the repository's ``nightly-auto.sh`` that wraps it."""
+    tokens = _job_tokens(job)
+    for index, token in enumerate(tokens):
+        if Path(token).name == "nightly-auto.sh":
+            return True
+        if Path(token).name == "session2memory" and tokens[index + 1 : index + 3] == [
+            "auto",
+            "run",
+        ]:
+            return True
+    return False
+
+
+def _read_job(path: Path) -> object:
+    try:
+        return plistlib.loads(path.read_bytes())
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+
+
+def written_by_setup(job: object) -> bool:
+    """Our own job file: our label, and the report option only this command passes."""
+    return (
+        isinstance(job, dict)
+        and job.get("Label") == LABEL
+        and "--save-report" in _job_tokens(job)
+        and runs_the_pipeline(job)
+    )
+
+
 def other_schedule(agents_dir: Path) -> str | None:
     """The label of another launchd job that already runs the unattended pipeline."""
     for path in sorted(agents_dir.glob("*.plist")):
-        try:
-            job = plistlib.loads(path.read_bytes())
-        except (OSError, plistlib.InvalidFileException, ValueError):
-            continue
-        if not isinstance(job, dict) or job.get("Label") == LABEL:
-            continue
-        arguments = " ".join(str(one) for one in job.get("ProgramArguments") or [])
-        if "nightly-auto.sh" in arguments or (
-            "session2memory" in arguments and " auto " in f" {arguments} "
-        ):
+        job = _read_job(path)
+        if isinstance(job, dict) and not written_by_setup(job) and runs_the_pipeline(job):
             return str(job.get("Label") or path.stem)
     return None
 
@@ -248,49 +305,90 @@ def plan_schedule(
     command = nightly_command(executable, store, compress=compress)
     when = f"every day at {hour:02d}:{minute:02d}"
     if platform != "darwin":
-        if remove:
-            return ScheduleStep("cron", "none", detail="remove the line from your crontab")
-        line = (
-            f"{minute} {hour} * * * PATH={shlex.quote(job_path())} {shlex.join(command)} "
-            ">/dev/null 2>&1"
-        )
-        return ScheduleStep(
-            "cron", "manual", detail=f"add this line with `crontab -e` ({when}):\n{line}",
-            command=command,
-        )  # fmt: skip
+        return _cron_step(command, store, hour=hour, minute=minute, remove=remove, apply=apply)
     agents_dir = Path("~/Library/LaunchAgents").expanduser()
     path = agents_dir / f"{LABEL}.plist"
-    domain = f"gui/{os.getuid()}"
+    target = f"gui/{os.getuid()}/{LABEL}"
+    present = path.exists()
+    if present and not written_by_setup(_read_job(path)):
+        # Someone's own file under our name: never overwritten, never deleted.
+        return ScheduleStep(
+            "launchd", "kept", path.as_posix(),
+            "this file was not written by setup; it is left as it is",
+        )  # fmt: skip
     if remove:
-        if not path.exists():
+        if not present:
             return ScheduleStep("launchd", "none", path.as_posix(), "no job installed")
-        if apply:
-            launch(["launchctl", "bootout", f"{domain}/{LABEL}"])
-            path.unlink()
+        if not apply:
+            return ScheduleStep("launchd", "remove", path.as_posix(), when)
+        if _loaded(launch, target) and launch(["launchctl", "bootout", target]) != 0:
+            return ScheduleStep(
+                "launchd", "remove", path.as_posix(), when,
+                error="launchd did not unload the job, so its file was kept; "
+                f"try `launchctl bootout {target}`",
+            )  # fmt: skip
+        path.unlink()
         return ScheduleStep("launchd", "remove", path.as_posix(), when)
     other = other_schedule(agents_dir)
-    if other is not None and not path.exists():
+    if other is not None and not present:
         return ScheduleStep(
             "launchd", "kept", None,
             f"already scheduled by the job {other}; a second one is not added",
         )  # fmt: skip
     wanted = launchd_plist(command, store, hour=hour, minute=minute)
-    if path.exists() and path.read_bytes() == wanted:
+    same = present and path.read_bytes() == wanted
+    loaded = _loaded(launch, target) if same else False
+    if same and loaded:
         return ScheduleStep("launchd", "none", path.as_posix(), when, command)
-    action = "replace" if path.exists() else "add"
+    action = "replace" if present else "add"
+    detail = f"{when}; the file is in place but launchd has not loaded it" if same else when
     if not apply:
-        return ScheduleStep("launchd", action, path.as_posix(), when, command)
+        return ScheduleStep("launchd", action, path.as_posix(), detail, command)
     agents_dir.mkdir(parents=True, exist_ok=True)
     (store / "logs").mkdir(parents=True, exist_ok=True)
-    path.write_bytes(wanted)
-    launch(["launchctl", "bootout", f"{domain}/{LABEL}"])  # an older copy, if loaded
+    if not same:
+        path.write_bytes(wanted)
+    if _loaded(launch, target):
+        launch(["launchctl", "bootout", target])  # the older copy
+    domain = f"gui/{os.getuid()}"
     if launch(["launchctl", "bootstrap", domain, path.as_posix()]) != 0:
         return ScheduleStep(
             "launchd", action, path.as_posix(), when, command,
-            error="the file was written but launchd did not load it; "
-            f"try `launchctl bootstrap {domain} {shlex.quote(path.as_posix())}`",
+            error="the file was written but launchd did not load it; run setup --apply again, "
+            f"or `launchctl bootstrap {domain} {shlex.quote(path.as_posix())}`",
         )  # fmt: skip
     return ScheduleStep("launchd", action, path.as_posix(), when, command)
+
+
+def _loaded(launch: Launcher, target: str) -> bool:
+    return launch(["launchctl", "print", target]) == 0
+
+
+def cron_line(command: list[str], store: Path, *, hour: int, minute: int) -> str:
+    """The crontab line for the nightly run. A ``%`` ends a crontab command unless it is
+    escaped, and what the run prints is kept, not thrown away."""
+    environment = _job_environment()
+    environment.pop("HOME")  # cron sets it
+    settings = " ".join(f"{name}={shlex.quote(value)}" for name, value in environment.items())
+    log = shlex.quote((store / "logs" / "cron.log").as_posix())
+    line = f"{minute} {hour} * * * {settings} {shlex.join(command)} >> {log} 2>&1"
+    return line.replace("%", "\\%")
+
+
+def _cron_step(
+    command: list[str], store: Path, *, hour: int, minute: int, remove: bool, apply: bool
+) -> ScheduleStep:
+    if remove:
+        return ScheduleStep(
+            "cron", "manual", detail="if you added the line to your crontab, remove it there"
+        )
+    if apply:
+        (store / "logs").mkdir(parents=True, exist_ok=True)  # the line appends to a log here
+    line = cron_line(command, store, hour=hour, minute=minute)
+    return ScheduleStep(
+        "cron", "manual", command=command,
+        detail=f"add this line with `crontab -e` (every day at {hour:02d}:{minute:02d}):\n{line}",
+    )  # fmt: skip
 
 
 def run_setup(
@@ -308,7 +406,8 @@ def run_setup(
     launch: Launcher = _launch,
 ) -> SetupPlan:
     exe = executable or default_executable()
-    store = store.expanduser()
+    # Absolute: the job starts somewhere else than setup was called from.
+    store = Path(os.path.abspath(store.expanduser()))
     return SetupPlan(
         applied=apply,
         removing=remove,
@@ -377,7 +476,9 @@ def render(plan: SetupPlan) -> str:
         if job.error:
             lines.append(f"    failed: {job.error}")
     lines.append("")
-    if not done and plan.pending:
+    if plan.failed:
+        lines.append("Finished with errors; see above. Nothing else was changed.")
+    elif not done and plan.pending:
         lines.append("Run it again with --apply to make these changes.")
     elif not done:
         lines.append("Nothing to change.")

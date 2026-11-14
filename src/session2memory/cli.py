@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -610,7 +611,7 @@ def auto_run(
             "--save-report",
             help=(
                 "Write the report to <store>/logs/run-<time>.json (the newest 60 are kept) "
-                "and print only where it is; for scheduled runs."
+                "and print only where it is, unless --json is given; for scheduled runs."
             ),
         ),
     ] = False,
@@ -632,8 +633,10 @@ def auto_run(
     )
     report = run_auto(config)
     if save_report and not dry_run:
-        typer.echo(f"report={_save_report(store.expanduser(), report).as_posix()}")
-        return
+        saved = _save_report(store.expanduser(), report)
+        if not json_output:
+            typer.echo(f"report={saved.as_posix()}")
+            return
     if json_output:
         typer.echo(json.dumps(report, ensure_ascii=False, indent=1))
         return
@@ -642,18 +645,27 @@ def auto_run(
 
 
 REPORTS_KEPT = 60
+# Reports of scheduled runs, as this command and scripts/nightly-auto.sh name them. Other
+# files in the folder (a report someone saved under another name) are never removed.
+_SCHEDULED_REPORT = re.compile(r"run-\d{8}-\d{6}(-\d+)?\.json")
 
 
 def _save_report(
     store_dir: Path, report: dict[str, object], *, now: datetime | None = None
 ) -> Path:
-    """Keep a run's report beside the store, and only the most recent ones."""
+    """Keep a run's report beside the store, and only the most recent scheduled ones."""
     logs = store_dir / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    path = logs / f"run-{(now or datetime.now()).strftime('%Y%m%d-%H%M%S')}.json"
+    stem = f"run-{(now or datetime.now()).strftime('%Y%m%d-%H%M%S')}"
+    path = logs / f"{stem}.json"
+    extra = 0
+    while path.exists():  # a second run within the same second keeps its own report
+        extra += 1
+        path = logs / f"{stem}-{extra}.json"
     path.write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    by_age = sorted(logs.glob("run-*.json"), key=lambda one: one.stat().st_mtime, reverse=True)
-    for old in by_age[REPORTS_KEPT:]:
+    scheduled = [one for one in logs.glob("run-*.json") if _SCHEDULED_REPORT.fullmatch(one.name)]
+    scheduled.sort(key=lambda one: (one.stat().st_mtime, one.name), reverse=True)
+    for old in scheduled[REPORTS_KEPT:]:
         old.unlink(missing_ok=True)
     return path
 
