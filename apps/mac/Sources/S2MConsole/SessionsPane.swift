@@ -32,32 +32,35 @@ struct SessionsPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let message {
-                ErrorBanner(message: message).padding([.horizontal, .top], 8)
-            }
-            if let outcome {
-                NoteBanner(note: outcome) { self.outcome = nil }.padding([.horizontal, .top], 8)
-            }
-            HSplitView {
-                listColumn.frame(minWidth: 360, idealWidth: 430)
-                detailView.frame(minWidth: 380, maxWidth: .infinity)
-            }
-        }
-        .navigationTitle("Sessions")
-        .searchable(text: $query, prompt: "Search title, summary or key")
-        .toolbar {
-            ToolbarItem {
+            PageHeader("對話", subtitle: "各個代理人留下的對話。整理過的對話會變成記憶。") {
+                SearchField(text: $query, prompt: "搜尋標題或摘要")
                 Button {
                     Task {
                         await loadSessions(wait: false)
                         await loadDetail()
                     }
                 } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(OutlineButtonStyle())
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(loading)
-                .help("Reload (⌘R)")
+                .help("重新讀取（⌘R）")
+            }
+            if let message {
+                ErrorBanner(message: message).padding(.horizontal, 32).padding(.bottom, 10)
+            }
+            if let outcome {
+                NoteBanner(note: outcome) { self.outcome = nil }
+                    .padding(.horizontal, 32)
+                    .padding(.bottom, 10)
+            }
+            filterBar
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+            HStack(spacing: 0) {
+                listColumn
+                Rectangle().fill(Theme.hairline).frame(width: 1)
+                detailView.detailPanel(width: 430)
             }
         }
         .task { await loadProjects() }
@@ -65,6 +68,7 @@ struct SessionsPane: View {
         .task(id: selection) { await loadDetail() }
         .onAppear { takeTarget() }
         .onChange(of: app.sessionTarget) { _ in takeTarget() }
+        .onChange(of: app.sessionsPendingOnly) { _ in takeTarget() }
         .onChange(of: filterKey) { _ in
             // Another set of sessions: start again from the first page.
             limit = Self.pageSize
@@ -77,86 +81,109 @@ struct SessionsPane: View {
 
     private var listKey: String { filterKey + "|" + String(limit) }
 
-    private var listColumn: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Picker("Workspace", selection: $project) {
-                    Text("All workspaces").tag("")
-                    ForEach(projects) { item in
-                        Text(item.name).tag(item.project)
-                    }
-                }
-                Picker("Tool", selection: $tool) {
-                    ForEach(tools, id: \.self) { item in
-                        Text(item.isEmpty ? "All tools" : item).tag(item)
-                    }
-                }
-                .frame(maxWidth: 150)
-                Picker("Scope", selection: $scope) {
-                    Text("All scopes").tag("")
-                    Text("coding").tag("coding")
-                    Text("openclaw").tag("openclaw")
-                }
-                .frame(maxWidth: 120)
-                .help("coding: sessions of coding tools. openclaw: OpenClaw agents' own sessions.")
-            }
-            .labelsHidden()
-            .padding([.horizontal, .top], 8)
-            HStack {
-                Toggle("Waiting for curation only", isOn: $pendingOnly)
-                    .toggleStyle(.checkbox)
-                Spacer()
-                Text(countLine).font(.caption).foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            if sessions.isEmpty {
-                Placeholder(text: loading ? "Loading…" : "No sessions")
-            } else {
-                List(selection: $selection) {
-                    ForEach(sessions) { session in
-                        row(session).tag(session.key)
-                    }
-                    if sessions.count >= limit {
-                        Button("Load \(Self.pageSize) more") { limit += Self.pageSize }
-                            .buttonStyle(.link)
-                            .disabled(loading)
-                    }
-                }
-                .contextMenu(forSelectionType: String.self) { keys in
-                    rowMenu(Array(keys))
+    private var filterBar: some View {
+        HStack(spacing: 10) {
+            Chip(title: "全部", selected: !pendingOnly) { pendingOnly = false }
+            Chip(title: "等待整理", selected: pendingOnly) { pendingOnly = true }
+            Text(countLine).font(.system(size: 12)).foregroundColor(Theme.secondary)
+            Spacer()
+            Picker("專案", selection: $project) {
+                Text("所有專案").tag("")
+                ForEach(projects) { item in
+                    Text(item.name).tag(item.project)
                 }
             }
+            .frame(maxWidth: 200)
+            Picker("工具", selection: $tool) {
+                ForEach(tools, id: \.self) { item in
+                    Text(item.isEmpty ? "所有工具" : Lexicon.tool(item)).tag(item)
+                }
+            }
+            .fixedSize()
+            Picker("範圍", selection: $scope) {
+                Text("所有範圍").tag("")
+                Text("寫程式的對話").tag("coding")
+                Text("OpenClaw 代理人自己的對話").tag("openclaw")
+            }
+            .fixedSize()
         }
+        .labelsHidden()
+        .padding(.horizontal, 32)
+        .padding(.bottom, 14)
     }
 
     private var countLine: String {
-        var line = sessions.count >= limit ? "first \(sessions.count) shown" : "\(sessions.count) shown"
-        if selection.count > 1 { line += " · \(selection.count) selected" }
+        var line = sessions.count >= limit ? "先顯示 \(sessions.count) 段" : "\(sessions.count) 段"
+        if selection.count > 1 { line += " · 已選 \(selection.count) 段" }
         return line
     }
 
-    private func row(_ session: SessionSummary) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(session.tool ?? "?").font(.caption).foregroundColor(.secondary)
-                if session.scope == "openclaw" {
-                    Text("openclaw").font(.caption).foregroundColor(.secondary)
+    private var listColumn: some View {
+        Group {
+            if sessions.isEmpty {
+                Placeholder(text: loading ? "讀取中…" : "沒有符合的對話")
+            } else {
+                List(selection: $selection) {
+                    ForEach(sessions) { session in
+                        row(session)
+                            .listCell(gap: 2)
+                            .tag(session.key)
+                    }
+                    if sessions.count >= limit {
+                        Button("再載入 \(Self.pageSize) 段") { limit += Self.pageSize }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(Theme.accent)
+                            .disabled(loading)
+                            .listCell(gap: 8)
+                    }
                 }
-                if session.pending == true {
-                    PendingBadge()
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .contextMenu(forSelectionType: String.self) { keys in
+                    rowMenu(Array(keys))
                 }
-                Spacer()
-                Text(shortTime(session.lastActivity)).font(.caption).foregroundColor(.secondary)
-            }
-            Text(session.title ?? session.sessionId ?? session.key).lineLimit(2)
-            if let project = session.project {
-                Text((project as NSString).lastPathComponent)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
             }
         }
-        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func row(_ session: SessionSummary) -> some View {
+        let chosen = selection.contains(session.key)
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.title ?? "尚未命名的對話")
+                    .font(.system(size: 15, weight: chosen ? .semibold : .medium))
+                    .foregroundColor(session.title == nil ? Theme.secondary : Theme.ink)
+                    .lineLimit(2)
+                Text(metaLine(session))
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            StateTag(pending: session.pending, summary: session.summary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(chosen ? Theme.accentSoft : Color.clear)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12).stroke(chosen ? Theme.accent : Color.clear, lineWidth: 2)
+        )
+        .cornerRadius(12)
+    }
+
+    private func metaLine(_ session: SessionSummary) -> String {
+        var parts = [Lexicon.tool(session.tool)]
+        if let project = session.project {
+            parts.append((project as NSString).lastPathComponent)
+        } else {
+            parts.append("不知道屬於哪個專案")
+        }
+        parts.append(localTime(session.lastActivity))
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -164,13 +191,13 @@ struct SessionsPane: View {
         let waiting = keys.filter { isPending($0) == true }
         let done = keys.filter { isPending($0) == false }
         if !waiting.isEmpty {
-            Button(waiting.count == 1 ? "Skip Curation" : "Skip Curation for \(waiting.count)") {
+            Button(waiting.count == 1 ? "略過，不整理" : "略過 \(waiting.count) 段") {
                 Task { await change(keys: waiting, requeue: false) }
             }
             .disabled(working)
         }
         if !done.isEmpty {
-            Button(done.count == 1 ? "Curate Again" : "Curate \(done.count) Again") {
+            Button(done.count == 1 ? "再整理一次" : "再整理 \(done.count) 段") {
                 Task { await change(keys: done, requeue: true) }
             }
             .disabled(working)
@@ -183,53 +210,73 @@ struct SessionsPane: View {
             batchView
         } else if let detail, selection.contains(detail.key) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        queueControls(detail)
-                        Text(detail.title ?? detail.key).font(.title3).textSelection(.enabled)
-                        Text(
-                            "\(detail.key) · \(detail.scope ?? "–") · \(shortTime(detail.lastActivity))"
-                        )
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .textSelection(.enabled)
-                        if let project = detail.project {
-                            Text(project).font(.caption).foregroundColor(.secondary)
-                                .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            StateTag(pending: detail.pending, summary: detail.summary)
+                            Text("\(Lexicon.tool(detail.tool)) · \(localTime(detail.lastActivity))")
+                                .font(.system(size: 12))
+                                .foregroundColor(Theme.secondary)
+                            Spacer()
+                            if working { ProgressView().controlSize(.small) }
                         }
+                        Text(detail.title ?? "尚未命名的對話")
+                            .font(.system(size: 20, weight: .bold))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let project = detail.project {
+                            Text("專案：\((project as NSString).lastPathComponent)")
+                                .font(.system(size: 12))
+                                .foregroundColor(Theme.secondary)
+                                .help(project)
+                        }
+                        queueControls(detail)
                     }
-                    Block("Summary" + (detail.summaryOrigin.map { " (\($0))" } ?? "")) {
-                        Text(detail.summary ?? "Not summarised yet")
-                            .foregroundColor(detail.summary == nil ? .secondary : .primary)
+                    Block("這段對話在做什麼") {
+                        Text(detail.summary ?? "還沒有摘要。")
+                            .font(.system(size: 14))
+                            .lineSpacing(4)
+                            .foregroundColor(detail.summary == nil ? Theme.secondary : Theme.ink)
                             .textSelection(.enabled)
                     }
-                    Block("Memory this session is evidence for") {
+                    Block("從這段對話學到的記憶") {
                         if detail.memories.isEmpty {
-                            Text("None").foregroundColor(.secondary)
+                            Text("還沒有。").font(.system(size: 13)).foregroundColor(Theme.secondary)
                         }
                         ForEach(detail.memories) { memory in
-                            HStack(alignment: .top, spacing: 6) {
-                                StatusBadge(status: memory.status)
-                                Button {
-                                    app.show(memory: memory.id, in: memory.project)
-                                } label: {
-                                    Text(memory.text).multilineTextAlignment(.leading)
+                            Button {
+                                app.show(memory: memory.id, in: memory.project)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if memory.status != "active" {
+                                        StatusBadge(status: memory.status)
+                                    }
+                                    Text(memory.text)
+                                        .font(.system(size: 13))
+                                        .lineSpacing(3)
+                                        .foregroundColor(Theme.ink)
+                                        .multilineTextAlignment(.leading)
                                 }
-                                .buttonStyle(.link)
-                                .help("Show this memory")
+                                .card(padding: 10)
                             }
+                            .buttonStyle(.plain)
+                            .help("到「記憶」看這條記憶")
                         }
                     }
-                    Block("Digest (what the model was shown)") {
+                    EngineeringDetails("模型讀到的內容（給工程用）") {
+                        Text(detail.key).font(.system(size: 12)).textSelection(.enabled)
+                        ForEach(detail.curation?.notes ?? [], id: \.self) { note in
+                            Text(note).font(.system(size: 12)).foregroundColor(Theme.secondary)
+                        }
                         CodeText(text: detail.digest ?? "–")
                     }
                 }
-                .padding(16)
+                .padding(24)
             }
         } else if let detailError, !selection.isEmpty {
             LoadFailed(message: detailError) { Task { await loadDetail() } }
         } else {
-            Placeholder(text: selection.isEmpty ? "Choose a session" : "Loading…")
+            Placeholder(text: selection.isEmpty ? "選一段對話，看它的摘要與學到的記憶" : "讀取中…")
         }
     }
 
@@ -239,53 +286,51 @@ struct SessionsPane: View {
         let blocked = detail.curation?.blocked ?? []
         let expires = detail.curation?.expires == true
         let waiting = detail.pending == true
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 if waiting {
-                    PendingBadge()
-                    Text(
-                        blocked.isEmpty && !expires
-                            ? "The next run reads it." : "The next run passes over it."
-                    )
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                } else {
-                    Text("Not in the curation queue").font(.caption).foregroundColor(.secondary)
-                }
-                Spacer()
-                if working { ProgressView().controlSize(.small) }
-                if waiting {
                     if expires {
-                        Button("Curate Anyway") {
+                        Button("仍要整理") {
                             Task { await change(keys: [detail.key], requeue: true) }
                         }
-                        .help("Have the run read it although it is older than the age limit")
+                        .buttonStyle(OutlineButtonStyle(accent: true))
+                        .help("已經等超過期限，仍然讓下次自動整理讀它")
                     }
-                    Button("Skip Curation") {
+                    Button("略過，不整理") {
                         Task { await change(keys: [detail.key], requeue: false) }
                     }
-                    .help("Take it out of the queue; the run leaves it alone")
+                    .buttonStyle(OutlineButtonStyle())
+                    .help("從等待名單拿掉，自動整理不會再讀它")
                 } else {
-                    Button("Curate Again") {
+                    Button("再整理一次") {
                         Task { await change(keys: [detail.key], requeue: true) }
                     }
+                    .buttonStyle(OutlineButtonStyle(accent: true))
                     .disabled(!blocked.isEmpty)
-                    .help(
-                        blocked.isEmpty
-                            ? "The next run reads this session again, whatever its age"
-                            : "No run would read it; see below")
                 }
             }
             .disabled(working)
+            Text(queueLine(waiting: waiting, blocked: !blocked.isEmpty, expires: expires, detail))
+                .font(.system(size: 12))
+                .foregroundColor(Theme.secondary)
             ForEach(blocked, id: \.self) { why in
-                Text("Would not be curated: \(why).")
-                    .font(.caption)
-                    .foregroundColor(.orange)
-            }
-            ForEach(detail.curation?.notes ?? [], id: \.self) { note in
-                Text(note).font(.caption).foregroundColor(.secondary)
+                Text("不會整理：\(Lexicon.blocked(why))。")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.amberText)
             }
         }
+    }
+
+    private func queueLine(waiting: Bool, blocked: Bool, expires: Bool, _ detail: SessionDetail)
+        -> String
+    {
+        if waiting {
+            if blocked { return "在等待名單裡，但自動整理會跳過它。" }
+            if expires { return "等太久了，自動整理會跳過它，除非按「仍要整理」。" }
+            if detail.curation?.byHand == true { return "已由你送回：下次自動整理一定會讀它。" }
+            return "下次自動整理會讀它。"
+        }
+        return blocked ? "不在等待名單裡。" : "不在等待名單裡。按「再整理一次」會讓下次自動整理重讀它。"
     }
 
     private var batchView: some View {
@@ -293,17 +338,20 @@ struct SessionsPane: View {
         let waiting = keys.filter { isPending($0) == true }
         let done = keys.filter { isPending($0) == false }
         return VStack(spacing: 14) {
-            Text("\(keys.count) sessions selected").font(.title3)
-            Text("Memory a session already led to is kept either way.")
-                .foregroundColor(.secondary)
-            HStack(spacing: 10) {
-                Button("Skip Curation for \(waiting.count)") {
+            Text("已選 \(keys.count) 段對話").font(.system(size: 18, weight: .semibold))
+            Text("對話已經帶來的記憶都會保留。")
+                .font(.system(size: 13))
+                .foregroundColor(Theme.secondary)
+            HStack(spacing: 8) {
+                Button("略過 \(waiting.count) 段") {
                     Task { await change(keys: waiting, requeue: false) }
                 }
+                .buttonStyle(OutlineButtonStyle())
                 .disabled(waiting.isEmpty || working)
-                Button("Curate \(done.count) Again") {
+                Button("再整理 \(done.count) 段") {
                     Task { await change(keys: done, requeue: true) }
                 }
+                .buttonStyle(OutlineButtonStyle(accent: true))
                 .disabled(done.isEmpty || working)
             }
             if working { ProgressView().controlSize(.small) }
@@ -318,6 +366,10 @@ struct SessionsPane: View {
     }
 
     private func takeTarget() {
+        if app.sessionsPendingOnly {
+            app.sessionsPendingOnly = false
+            pendingOnly = true
+        }
         guard let key = app.sessionTarget else { return }
         app.sessionTarget = nil
         project = ""
@@ -399,20 +451,23 @@ struct SessionsPane: View {
                 result.failures.append(error.localizedDescription)
             }
         }
-        outcome = ActionNote(result, verb: requeue ? "Queued for curation:" : "Skipped:")
+        outcome = ActionNote(result, verb: requeue ? "已排入整理" : "已略過", unit: "段")
         await loadSessions(wait: false)
         // What is selected now, which need not be what was changed.
         await loadDetail()
     }
 }
 
-private struct PendingBadge: View {
+/// Where a session stands: waiting, or already read into a summary.
+private struct StateTag: View {
+    let pending: Bool?
+    let summary: String?
+
     var body: some View {
-        Text("pending")
-            .font(.caption)
-            .padding(.horizontal, 5)
-            .background(Color.yellow.opacity(0.25))
-            .cornerRadius(4)
-            .help("Waiting for curation")
+        if pending == true {
+            Tag(text: "等待整理", tone: .amber)
+        } else if let summary, !summary.isEmpty {
+            Tag(text: "已有摘要", tone: .accent)
+        }
     }
 }

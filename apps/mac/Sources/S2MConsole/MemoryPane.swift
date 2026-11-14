@@ -4,7 +4,6 @@ import SwiftUI
 struct MemoryPane: View {
     @EnvironmentObject private var app: AppState
     @State private var projects: [Project] = []
-    @State private var projectFilter = ""
     @State private var selectedProject: String?
     @State private var status = "active"
     @State private var kind = ""
@@ -34,8 +33,6 @@ struct MemoryPane: View {
     @State private var reveal: String?
     /// Workspaces that only have sessions are left out unless asked for.
     @State private var showEmpty = false
-    /// The chosen workspace should be scrolled into view.
-    @State private var revealProject = false
 
     private enum Sheet: Identifiable {
         case status(ids: [String], restore: Bool)
@@ -56,40 +53,41 @@ struct MemoryPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let message {
-                ErrorBanner(message: message).padding([.horizontal, .top], 8)
-            }
-            if let outcome {
-                NoteBanner(note: outcome) { self.outcome = nil }.padding([.horizontal, .top], 8)
-            }
-            HSplitView {
-                projectColumn.frame(minWidth: 200, idealWidth: 230, maxWidth: 320)
-                memoryColumn.frame(minWidth: 300, idealWidth: 380)
-                detailView.frame(minWidth: 340, maxWidth: .infinity)
-            }
-        }
-        .navigationTitle("Memory")
-        .searchable(text: $query, prompt: "Search memory")
-        .toolbar {
-            ToolbarItem {
+            PageHeader("記憶", subtitle: "代理人開新對話時，會先讀到這個專案的記憶。") {
+                SearchField(text: $query, prompt: "搜尋記憶")
                 Button {
                     if let project = selectedProject { startAdd(project: project) }
                 } label: {
-                    Label("New Memory", systemImage: "plus")
+                    Label("新增記憶", systemImage: "plus")
                 }
+                .buttonStyle(PrimaryButtonStyle())
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(selectedProject == nil || working)
-                .help("Write a memory for the chosen workspace by hand (⇧⌘N)")
-            }
-            ToolbarItem {
+                .help("替這個專案手動寫一條記憶（⇧⌘N）")
                 Button {
                     Task { await reloadAll() }
                 } label: {
-                    Label("Reload", systemImage: "arrow.clockwise")
+                    Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(OutlineButtonStyle())
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(loading)
-                .help("Reload (⌘R)")
+                .help("重新讀取（⌘R）")
+            }
+            if let message {
+                ErrorBanner(message: message).padding(.horizontal, 32).padding(.bottom, 10)
+            }
+            if let outcome {
+                NoteBanner(note: outcome) { self.outcome = nil }
+                    .padding(.horizontal, 32)
+                    .padding(.bottom, 10)
+            }
+            filterBar
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+            HStack(spacing: 0) {
+                listColumn
+                Rectangle().fill(Theme.hairline).frame(width: 1)
+                detailView.detailPanel()
             }
         }
         .task { await loadProjects() }
@@ -106,11 +104,15 @@ struct MemoryPane: View {
             }
         }
         .sheet(item: $sheet) { item in
-            switch item {
-            case .status(let ids, let restore): statusSheet(ids: ids, restore: restore)
-            case .edit(let id, let text): editSheet(id: id, original: text)
-            case .add(let project): addSheet(project: project)
+            Group {
+                switch item {
+                case .status(let ids, let restore): statusSheet(ids: ids, restore: restore)
+                case .edit(let id, let text): editSheet(id: id, original: text)
+                case .add(let project): addSheet(project: project)
+                }
             }
+            .foregroundColor(Theme.ink)
+            .tint(Theme.accent)
         }
     }
 
@@ -127,102 +129,93 @@ struct MemoryPane: View {
         kind.isEmpty ? memories : memories.filter { $0.kind == kind }
     }
 
-    // MARK: columns
-
-    private var projectColumn: some View {
-        VStack(spacing: 0) {
-            TextField("Filter workspaces", text: $projectFilter)
-                .textFieldStyle(.roundedBorder)
-                .padding([.horizontal, .top], 8)
-            Toggle("Without memory too", isOn: $showEmpty)
-                .toggleStyle(.checkbox)
-                .font(.caption)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .help("Also list workspaces that have sessions but no memory yet")
-            ScrollViewReader { proxy in
-                List(listedProjects, selection: $selectedProject) { project in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(project.name).fontWeight(.medium)
-                        Text(projectLine(project))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        // Folder names repeat (and some are ids): show where it is.
-                        Text(parentFolder(of: project.project))
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.head)
-                    }
-                    .help(project.project)
-                    .tag(project.project)
-                }
-                .onAppear { scrollToProject(proxy) }
-                .onChange(of: revealProject) { _ in scrollToProject(proxy) }
-                .onChange(of: projects) { _ in scrollToProject(proxy) }
-            }
-        }
-    }
+    // MARK: filters
 
     private var listedProjects: [Project] {
-        workspacesToList(
-            projects, filter: projectFilter, withoutMemory: showEmpty, keeping: selectedProject)
+        workspacesToList(projects, filter: "", withoutMemory: showEmpty, keeping: selectedProject)
     }
 
-    private func scrollToProject(_ proxy: ScrollViewProxy) {
-        guard revealProject, let project = selectedProject,
-            listedProjects.contains(where: { $0.project == project })
-        else { return }
-        revealProject = false
-        proxy.scrollTo(project, anchor: .center)
+    private var projectName: String {
+        projects.first(where: { $0.project == selectedProject })?.name ?? "選擇專案"
     }
 
-    private func projectLine(_ project: Project) -> String {
-        var parts = ["\(project.active) active", "\(project.sessions) sessions"]
-        if project.sessionsPending > 0 {
-            parts.append("\(project.sessionsPending) pending")
+    /// The kinds the loaded entries have, with how many of each.
+    private var kindCounts: [(kind: String, count: Int)] {
+        kinds.compactMap { item in
+            let count = memories.filter { $0.kind == item }.count
+            return count > 0 || item == kind ? (item, count) : nil
         }
-        return parts.joined(separator: " · ")
     }
 
-    private var memoryColumn: some View {
-        VStack(spacing: 0) {
-            Picker("Status", selection: $status) {
-                ForEach(statuses, id: \.self) { item in
-                    Text(item).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding([.horizontal, .top], 8)
-            HStack(spacing: 10) {
-                Picker("Kind", selection: $kind) {
-                    Text("All kinds").tag("")
-                    ForEach(kinds, id: \.self) { item in
-                        Text(item).tag(item)
+    private var filterBar: some View {
+        HStack(spacing: 10) {
+            Menu(projectName) {
+                ForEach(listedProjects) { project in
+                    Button("\(project.name)　\(project.active) 條") {
+                        selectedProject = project.project
                     }
                 }
-                .labelsHidden()
-                .frame(maxWidth: 140)
-                if searching {
-                    Toggle("All workspaces", isOn: $everywhere)
-                        .toggleStyle(.checkbox)
-                }
-                Spacer()
-                Text(countLine).font(.caption).foregroundColor(.secondary)
+                Divider()
+                Toggle("也列出還沒有記憶的專案", isOn: $showEmpty)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .fixedSize()
+            .help(selectedProject ?? "選一個專案")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    Chip(title: "全部 \(memories.count)", selected: kind.isEmpty) { kind = "" }
+                    ForEach(kindCounts, id: \.kind) { item in
+                        Chip(
+                            title: "\(Lexicon.kind(item.kind)) \(item.count)",
+                            selected: kind == item.kind
+                        ) { kind = item.kind }
+                    }
+                }
+            }
+            if searching {
+                Toggle("搜尋所有專案", isOn: $everywhere)
+                    .toggleStyle(.checkbox)
+                    .fixedSize()
+            }
+            Text(countLine).font(.system(size: 12)).foregroundColor(Theme.secondary).fixedSize()
+            Picker("狀態", selection: $status) {
+                ForEach(statuses, id: \.self) { item in
+                    Text(Lexicon.status(item)).tag(item)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .help("要看哪種狀態的記憶")
+        }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 14)
+    }
+
+    private var countLine: String {
+        var line = "\(shown.count) 條"
+        if searching && memories.count >= Backend.searchLimit {
+            line = "只顯示前 \(shown.count) 條，多打幾個字縮小範圍"
+        }
+        if selection.count > 1 { line += " · 已選 \(selection.count) 條" }
+        return line
+    }
+
+    // MARK: list
+
+    private var listColumn: some View {
+        Group {
             if selectedProject == nil && !(searching && everywhere) {
-                Placeholder(text: "Choose a workspace")
+                Placeholder(text: "先選一個專案")
             } else if shown.isEmpty {
-                Placeholder(text: loading ? "Loading…" : emptyText)
+                Placeholder(text: loading ? "讀取中…" : emptyText)
             } else {
                 ScrollViewReader { proxy in
                     List(shown, selection: $selection) { memory in
-                        row(memory).tag(memory.id)
+                        row(memory)
+                            .listCell(gap: 5)
+                            .tag(memory.id)
                     }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                     .contextMenu(forSelectionType: String.self) { ids in
                         rowMenu(Array(ids))
                     }
@@ -232,8 +225,11 @@ struct MemoryPane: View {
                     .onAppear { scroll(proxy) }
                     .onChange(of: memories) { _ in scroll(proxy) }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func scroll(_ proxy: ScrollViewProxy) {
@@ -242,40 +238,38 @@ struct MemoryPane: View {
         proxy.scrollTo(id, anchor: .center)
     }
 
-    private var countLine: String {
-        var line = "\(shown.count) shown"
-        if searching && memories.count >= Backend.searchLimit {
-            line = "first \(shown.count) shown; add a word to narrow"
-        }
-        if selection.count > 1 { line += " · \(selection.count) selected" }
-        return line
-    }
-
     private var emptyText: String {
-        if searching { return "Nothing matches" }
-        return kind.isEmpty ? "No memory with this status" : "No \(kind) with this status"
+        if searching { return "找不到符合的記憶" }
+        return kind.isEmpty ? "這個狀態下沒有記憶" : "這個狀態下沒有「\(Lexicon.kind(kind))」"
     }
 
     private func row(_ memory: Memory) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(memory.kind).font(.caption).foregroundColor(.secondary)
+        let chosen = selection.contains(memory.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(Lexicon.kind(memory.kind))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(chosen ? Theme.accent : Theme.ink)
                 if status == "all" {
                     StatusBadge(status: memory.status)
                 }
                 if searching && everywhere {
                     Text((memory.project as NSString).lastPathComponent)
-                        .font(.caption)
-                        .foregroundColor(.accentColor)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.accent)
                 }
                 Spacer()
-                Text(shortTime(memory.lastConfirmedAt))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Text(localTime(memory.lastConfirmedAt))
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.secondary)
             }
-            Text(memory.text).lineLimit(3)
+            Text(memory.text)
+                .font(.system(size: 15))
+                .lineSpacing(3)
+                .lineLimit(3)
+                .foregroundColor(Theme.ink)
         }
-        .padding(.vertical, 2)
+        .card(selected: chosen)
     }
 
     @ViewBuilder
@@ -283,24 +277,24 @@ struct MemoryPane: View {
         let toRetire = retirable(ids)
         let toRestore = restorable(ids)
         if !toRetire.isEmpty {
-            Button(toRetire.count == 1 ? "Retire…" : "Retire \(toRetire.count)…") {
+            Button(toRetire.count == 1 ? "停用…" : "停用 \(toRetire.count) 條…") {
                 ask(ids: toRetire, restore: false)
             }
             .disabled(working)
         }
         if !toRestore.isEmpty {
-            Button(toRestore.count == 1 ? "Restore…" : "Restore \(toRestore.count)…") {
+            Button(toRestore.count == 1 ? "復原…" : "復原 \(toRestore.count) 條…") {
                 ask(ids: toRestore, restore: true)
             }
             .disabled(working)
         }
         if ids.count == 1, toRetire.count == 1, let text = text(of: ids[0]) {
-            Button("Edit…") { startEdit(id: ids[0], text: text) }
+            Button("改寫…") { startEdit(id: ids[0], text: text) }
                 .disabled(working)
         }
         if !ids.isEmpty {
             Divider()
-            Button("Copy Text") { copy(ids) }
+            Button("複製文字") { copy(ids) }
         }
     }
 
@@ -312,19 +306,37 @@ struct MemoryPane: View {
             batchView
         } else if let detail, selection.contains(detail.id) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 22) {
                     header(detail)
                     links(detail)
                     evidence(detail)
                     history(detail)
+                    Text("停用不會刪除，之後隨時可以復原。")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.secondary)
+                    EngineeringDetails("詳細資料（給工程用）") {
+                        fact("編號", detail.id)
+                        fact("專案資料夾", detail.project)
+                        fact("範圍", detail.scope)
+                        fact("建立", shortTime(detail.createdAt))
+                        fact("最後確認", shortTime(detail.lastConfirmedAt))
+                    }
                 }
-                .padding(16)
+                .padding(24)
             }
         } else if let detailError, !selection.isEmpty {
             LoadFailed(message: detailError) { Task { await loadDetail() } }
         } else {
-            Placeholder(text: selection.isEmpty ? "Choose a memory" : "Loading…")
+            Placeholder(text: selection.isEmpty ? "選一條記憶，看它的內容與來源" : "讀取中…")
         }
+    }
+
+    private func fact(_ name: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(name).foregroundColor(Theme.secondary).frame(width: 76, alignment: .leading)
+            Text(value).textSelection(.enabled)
+        }
+        .font(.system(size: 12))
     }
 
     private var batchView: some View {
@@ -332,16 +344,20 @@ struct MemoryPane: View {
         let toRetire = retirable(ids)
         let toRestore = restorable(ids)
         return VStack(spacing: 14) {
-            Text("\(ids.count) memories selected").font(.title3)
-            Text("Changes are recorded in each entry's history; nothing is deleted.")
-                .foregroundColor(.secondary)
-            HStack(spacing: 10) {
-                Button("Retire \(toRetire.count)…") { ask(ids: toRetire, restore: false) }
+            Text("已選 \(ids.count) 條記憶").font(.system(size: 18, weight: .semibold))
+            Text("每條的修改紀錄都會留下，不會刪除任何東西。")
+                .font(.system(size: 13))
+                .foregroundColor(Theme.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 8) {
+                Button("停用 \(toRetire.count) 條…") { ask(ids: toRetire, restore: false) }
+                    .buttonStyle(OutlineButtonStyle())
                     .disabled(toRetire.isEmpty || working)
-                Button("Restore \(toRestore.count)…") { ask(ids: toRestore, restore: true) }
+                Button("復原 \(toRestore.count) 條…") { ask(ids: toRestore, restore: true) }
+                    .buttonStyle(OutlineButtonStyle())
                     .disabled(toRestore.isEmpty || working)
-                Button("Copy Text") { copy(ids) }
             }
+            Button("複製文字") { copy(ids) }.buttonStyle(OutlineButtonStyle())
             if working { ProgressView().controlSize(.small) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -349,87 +365,105 @@ struct MemoryPane: View {
     }
 
     private func header(_ detail: MemoryDetail) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                StatusBadge(status: detail.status)
-                Text(detail.kind).foregroundColor(.secondary)
-                Text(detail.scope).foregroundColor(.secondary)
+                Tag(text: Lexicon.kind(detail.kind), tone: .accent)
+                Text(Lexicon.status(detail.status))
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.secondary)
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
+            }
+            Text(detail.text)
+                .font(.system(size: 18, weight: .medium))
+                .lineSpacing(5)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
                 if detail.status == "active" {
-                    Button("Edit…") { startEdit(id: detail.id, text: detail.text) }
+                    Button("改寫") { startEdit(id: detail.id, text: detail.text) }
+                        .buttonStyle(OutlineButtonStyle(accent: true))
                         .keyboardShortcut("e", modifiers: .command)
-                        .help("Reword this memory (⌘E)")
-                    Button("Retire…") { ask(ids: [detail.id], restore: false) }
+                        .help("換個說法（⌘E）")
+                    Button("停用") { ask(ids: [detail.id], restore: false) }
+                        .buttonStyle(OutlineButtonStyle())
                 } else if detail.restorable {
-                    Button("Restore…") { ask(ids: [detail.id], restore: true) }
+                    Button("復原") { ask(ids: [detail.id], restore: true) }
+                        .buttonStyle(OutlineButtonStyle(accent: true))
                 }
             }
             .disabled(working)
-            Text(detail.text).font(.title3).textSelection(.enabled)
-            Text(
-                "\(detail.id) · created \(shortTime(detail.createdAt)) · last confirmed \(shortTime(detail.lastConfirmedAt))"
-            )
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .textSelection(.enabled)
-            Text(detail.project).font(.caption).foregroundColor(.secondary)
-                .textSelection(.enabled)
         }
     }
 
     @ViewBuilder
     private func links(_ detail: MemoryDetail) -> some View {
         if detail.supersedesId != nil || !detail.replacedBy.isEmpty {
-            Block("Related") {
+            Block("相關的說法") {
                 if let older = detail.supersedesId {
-                    Button("Replaced \(older)") { open(older) }
-                        .buttonStyle(.link)
+                    linkButton("看改寫前的說法") { open(older) }
                 }
                 ForEach(detail.replacedBy, id: \.self) { newer in
-                    Button("Replaced by \(newer)") { open(newer) }
-                        .buttonStyle(.link)
+                    linkButton("已被改寫，看新的說法") { open(newer) }
                 }
             }
         }
     }
 
+    private func linkButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(Theme.accent)
+                .multilineTextAlignment(.leading)
+        }
+        .buttonStyle(.plain)
+    }
+
     private func evidence(_ detail: MemoryDetail) -> some View {
-        Block("Evidence sessions") {
+        Block("從哪段對話學到的") {
             if detail.evidenceSessions.isEmpty {
-                Text("None recorded").foregroundColor(.secondary)
+                Text("沒有對話紀錄，是手動加入的。")
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.secondary)
             }
             ForEach(detail.evidenceSessions) { session in
-                VStack(alignment: .leading, spacing: 2) {
-                    Button(session.title ?? session.key) { app.show(session: session.key) }
-                        .buttonStyle(.link)
-                        .help("Show this session")
-                    Text("\(session.key) · \(shortTime(session.lastActivity))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 5) {
+                    linkButton(session.title ?? "尚未命名的對話") {
+                        app.show(session: session.key)
+                    }
+                    .help("到「對話」看這段對話")
+                    Text("\(Lexicon.tool(session.tool)) · \(localTime(session.lastActivity))")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.secondary)
                     if let summary = session.summary, !summary.isEmpty {
-                        Text(summary).font(.callout).lineLimit(4)
+                        Text(summary)
+                            .font(.system(size: 13))
+                            .lineSpacing(3)
+                            .lineLimit(3)
                     }
                 }
-                .padding(.vertical, 2)
+                .card(padding: 12)
             }
         }
     }
 
     private func history(_ detail: MemoryDetail) -> some View {
-        Block("History") {
+        Block("修改紀錄") {
             ForEach(Array(detail.events.enumerated()), id: \.offset) { _, event in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(event.op).fontWeight(.medium)
-                        Text(shortTime(event.at)).font(.caption).foregroundColor(.secondary)
+                HStack(alignment: .top, spacing: 10) {
+                    Circle().fill(Theme.accent).frame(width: 8, height: 8).padding(.top, 5)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Lexicon.event(event.op)).font(.system(size: 14))
+                        if let why = event.detail["reason"]?.stringValue, !why.isEmpty {
+                            Text(why).font(.system(size: 13)).foregroundColor(Theme.secondary)
+                        }
                     }
-                    if let why = event.detail["reason"]?.stringValue, !why.isEmpty {
-                        Text(why).font(.callout)
-                    }
+                    Spacer()
+                    Text(localTime(event.at))
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.secondary)
                 }
-                .padding(.vertical, 2)
             }
         }
     }
@@ -447,114 +481,121 @@ struct MemoryPane: View {
         !tidyDraft.isEmpty && storedLength(draft) <= memoryTextLimit
     }
 
+    private func sheetTitle(_ title: String, _ note: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 18, weight: .bold))
+            Text(note).font(.system(size: 13)).foregroundColor(Theme.secondary)
+        }
+    }
+
     private func statusSheet(ids: [String], restore: Bool) -> some View {
         let many = ids.count > 1
-        return VStack(alignment: .leading, spacing: 12) {
-            Text(
+        return VStack(alignment: .leading, spacing: 14) {
+            sheetTitle(
                 restore
-                    ? (many ? "Restore \(ids.count) memories" : "Restore this memory")
-                    : (many ? "Retire \(ids.count) memories" : "Retire this memory")
-            )
-            .font(.headline)
-            Text(
+                    ? (many ? "復原 \(ids.count) 條記憶" : "復原這條記憶")
+                    : (many ? "停用 \(ids.count) 條記憶" : "停用這條記憶"),
                 restore
-                    ? "Active again, and used in new sessions."
-                    : "Kept, but no longer searched, exported or given to new sessions."
-            )
-            .foregroundColor(.secondary)
+                    ? "會重新使用，新的對話也會讀到。"
+                    : "會保留下來，但不再被搜尋、匯出，也不會給新的對話。")
             QuickReasons(
                 choices: restore
-                    ? ["Still true", "Retired by mistake"]
-                    : ["Outdated", "Wrong", "Duplicate", "Too specific"],
+                    ? ["仍然成立", "誤停用"]
+                    : ["已經過時", "內容有誤", "重複了", "太瑣碎"],
                 reason: $reason)
-            TextField("Reason (recorded in the history)", text: $reason)
+            TextField("原因（會記在修改紀錄裡）", text: $reason)
+                .textFieldStyle(.roundedBorder)
                 .frame(width: 420)
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
-                Button("Cancel") { sheet = nil }
+                Button("取消") { sheet = nil }
+                    .buttonStyle(OutlineButtonStyle())
                     .keyboardShortcut(.cancelAction)
-                Button(restore ? "Restore" : "Retire") {
+                Button(restore ? "復原" : "停用") {
                     let why = trimmedReason
                     sheet = nil
                     Task { await change(ids: ids, restore: restore, reason: why) }
                 }
+                .buttonStyle(PrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
                 .disabled(trimmedReason.isEmpty)
             }
         }
-        .padding(20)
+        .padding(24)
     }
 
     private func editSheet(id: String, original: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Edit this memory").font(.headline)
-            Text("The old wording is kept as superseded and linked from the new one.")
-                .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            sheetTitle("改寫這條記憶", "原本的說法會保留為「已改寫」，並連到新的說法。")
             draftEditor(height: 130)
-            QuickReasons(
-                choices: ["Clearer wording", "Corrected a detail", "Out of date"], reason: $reason)
-            TextField("Reason (recorded in the history)", text: $reason)
+            QuickReasons(choices: ["寫得更清楚", "修正細節", "內容過時"], reason: $reason)
+            TextField("原因（會記在修改紀錄裡）", text: $reason)
+                .textFieldStyle(.roundedBorder)
                 .frame(width: 480)
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
-                Button("Cancel") { sheet = nil }
+                Button("取消") { sheet = nil }
+                    .buttonStyle(OutlineButtonStyle())
                     .keyboardShortcut(.cancelAction)
-                Button("Save") {
+                Button("儲存") {
                     let text = tidyDraft
                     let why = trimmedReason
                     sheet = nil
                     Task { await saveEdit(id: id, text: text, reason: why) }
                 }
+                .buttonStyle(PrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
                 .disabled(trimmedReason.isEmpty || !draftFits || tidyDraft == tidyText(original))
             }
         }
-        .padding(20)
+        .padding(24)
     }
 
     private func addSheet(project: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("New memory").font(.headline)
-            Text("For \((project as NSString).lastPathComponent). It has no session behind it.")
-                .foregroundColor(.secondary)
-            Picker("Kind", selection: $draftKind) {
+        VStack(alignment: .leading, spacing: 14) {
+            sheetTitle(
+                "新增記憶", "給 \((project as NSString).lastPathComponent)。這條記憶背後沒有對話紀錄。")
+            Picker("種類", selection: $draftKind) {
                 ForEach(kinds, id: \.self) { kind in
-                    Text(kind).tag(kind)
+                    Text(Lexicon.kind(kind)).tag(kind)
                 }
             }
-            .frame(width: 240)
+            .frame(width: 200)
             draftEditor(height: 110)
-            QuickReasons(choices: ["Team rule", "Decided outside a session"], reason: $reason)
-            TextField("Reason (recorded in the history)", text: $reason)
+            QuickReasons(choices: ["團隊規則", "在對話之外決定的"], reason: $reason)
+            TextField("原因（會記在修改紀錄裡）", text: $reason)
+                .textFieldStyle(.roundedBorder)
                 .frame(width: 480)
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
-                Button("Cancel") { sheet = nil }
+                Button("取消") { sheet = nil }
+                    .buttonStyle(OutlineButtonStyle())
                     .keyboardShortcut(.cancelAction)
-                Button("Add") {
+                Button("加入") {
                     let text = tidyDraft
                     let why = trimmedReason
                     let kind = draftKind
                     sheet = nil
                     Task { await saveNew(project: project, kind: kind, text: text, reason: why) }
                 }
+                .buttonStyle(PrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
                 .disabled(trimmedReason.isEmpty || !draftFits)
             }
         }
-        .padding(20)
+        .padding(24)
     }
 
     private func draftEditor(height: CGFloat) -> some View {
         VStack(alignment: .trailing, spacing: 4) {
             TextEditor(text: $draft)
-                .font(.body)
+                .font(.system(size: 14))
                 .frame(width: 480, height: height)
-                .border(Color.secondary.opacity(0.3))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.control))
             HStack {
-                Text("One line is stored: line breaks become spaces.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Text("只會存成一行：換行會變成空白。")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.secondary)
                 Spacer()
                 LengthCount(text: draft)
             }
@@ -624,12 +665,10 @@ struct MemoryPane: View {
         app.memoryTarget = nil
         query = ""
         everywhere = false
-        projectFilter = ""
         kind = ""
         status = "all"
         keepSelection = target.project != selectedProject
         selectedProject = target.project
-        revealProject = true
         reveal = target.id
         selection = [target.id]
     }
@@ -735,7 +774,7 @@ struct MemoryPane: View {
                 result.failures.append(error.localizedDescription)
             }
         }
-        outcome = ActionNote(result, verb: restore ? "Restored" : "Retired")
+        outcome = ActionNote(result, verb: restore ? "已復原" : "已停用", unit: "條")
         if ids.count > 1 { selection = [] }
         await loadMemories(wait: false)
         await loadProjects()
@@ -752,7 +791,7 @@ struct MemoryPane: View {
         outcome = nil
         do {
             let updated = try await Backend.current().edit(id: id, text: text, reason: reason)
-            outcome = ActionNote(text: "Saved. The old wording is kept as superseded.")
+            outcome = ActionNote(text: "已儲存。原本的說法保留為「已改寫」。")
             await loadMemories(wait: false)
             // Follow the entry to its new wording only if it is still the one in view.
             if selection == [id] {
@@ -773,7 +812,7 @@ struct MemoryPane: View {
         do {
             let added = try await Backend.current().add(
                 project: project, kind: kind, text: text, reason: reason)
-            outcome = ActionNote(text: "Added.")
+            outcome = ActionNote(text: "已加入。")
             // Make sure the new entry is in the list that is reloaded.
             if status != "active" && status != "all" { status = "active" }
             if !self.kind.isEmpty && self.kind != kind { self.kind = "" }
