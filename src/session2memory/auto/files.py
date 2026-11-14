@@ -124,9 +124,12 @@ def archive_claude(
 ) -> FilesReport:
     """Copy cold Claude transcripts (including subagent ones) into a compressed archive."""
     report = FilesReport()
+    if not projects_root.is_dir():
+        # Claude Code is not used on this machine: nothing to archive, and nothing wrong.
+        return report
     zstd = shutil.which("zstd")
-    if zstd is None or not projects_root.is_dir():
-        report.errors.append("zstd executable or Claude projects directory not found")
+    if zstd is None:
+        report.errors.append("zstd executable not found; nothing was archived")
         return report
     for path in sorted(projects_root.rglob("*.jsonl")):
         try:

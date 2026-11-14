@@ -22,7 +22,7 @@ queries, is in [apps/mac](apps/mac/README.md).
 
 - [Two ways to use it](#two-ways-to-use-it)
 - [Requirements](#requirements) · [Install](#install) · [Quick start](#quick-start)
-- [Nightly job](#nightly-job) · [Environment variables](#environment-variables)
+- [Nightly job by hand](#nightly-job-by-hand) · [Environment variables](#environment-variables)
 - [Supported P0 Sources](#supported-p0-sources)
 - [Generate Memory Docs](#generate-memory-docs) · [Worklog Aggregation](#worklog-aggregation)
 - [HKS Ingest (agents)](#hks-ingest-agents) · [Review And Promote](#review-and-promote)
@@ -75,8 +75,8 @@ uv sync
 uv run session2memory --help
 ```
 
-The examples below are written for a checkout (`uv run session2memory …`); with the
-installed command, leave out `uv run`. With pip or pipx, Python 3.12 has to be the
+The examples in the Quick start are written for the installed command; in a checkout,
+put `uv run` in front. Further down they are written for a checkout. With pip or pipx, Python 3.12 has to be the
 interpreter: `pipx install git+https://github.com/WaynezProg/session2memory` or
 `python3.12 -m venv .venv && .venv/bin/pip install .`.
 
@@ -85,75 +85,72 @@ named: `uv sync --extra semantic --group ui`.
 
 ## Quick start
 
-Steps 1 and 2 change nothing.
+Three commands after the install; the first two change nothing.
 
-1. See which session stores exist on this machine:
+```bash
+session2memory setup                 # what it would set up on this machine
+session2memory auto run --dry-run    # what a run would pick up (no file changes, no model calls)
+session2memory setup --apply         # the memory hook in every agent here, and the nightly run
+```
 
-   ```bash
-   uv run session2memory discover
-   ```
+`setup` does what otherwise takes one command per agent and a hand-written job:
 
-2. Rehearse the unattended pipeline (no file changes, no model calls):
+- **Memory hook.** For every agent that is on this machine (Claude Code, Codex, Cursor,
+  Grok, Muse, Antigravity) it adds the SessionStart hook that gives a new session the
+  memory of the workspace it starts in. Each settings file it changes is backed up next
+  to itself first; other hooks in the file are left as they are.
+- **Nightly run.** On macOS it installs a launchd job (05:30; `--hour`, `--minute`) that
+  runs `session2memory auto run` and keeps each run's report under `<store>/logs`. It
+  starts the installed command, so no checkout is needed. If another job already runs
+  the pipeline, it is kept and no second one is added. On Linux `setup` prints the
+  crontab line to add.
+- `session2memory setup --remove --apply` takes both out again. `--no-hooks` and
+  `--no-schedule` do one without the other.
 
-   ```bash
-   uv run session2memory auto run --dry-run
-   ```
+Without `--apply` the plan is only shown. The hook and the job record the absolute path
+of the `session2memory` executable: after moving a checkout or reinstalling, run
+`setup --apply` again.
 
-   `scan` shows the sessions found per tool, `compress` and `archive` how many files a
-   real run would handle.
+What a run does, and what it changes:
 
-3. Run it for real. Read this first, because it changes files and spends model calls:
+- `scan` registers the sessions of every agent; `curate` and `reconcile` call `claude -p`
+  (at most 40 and 5 calls in a nightly run) to write and tidy memory; `export` writes
+  Markdown. All of this is written under `~/.local/share/session2memory/store`.
+- `archive` copies Claude Code sessions older than 10 days, compressed, into the store;
+  the originals stay.
+- `compress` is **not** part of the nightly run unless you pass `setup --compress`. It
+  replaces rollouts older than 14 days in **OpenClaw agents' Codex homes** with a `.zst`
+  next to them; the original is kept under `<store>/holding` for 3 days and then deleted.
+  `~/.codex/sessions` itself is never compressed. A plain `session2memory auto run`
+  includes it; `--no-openclaw` leaves those homes alone.
 
-   - `compress` replaces rollouts older than 14 days in **OpenClaw agents' Codex homes**
-     with a `.zst` next to them; the original is kept under `<store>/holding` for 3 days
-     and then deleted. `~/.codex/sessions` itself is never compressed. `--no-openclaw`
-     leaves those homes alone.
-   - `archive` copies Claude Code sessions older than 10 days, compressed, into the
-     store; the originals stay.
-   - `curate` and `reconcile` call `claude -p` (at most 20 and 5 calls per run).
-   - Everything else is written under `~/.local/share/session2memory/store`.
+To run once by hand instead of waiting for the night:
 
-   ```bash
-   uv run session2memory auto run
-   uv run session2memory auto status
-   uv run session2memory auto memory --workspace "$PWD"
-   ```
+```bash
+session2memory auto run
+session2memory auto status
+session2memory auto memory --workspace "$PWD"
+```
 
-   `--step` limits a run to some steps, e.g. `--step scan --step archive --step curate`.
+`--step` limits a run to some steps, e.g. `--step scan --step archive --step curate`.
+One agent at a time, `session2memory hook-install --agent <name> [--apply]` does what
+`setup` does for all.
 
-4. Give new agent sessions the memory. Without `--apply` it only shows the change:
+## Nightly job by hand
 
-   ```bash
-   uv run session2memory hook-install
-   uv run session2memory hook-install --apply
-   ```
-
-   The hook records the absolute path of the `session2memory` executable. After moving
-   the checkout or reinstalling, run `hook-install --apply` again.
-
-## Nightly job
-
-`scripts/nightly-auto.sh` (checkout only) wraps `auto run`, writes each run's report to
-`<store>/logs` and keeps the last 60. Try it by hand first:
+`setup` covers the usual case. From a checkout, `scripts/nightly-auto.sh` wraps
+`auto run` with environment variables for the store, the call budget, the scopes to
+curate and an index command (see its `--help`), and
+`scripts/nightly-launchd-plist.sh` prints a launchd job for it:
 
 ```bash
 scripts/nightly-auto.sh --dry-run
-```
-
-On macOS, `scripts/nightly-launchd-plist.sh` prints a launchd job for it. launchd starts
-jobs with a bare `PATH`, so the script writes the directories of `uv`, `claude` and
-`zstd` into the job. It installs nothing; you do:
-
-```bash
 scripts/nightly-launchd-plist.sh --hour 5 --minute 30 > ~/Library/LaunchAgents/com.session2memory.nightly.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.session2memory.nightly.plist
 ```
 
-Options after `--` are passed to every run, for example
-`-- --step scan --step archive --step curate --step reconcile --step export` to leave
-`compress` out. To remove the job:
-`launchctl bootout "gui/$(id -u)/com.session2memory.nightly"` and delete the file. With
-cron, set `PATH` in the crontab line the same way.
+Options after `--` are passed to every run. To remove the job:
+`launchctl bootout "gui/$(id -u)/com.session2memory.nightly"` and delete the file.
 
 ## Environment variables
 
@@ -679,7 +676,7 @@ the index is selected by workspace and recency. Search by meaning is `auto searc
 ## Unattended pipeline (`auto`)
 
 A full run changes files outside the store and calls a model; what exactly is listed in
-step 3 of the [Quick start](#quick-start).
+the [Quick start](#quick-start).
 
 ```bash
 uv run session2memory auto run --dry-run     # what would happen, no file changes, no LLM
