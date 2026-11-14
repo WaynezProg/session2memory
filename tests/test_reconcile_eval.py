@@ -52,9 +52,14 @@ def scored(cases: ModuleType, project: str, script: Script):  # type: ignore[no-
 def test_a_retirement_counts_only_when_it_names_the_entry_that_replaced_it(
     cases: ModuleType,
 ) -> None:
-    def retire(because: str) -> Script:
+    def retire(because: str, reason: str = "x") -> Script:
         return lambda find: [
-            {"op": "retire", "id": find("用 Python len"), "because": [find(because)], "reason": "x"}
+            {
+                "op": "retire",
+                "id": find("用 Python len"),
+                "because": [find(because)],
+                "reason": reason,
+            }
         ]
 
     right = scored(cases, "/eval/novel", retire("4800–5600"))
@@ -63,6 +68,9 @@ def test_a_retirement_counts_only_when_it_names_the_entry_that_replaced_it(
     assert (right.contradictions_found, right.contradictions) == (1, 1)
     assert (wrong.contradictions_found, wrong.contradictions) == (0, 1)
     assert right.kept == wrong.kept == right.keep
+    # The model's own wording may hold the word the recorded reason is parsed by.
+    worded = scored(cases, "/eval/novel", retire("4800–5600", "改依 4800 與 5600 的新範圍。"))
+    assert (worded.contradictions_found, worded.contradictions) == (1, 1)
 
 
 def test_a_merge_counts_only_for_the_right_members_and_content(cases: ModuleType) -> None:

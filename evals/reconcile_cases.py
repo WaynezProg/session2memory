@@ -173,7 +173,8 @@ class Score:
 
 
 _MERGED_INTO = re.compile(r"合併為 (m_[0-9a-f]+)")
-_GIVES_WAY_TO = re.compile(r"與 ([^）]*) 矛盾")
+# The step appends this to the model's own reason, which may itself contain 與.
+_GIVES_WAY_TO = re.compile(r"（與 ([^（）]*) 矛盾）$")
 
 
 def run_case(case: Case, runner: Runner, score: Score) -> None:
