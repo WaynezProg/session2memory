@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
 from session2memory.cli import app
@@ -82,7 +83,10 @@ def test_distill_validate_solidify_cli_pipeline(tmp_path: Path) -> None:
     assert (output / "distill" / "2026-05-22" / "solidified" / "solidified.jsonl").exists()
 
 
-def test_distill_cli_uses_default_output_root(tmp_path: Path, monkeypatch) -> None:
+def test_distill_cli_uses_default_output_root(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
     monkeypatch.chdir(tmp_path)
     output = tmp_path / "out" / "session-memory"
     write_pipeline_fixture(output)

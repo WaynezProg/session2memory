@@ -8,12 +8,22 @@ Tests live in `tests/`. Fixtures are under `tests/fixtures/`, golden output unde
 
 ## Build, Test, and Development Commands
 
+- `uv run session2memory discover`: list supported local session stores before importing.
 - `uv run session2memory import --date 2026-05-22 --workspace "$PWD" --output ./out/session-memory --dry-run`: inspect what would be scanned without writing output.
 - `uv run session2memory import --date 2026-05-22 --output ./out/session-memory`: generate daily logs, evidence, and review queues.
+- `uv run session2memory worklog last-week --output ./out/session-memory`: aggregate candidates from `session2memory.db` into `worklogs/`.
+- `uv run session2memory sync --workspace "$PWD" --output ./out/session-memory`: merge promoted memory into harness context files.
 - `uv run pytest -q`: run the full test suite.
 - `uv run pytest tests/integration/test_hks_compatibility.py -q`: verify HKS-facing output contracts.
 - `uv run ruff check .`: run lint and import-order checks.
 - `uv run mypy src/session2memory`: run strict type checks.
+
+## CodeGraph
+
+This repo maintains a CodeGraph index (`.codegraph/`, gitignored). When
+`codegraph_*` MCP tools are available, prefer them for structural questions.
+Cursor loads the tool guide from `.cursor/rules/codegraph.mdc`. Use grep only
+for literal strings, logs, and config values.
 
 ## Coding Style & Naming Conventions
 
@@ -36,3 +46,5 @@ Pull requests should describe the user-facing behavior change, list verification
 ## Agent-Specific Instructions
 
 Do not ingest raw session stores directly into HKS. Generate `out/session-memory` first, then ingest that generated source from the HKS repo. Preserve provenance: raw paths belong in `evidence/index.jsonl`, while daily and review output should expose compact evidence identifiers only.
+
+`session2memory sync` updates only the managed blocks in `AGENTS.md`, `CLAUDE.md`, and `.cursor/rules/session2memory-memory.mdc`. Keep this file aligned with `CLAUDE.md` when changing shared workflow or verification commands.

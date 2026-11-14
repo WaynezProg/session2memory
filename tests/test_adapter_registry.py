@@ -1,13 +1,15 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 from session2memory.adapters.registry import load_plugin_adapters, register_adapter
+from session2memory.models import SessionRecord
 
 
 class _FakeAdapter:
     def __init__(self, root: Path) -> None:
         self.root = root
 
-    def iter_sessions(self, date: str):
+    def iter_sessions(self, date: str) -> Iterator[SessionRecord]:
         del date
         return iter(())
 
