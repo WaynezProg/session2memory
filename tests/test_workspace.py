@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+from pytest import MonkeyPatch
+
 from session2memory.models import SessionRecord
 from session2memory.workspace import resolve_workspace
 
@@ -49,7 +51,7 @@ def test_non_git_cwd_groups_to_canonical_cwd(tmp_path: Path) -> None:
 
 def test_missing_cwd_preserves_opened_identity_without_git(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     missing = tmp_path / "deleted" / "workspace"
     source_parent = tmp_path / "sessions"

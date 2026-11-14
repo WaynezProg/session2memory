@@ -2,7 +2,7 @@ from pathlib import Path
 
 from session2memory.extraction import extract_candidates
 from session2memory.filtering import is_noise
-from session2memory.models import EvidencePointer, SessionMessage, SessionRecord
+from session2memory.models import EvidencePointer, Role, SessionMessage, SessionRecord
 from session2memory.workspace import resolve_workspace
 
 
@@ -18,7 +18,7 @@ def pointer(text: str) -> EvidencePointer:
     )
 
 
-def message(index: int, role: str, text: str) -> SessionMessage:
+def message(index: int, role: Role, text: str) -> SessionMessage:
     return SessionMessage(
         index=index, role=role, text=text, timestamp=None, raw_pointer=pointer(text)
     )

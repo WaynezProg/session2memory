@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from session2memory.distill import DistillError, distill_reviews
 
 
-def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
@@ -14,8 +15,11 @@ def write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
-def read_jsonl(path: Path) -> list[dict[str, object]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [
+        cast(dict[str, Any], json.loads(line))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
 
 
 def write_review_fixture(output: Path) -> None:

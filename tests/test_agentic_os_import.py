@@ -3,8 +3,7 @@ import sqlite3
 from pathlib import Path
 
 from session2memory.agentic_os_index import AgenticOsIndex
-from session2memory.models import EvidencePointer, MemoryCandidate
-from session2memory.workspace import WorkspaceIdentity
+from session2memory.models import EvidencePointer, MemoryCandidate, WorkspaceIdentity
 from session2memory.writer import write_output
 
 
