@@ -27,7 +27,7 @@ HKS queries. It has five panes:
 - **Runs**: store totals and every unattended run, step by step.
 - **HKS Query**: runs `ks query … --writeback=no` and shows the answer, the route it came
   from, the evidence and the trace.
-- **Settings**: where the two repositories are and how their commands are started.
+- **Settings**: what was found (the commands, the store), and overrides for unusual setups.
 
 The app holds no SQL and does not open the database. It runs
 `session2memory auto console <view>` and `ks query`, and renders the JSON they print, so
@@ -47,32 +47,43 @@ panes were drawn off screen against that copy (lists, one entry's detail, and ar
 from the other pane with the workspace and row scrolled into view). The sheets, context
 menus and buttons have not been clicked through in the running app yet.
 
-## Build and run
+## Install and open
 
-Requires macOS 13 or later and Xcode 15 or later (or the matching command-line tools).
+Requires macOS 13 or later and a Swift toolchain (Xcode 15 or later, or the command-line
+tools).
+
+```bash
+apps/mac/scripts/make-app.sh --install    # builds "S2M Console.app" into /Applications
+open -a "S2M Console"
+```
+
+Nothing has to be set up in the app. At start it looks for session2memory by itself:
+
+1. the checkout the app was built from (it then runs `uv run session2memory` there);
+2. otherwise the `session2memory` command on your `PATH`, as installed with
+   `uv tool install git+https://github.com/WaynezProg/session2memory`.
+
+HKS, which only the HKS Query pane needs, is looked for the same way: a
+`Hybrid-Knowledge-System` checkout next to session2memory's, else the `ks` command.
+
+If something is missing, the app says which one thing to do and gives the command to
+copy: install uv, install session2memory, or run it once so there is a store to show.
+**Check Again** looks anew. **Settings** shows what was found; its **Set by hand** part is
+only for a command or folder in an unusual place.
+
+For development, without making an app:
 
 ```bash
 cd apps/mac
 swift run            # builds and opens the window
-```
-
-Or open `apps/mac/Package.swift` in Xcode and run the `S2MConsole` scheme.
-
-No folder is built in. On first start the session2memory folder is the checkout the app
-was built in or started from (the nearest folder above it that holds `src/session2memory`),
-and the HKS folder is a checkout named `Hybrid-Knowledge-System` next to it, if there is
-one. Anything not found is left empty: open **Settings** in the sidebar, set the two
-repository folders, and press **Check both commands**. What you set there is kept.
-
-```bash
-swift test           # JSON decoding, shell quoting, finding the checkout
+swift test           # JSON decoding, shell quoting, finding the commands, the helpers
 ```
 
 ## How it starts the commands
 
-Every command runs as `zsh -lc '<command>'` from the repository folder given in Settings,
-so it sees the same `PATH` as Terminal (uv, mise). The defaults are `uv run session2memory`
-and `uv run ks`. Values are passed single-quoted.
+Every command runs as `zsh -lc '<command>'` from the folder found above (the home folder
+for an installed command), so it sees the same `PATH` as Terminal (uv, mise). Values are
+passed single-quoted.
 
 ## What changes data
 

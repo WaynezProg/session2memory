@@ -55,7 +55,7 @@ There are two independent pipelines; pick by what you want out of it.
 | `zstd` on `PATH` | reading `.jsonl.zst`, the `compress` and `archive` steps of `auto run` | `brew install zstd` / `apt-get install zstd` |
 | a logged-in `claude` CLI | the `curate` and `reconcile` steps of `auto run` (model calls) | or another command via `--llm-cmd` |
 | `semantic` extra (optional) | `auto search` by meaning | local ONNX models, about 3 GB downloaded once |
-| Swift toolchain (optional) | the macOS console | `cd apps/mac && swift build` |
+| Swift toolchain (optional) | the macOS console | `apps/mac/scripts/make-app.sh --install` builds the app; it needs no setup |
 
 ## Install
 

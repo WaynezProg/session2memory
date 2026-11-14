@@ -101,4 +101,42 @@ final class ManagingTests: XCTestCase {
         XCTAssertEqual(parentFolder(of: "/opt/tools/app", home: "/Users/me"), "/opt/tools")
         XCTAssertEqual(parentFolder(of: "/Users/meadow/app", home: "/Users/me"), "/Users/meadow")
     }
+
+    func testTheCommandIsFoundWithoutAsking() {
+        func choose(
+            command: String = "", directory: String = "", checkout: String? = nil,
+            installed: Bool = false
+        ) -> CommandChoice? {
+            CommandFinder.choose(
+                savedCommand: command, savedDirectory: directory, name: "session2memory",
+                checkout: checkout, installed: installed, home: "/Users/me")
+        }
+
+        XCTAssertNil(choose(), "nothing typed, no checkout, not installed")
+        XCTAssertEqual(
+            choose(installed: true),
+            CommandChoice(command: "session2memory", directory: "/Users/me", source: .installed))
+        XCTAssertEqual(
+            choose(checkout: "/work/s2m", installed: true),
+            CommandChoice(
+                command: "uv run session2memory", directory: "/work/s2m", source: .checkout),
+            "the checkout the app belongs to comes before the installed command")
+        XCTAssertEqual(
+            choose(directory: "/elsewhere", checkout: "/work/s2m", installed: true),
+            CommandChoice(
+                command: "uv run session2memory", directory: "/elsewhere", source: .settings),
+            "a folder typed in Settings wins")
+        XCTAssertEqual(
+            choose(command: "s2m-dev"),
+            CommandChoice(command: "s2m-dev", directory: "/Users/me", source: .settings))
+    }
+
+    func testOnlyAPlainNameIsLookedUpInTheShell() async {
+        let odd = await CommandFinder.isInstalled("zsh; echo hi")
+        let real = await CommandFinder.isInstalled("zsh")
+        let none = await CommandFinder.isInstalled("no-such-command-s2m")
+        XCTAssertFalse(odd)
+        XCTAssertTrue(real)
+        XCTAssertFalse(none)
+    }
 }

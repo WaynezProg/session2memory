@@ -59,6 +59,11 @@ final class AppState: ObservableObject {
     @Published var pane: Pane? = .memory
     @Published var memoryTarget: MemoryTarget?
     @Published var sessionTarget: String?
+    /// Whether session2memory was found and has something to show (`detect()`).
+    @Published var setup: SetupState = .checking
+    @Published var s2mChoice: CommandChoice?
+    @Published var hksChoice: CommandChoice?
+    @Published var storePath: String?
 
     func show(memory id: String, in project: String) {
         memoryTarget = MemoryTarget(project: project, id: id)
@@ -84,14 +89,23 @@ struct ContentView: View {
             detail
         }
         .environmentObject(app)
+        .task { await app.detect() }
     }
 
     @ViewBuilder
     private var detail: some View {
         switch app.pane ?? .memory {
-        case .memory: MemoryPane()
-        case .sessions: SessionsPane()
-        case .runs: RunsPane()
+        case .memory, .sessions, .runs:
+            // These read the store; until it can be read, say what to do instead.
+            if app.setup == .ready {
+                switch app.pane ?? .memory {
+                case .sessions: SessionsPane()
+                case .runs: RunsPane()
+                default: MemoryPane()
+                }
+            } else {
+                SetupView().navigationTitle((app.pane ?? .memory).title)
+            }
         case .query: QueryPane()
         case .settings: SettingsPane()
         }
