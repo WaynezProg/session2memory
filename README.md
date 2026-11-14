@@ -366,8 +366,8 @@ own (`./out/HKS`) and the `simple` embedding. Rehearse first:
 HKS_REPO=/path/to/Hybrid-Knowledge-System scripts/daily-session-memory-to-hks.sh --dry-run
 ```
 
-A new `KS_ROOT` has to be created once with `ks ingest ./out/session-memory`; `ks update`
-refuses an empty one. Keep one embedding model per `KS_ROOT`: to use another model, set
+This is the `ks ingest` / `ks update` path: a new `KS_ROOT` has to be created once with
+`ks ingest ./out/session-memory`, because `ks update` refuses an empty one. Keep one embedding model per `KS_ROOT`: to use another model, set
 `HKS_EMBEDDING_MODEL` and a `KS_ROOT` built with it. This path is for operators and
 scheduled jobs, not for autonomous agents following the skill contract.
 
