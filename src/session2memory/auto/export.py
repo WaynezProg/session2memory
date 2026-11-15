@@ -117,7 +117,7 @@ def session_path(root: Path, session: SessionRow) -> Path:
 
 
 def export(
-    store: AutoStore, root: Path, *, reader: Reader = "coding", session_limit: int = 20_000
+    store: AutoStore, root: Path, *, reader: Reader = "coding", session_limit: int | None = None
 ) -> ExportReport:
     report = ExportReport()
     expected: set[Path] = set()
@@ -129,9 +129,9 @@ def export(
         expected.add(target)
         _write(target, render_project(project, memories), report)
         report.projects += 1
-    for session in store.sessions(reader=reader, limit=session_limit):
-        if not session.summary:
-            continue
+    # Empty/pending sessions must not displace old summaries: export mirrors this
+    # selection and would otherwise delete their files before the next HKS prune.
+    for session in store.sessions(reader=reader, limit=session_limit, summary_only=True):
         target = session_path(root, session)
         expected.add(target)
         _write(target, render_session(session), report)

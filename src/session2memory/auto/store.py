@@ -374,7 +374,12 @@ class AutoStore:
         return self._session(row) if row else None
 
     def sessions(
-        self, *, project: str | None = None, reader: Reader = "coding", limit: int = 50
+        self,
+        *,
+        project: str | None = None,
+        reader: Reader = "coding",
+        limit: int | None = 50,
+        summary_only: bool = False,
     ) -> list[SessionRow]:
         scopes = _readable(reader)
         query = (
@@ -385,9 +390,13 @@ class AutoStore:
         if project is not None:
             query += " AND project=?"
             args.append(project)
-        rows = self._connection.execute(
-            query + " ORDER BY last_activity DESC LIMIT ?", [*args, limit]
-        ).fetchall()
+        if summary_only:
+            query += " AND summary IS NOT NULL AND summary != ''"
+        query += " ORDER BY last_activity DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            args.append(limit)
+        rows = self._connection.execute(query, args).fetchall()
         return [self._session(row) for row in rows]
 
     def mark_curated(
