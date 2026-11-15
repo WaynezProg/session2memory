@@ -700,6 +700,33 @@ error results in no injection, never in a failed session.
 No embeddings or reranking are involved here: at session start there is no query yet, so
 the index is selected by workspace and recency. Search by meaning is `auto search`, below.
 
+### Handoff between agents: what was tested
+
+On 2026-11-15 a real session of each agent was handed to each of the others in one
+workspace: Claude Code, Codex, Cursor, Grok, Muse and Antigravity, 30 source → receiver
+pairs. A pair counts as confirmed when the receiving model itself reported the handoff,
+with the right source agent and session, and the ledger holds the delivery.
+
+| Receiver | Result |
+| --- | --- |
+| Claude Code, Codex, Cursor, Grok, Antigravity | confirmed from all five other agents (25 pairs) |
+| Muse | not confirmed by the model yet (5 pairs): the handoff was in each Muse session's log with the right source, but Muse's subscription quota was used up, so the model never answered |
+
+Claude Code was started interactively, since its hook stays silent for `claude -p`; the
+others ran in their non-interactive modes. What the test showed about each agent:
+
+- **Cursor runs Claude Code's hooks too** (fixed in #24). Before the fix, a Cursor session
+  got the whole block twice in two of the three sessions checked, and the ledger named the
+  receiver `claude:<cursor session id>` in three of five. After it, three real
+  `cursor-agent` sessions each got it once and were recorded as `cursor`.
+- **Grok gets it after its first tool call**, as described above. The test prompt had Grok
+  run one shell command first; a Grok session that only answers in text gets nothing.
+- **Muse as a receiver is still to be confirmed** by a run with quota left. As a source it
+  worked for all five receivers.
+- The same test found three faults in the packet, also fixed in #24: the goal line of a
+  Grok or Cursor session was its `<rules>` block, Cursor's last activity had no time zone,
+  and Muse had no last activity at all.
+
 ## Unattended pipeline (`auto`)
 
 A full run changes files outside the store and calls a model; what exactly is listed in
