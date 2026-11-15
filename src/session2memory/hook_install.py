@@ -7,8 +7,8 @@ the first tool call of a session that actually ran (what a hook says before a ca
 dropped when the call is refused).
 
 The change is limited to one hook entry that this module can recognise again, every write
-is preceded by a timestamped backup next to the file, and nothing is written unless
-``apply`` is set.
+is preceded by a timestamped backup next to the file (OpenCode's plugin file, which is
+wholly ours, excepted), and nothing is written unless ``apply`` is set.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from session2memory import opencode_plugin
 
 HOOK_COMMAND_MARKER = "session-start-hook --agent"
 HOOK_MATCHER = "startup|clear"
@@ -72,6 +74,15 @@ AGENT_HOOKS: dict[str, AgentHook] = {
     # Cursor calls sessionStart when a new composer conversation is created and adds the
     # answer's ``additional_context`` to that conversation's initial context.
     "cursor": AgentHook("~/.cursor/hooks.json", "sessionStart", layout="cursor"),
+    # OpenCode has no command hooks: a plugin file it auto-loads runs the command once per
+    # session and adds the answer to that session's system prompt. --once keeps a session
+    # that is opened again in a later OpenCode process silent, as a resume is elsewhere.
+    "opencode": AgentHook(
+        "~/.config/opencode/plugins/session2memory.js",
+        "SessionStart",
+        once_per_session=True,
+        layout="opencode",
+    ),
 }
 ANTIGRAVITY_HOOK_NAME = "session2memory"
 CURSOR_HOOKS_VERSION = 1
@@ -211,6 +222,8 @@ def update_settings(
         return _update_named_hook(
             settings_path, command, AGENT_HOOKS[agent].event, remove=remove, apply=apply, now=now
         )
+    if AGENT_HOOKS[agent].layout == "opencode":
+        return _update_opencode_plugin(settings_path, command, remove=remove, apply=apply)
     if AGENT_HOOKS[agent].layout == "cursor":
         return _update_cursor_hooks(
             settings_path, command, AGENT_HOOKS[agent].event, remove=remove, apply=apply, now=now
@@ -377,18 +390,55 @@ def _update_cursor_hooks(
     return InstallPlan(settings_path, action, command, backup)
 
 
+def _update_opencode_plugin(
+    plugin_path: Path, command: str, *, remove: bool, apply: bool
+) -> InstallPlan:
+    """OpenCode's plugin file: wholly ours, so it is written or deleted as one piece.
+
+    A file of that name that this tool did not write is never touched. Only a file of
+    ours is ever replaced, so no backup is kept (one beside it would be loaded as well).
+    """
+    current: str | None = None
+    if plugin_path.exists():
+        current = plugin_path.read_text(encoding="utf-8")
+        embedded = opencode_plugin.embedded_command(current)
+        if embedded is None or not is_our_command(embedded):
+            raise ValueError(
+                f"{plugin_path.as_posix()}: this plugin was not written by this tool; "
+                "it is left as it is"
+            )
+    wanted = opencode_plugin.render(command, HOOK_TIMEOUT_SECONDS)
+    if remove:
+        action = "remove" if current is not None else "none"
+    elif current == wanted:
+        action = "none"
+    else:
+        action = "replace" if current is not None else "add"
+    if action == "none" or not apply:
+        return InstallPlan(plugin_path, action, command)
+    if remove:
+        plugin_path.unlink()
+    else:
+        _write_text(plugin_path, wanted, default_mode=0o644)
+    return InstallPlan(plugin_path, action, command)
+
+
 def _write_settings(settings_path: Path, settings: dict[str, object]) -> None:
+    _write_text(settings_path, json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
+
+
+def _write_text(settings_path: Path, text: str, *, default_mode: int = 0o600) -> None:
     # A settings file that is a link (dotfiles managers keep the real one in their repo)
     # is written where the link points, so the link stays and the file it names changes.
     target = Path(os.path.realpath(settings_path))
     target.parent.mkdir(parents=True, exist_ok=True)
     # Settings can hold credentials: the rewritten file keeps the original's mode and is
     # never readable by others on the way.
-    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else 0o600
+    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else default_mode
     temporary = target.with_name(target.name + ".session2memory-tmp")
     temporary.unlink(missing_ok=True)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
+        handle.write(text)
     os.chmod(temporary, mode)
     temporary.replace(target)

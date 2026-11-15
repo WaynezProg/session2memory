@@ -96,9 +96,11 @@ session2memory setup --apply         # the memory hook in every agent here, and 
 `setup` does what otherwise takes one command per agent and a hand-written job:
 
 - **Memory hook.** For every agent that is on this machine (Claude Code, Codex, Cursor,
-  Grok, Muse, Antigravity) it adds the SessionStart hook that gives a new session the
-  memory of the workspace it starts in. Each settings file it changes is backed up next
-  to itself first; other hooks in the file are left as they are.
+  Grok, Muse, Antigravity, OpenCode) it adds the SessionStart hook that gives a new session
+  the memory of the workspace it starts in. Each settings file it changes is backed up next
+  to itself first; other hooks in the file are left as they are. OpenCode has no command
+  hooks: there it is a plugin, `~/.config/opencode/plugins/session2memory.js`, that runs the
+  same command once per session and adds the answer to the session's system prompt.
 - **Nightly run.** On macOS it installs a launchd job (05:30; `--hour`, `--minute`) that
   runs `session2memory auto run` and keeps each run's report under `<store>/logs`. It
   starts the installed command, so no checkout is needed. If another job already runs
