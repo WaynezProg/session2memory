@@ -44,6 +44,7 @@ AGENT_HOMES: dict[str, str] = {
     "grok": "~/.grok",
     "antigravity": "~/.gemini",
     "cursor": "~/.cursor",
+    "opencode": "~/.config/opencode",
 }
 
 Launcher = Callable[[Sequence[str]], int]

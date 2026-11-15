@@ -739,11 +739,14 @@ def hook_output(context: str | None, event: str = "SessionStart", *, style: str 
     ``claude`` is the shape Claude Code, Codex, Muse and Grok read. Antigravity takes a list
     of steps to insert into the conversation; a system message stays in it across turns.
     Cursor reads ``additional_context`` and adds it to the conversation's initial context.
+    ``opencode`` is read by the plugin ``hook-install --agent opencode`` writes.
     """
     if not context:
         return "{}"
     if style == "cursor":
         return json.dumps({"additional_context": context}, ensure_ascii=False)
+    if style == "opencode":
+        return json.dumps({"additionalContext": context}, ensure_ascii=False)
     if style == "antigravity":
         return json.dumps(
             {"injectSteps": [{"systemMessage": {"systemMessage": context}}]}, ensure_ascii=False

@@ -138,6 +138,7 @@ def test_default_settings_file_of_each_agent() -> None:
         "grok": "~/.grok/hooks/session2memory.json",
         "antigravity": "~/.gemini/config/hooks.json",
         "cursor": "~/.cursor/hooks.json",
+        "opencode": "~/.config/opencode/plugins/session2memory.js",
     }
 
 

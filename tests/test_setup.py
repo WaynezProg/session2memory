@@ -79,7 +79,7 @@ def test_the_preview_changes_nothing(home: Path) -> None:
     assert files(home) == set() and launch.calls == []
     assert {step.agent: step.action for step in plan.hooks} == {
         "claude": "add", "cursor": "add", "codex": "skipped", "muse": "skipped",
-        "grok": "skipped", "antigravity": "skipped",
+        "grok": "skipped", "antigravity": "skipped", "opencode": "skipped",
     }  # fmt: skip
     assert (plan.schedule.kind, plan.schedule.action) == ("launchd", "add")
     assert plan.pending and not plan.applied and not plan.failed
