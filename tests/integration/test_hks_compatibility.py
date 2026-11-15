@@ -50,7 +50,14 @@ def _write_codex_session(source_root: Path, raw_transcript_path: Path, cwd: Path
 
 
 def test_generated_folder_can_be_ingested_by_adjacent_hks(tmp_path: Path) -> None:
-    hks_root = Path(os.environ.get("SESSION2MEMORY_HKS_ROOT", "../hks")).resolve()
+    configured = os.environ.get("SESSION2MEMORY_HKS_ROOT")
+    adjacent = Path(__file__).resolve().parents[3]
+    candidates = [adjacent / name for name in ("Hybrid-Knowledge-System", "hks")]
+    hks_root = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else next((p for p in candidates if (p / "pyproject.toml").exists()), candidates[0])
+    )
     if not (hks_root / "pyproject.toml").exists():
         pytest.skip("adjacent HKS checkout is not available")
 
