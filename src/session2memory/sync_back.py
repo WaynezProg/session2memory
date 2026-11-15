@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
+import shutil
+import stat
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 
@@ -34,6 +39,11 @@ SYNC_TARGET_IDS = (
     "hermes",
 )
 DEFAULT_SYNC_TARGETS: tuple[str, ...] = ("agents", "claude", "cursor")
+# Previous contents of every file sync changes. Kept outside the synced repos so a backup
+# of CLAUDE.md / AGENTS.md never shows up in their working tree or gets committed.
+SYNC_BACKUP_DIR_ENV = "SESSION2MEMORY_SYNC_BACKUP_DIR"
+DEFAULT_SYNC_BACKUP_DIR = "~/.local/share/session2memory/sync-backups"
+SYNC_BACKUPS_KEPT = 10
 
 
 class SyncError(Exception):
@@ -47,6 +57,7 @@ class SyncWrite:
     created: bool
     changed: bool
     entry_count: int
+    backup: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -128,9 +139,9 @@ def sync_workspace_memory(
             )
         existed = plan.path.is_file()
         changed = not existed or merged != existing
+        backup: Path | None = None
         if not dry_run and changed:
-            plan.path.parent.mkdir(parents=True, exist_ok=True)
-            plan.path.write_text(merged, encoding="utf-8")
+            backup = _write_destination(plan.path, merged, existed=existed)
         if not dry_run and store is not None:
             store.record_sync_hash(
                 workspace_id=workspace_id,
@@ -145,6 +156,7 @@ def sync_workspace_memory(
                 created=not existed,
                 changed=changed,
                 entry_count=len(entries),
+                backup=backup,
             )
         )
     if store is not None:
@@ -188,9 +200,9 @@ def sync_recorded_targets(
                     )
                 existed = path.is_file()
                 changed = not existed or merged != existing
+                backup: Path | None = None
                 if not dry_run and changed:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(merged, encoding="utf-8")
+                    backup = _write_destination(path, merged, existed=existed)
                 if not dry_run:
                     store.record_sync_hash(
                         workspace_id=workspace_id,
@@ -205,6 +217,7 @@ def sync_recorded_targets(
                         created=not existed,
                         changed=changed,
                         entry_count=len(entries),
+                        backup=backup,
                     )
                 )
     finally:
@@ -299,6 +312,79 @@ def _merge_cursor_rule(existing: str, *, body: str) -> str:
         f"{SECTION_INTRO}\n\n"
         f"{block}\n"
     )
+
+
+def _write_destination(path: Path, content: str, *, existed: bool) -> Path | None:
+    """Replace a user-maintained file without ever leaving it half written.
+
+    The previous content is backed up first; a symlinked destination is written through,
+    so the link itself stays in place.
+    """
+    target = Path(os.path.realpath(path))
+    backup = _backup_previous(target) if existed else None
+    _atomic_write_text(target, content)
+    return backup
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(target.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o666 & ~_current_umask()
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".session2memory-tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    _fsync_directory(target.parent)
+
+
+def _current_umask() -> int:
+    umask = os.umask(0)
+    os.umask(umask)
+    return umask
+
+
+def _fsync_directory(directory: Path) -> None:
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def sync_backup_dir() -> Path:
+    return Path(os.environ.get(SYNC_BACKUP_DIR_ENV) or DEFAULT_SYNC_BACKUP_DIR).expanduser()
+
+
+def _backup_previous(target: Path) -> Path:
+    # Same naming as hook_install's backups; the path hash keeps two destinations with the
+    # same file name (e.g. openclaw and hermes memory/<id>.md) apart.
+    root = sync_backup_dir()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key = sha256(target.as_posix().encode("utf-8")).hexdigest()[:12]
+    prefix = f"{target.name}.{key}.bak-session2memory-"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = root / f"{prefix}{stamp}"
+    shutil.copy2(target, backup)
+    for stale in sorted(root.glob(f"{glob.escape(prefix)}*"))[:-SYNC_BACKUPS_KEPT]:
+        stale.unlink(missing_ok=True)
+    return backup
 
 
 def _read_text(path: Path) -> str:

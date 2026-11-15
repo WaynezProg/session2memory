@@ -1,9 +1,11 @@
 import json
+import stat
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from session2memory import sync_back
 from session2memory.cli import app
 from session2memory.memory_entries import parse_memory_markdown
 from session2memory.state.store import StateStore
@@ -12,6 +14,7 @@ from session2memory.sync_back import (
     MARKER_START,
     SyncError,
     merge_marked_section,
+    sync_backup_dir,
     sync_workspace_memory,
 )
 
@@ -303,3 +306,140 @@ def test_sync_finds_a_workspace_the_latest_import_did_not_touch(tmp_path: Path) 
     assert result.workspace_id == derived
     assert result.writes and all(w.path.is_relative_to(earlier) for w in result.writes)
     assert not (latest / "CLAUDE.md").exists()
+
+
+def _backups(prefix: str) -> list[Path]:
+    root = sync_backup_dir()
+    return sorted(root.glob(f"{prefix}.*.bak-session2memory-*")) if root.is_dir() else []
+
+
+def test_sync_leaves_the_original_intact_when_the_replace_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    claude = workspace / "CLAUDE.md"
+    claude.write_text("# Hand-written rules\n", encoding="utf-8")
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(sync_back.os, "replace", boom)
+    with pytest.raises(OSError, match="No space left"):
+        sync_workspace_memory(output_dir=output, workspace=workspace, targets=("claude",))
+
+    assert claude.read_text(encoding="utf-8") == "# Hand-written rules\n"
+    assert sorted(p.name for p in workspace.iterdir()) == ["CLAUDE.md"]
+
+
+def test_sync_leaves_the_original_intact_when_the_write_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    agents = workspace / "AGENTS.md"
+    agents.write_text("# Agents\n", encoding="utf-8")
+
+    def boom(_fd: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(sync_back.os, "fsync", boom)
+    with pytest.raises(OSError, match="disk full"):
+        sync_workspace_memory(output_dir=output, workspace=workspace, targets=("agents",))
+
+    assert agents.read_text(encoding="utf-8") == "# Agents\n"
+    assert sorted(p.name for p in workspace.iterdir()) == ["AGENTS.md"]
+
+
+def test_sync_backs_up_a_changed_file_once_and_keeps_its_mode(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    claude = workspace / "CLAUDE.md"
+    claude.write_text("# Hand-written rules\n", encoding="utf-8")
+    claude.chmod(0o640)
+
+    first = sync_workspace_memory(output_dir=output, workspace=workspace, targets=("claude",))
+    second = sync_workspace_memory(output_dir=output, workspace=workspace, targets=("claude",))
+
+    backups = _backups("CLAUDE.md")
+    assert len(backups) == 1
+    assert first.writes[0].backup == backups[0]
+    assert backups[0].read_text(encoding="utf-8") == "# Hand-written rules\n"
+    assert not backups[0].is_relative_to(workspace)
+    assert second.writes[0].changed is False
+    assert second.writes[0].backup is None
+    assert stat.S_IMODE(claude.stat().st_mode) == 0o640
+    assert MARKER_START in claude.read_text(encoding="utf-8")
+
+
+def test_sync_does_not_back_up_a_file_it_creates(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+
+    result = sync_workspace_memory(output_dir=output, workspace=workspace, targets=("agents",))
+
+    assert result.writes[0].created is True
+    assert result.writes[0].backup is None
+    assert _backups("AGENTS.md") == []
+
+
+def test_sync_writes_through_a_symlinked_destination(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    shared = tmp_path / "shared" / "AGENTS.md"
+    shared.parent.mkdir()
+    shared.write_text("# Shared agent rules\n", encoding="utf-8")
+    (workspace / "AGENTS.md").symlink_to(shared)
+
+    sync_workspace_memory(output_dir=output, workspace=workspace, targets=("agents",))
+
+    link = workspace / "AGENTS.md"
+    assert link.is_symlink()
+    assert link.resolve() == shared.resolve()
+    merged = shared.read_text(encoding="utf-8")
+    assert merged.startswith("# Shared agent rules\n")
+    assert MARKER_START in merged
+    assert _backups("AGENTS.md")[0].read_text(encoding="utf-8") == "# Shared agent rules\n"
+
+
+def test_sync_redacts_every_shared_secret_kind(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    secrets = [
+        "github_pat_" + "A1b2C3d4E5f6G7h8I9j0K1l2",
+        "gho_" + "A1b2C3d4E5f6G7h8I9j0K1",
+        "xoxb-" + "1234567890-abcdefghij",
+        "AIza" + "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p",
+        "Bearer " + "eyJhbGciOiJIUzI1NiJ9.abcdefghijklmnop",
+    ]
+    memory = output / "memories" / "repo-123.md"
+    memory.write_text(
+        memory.read_text(encoding="utf-8")
+        + "".join(
+            f"- [pitfall] Leaked {secret} in a log. "
+            "{workspace_id=repo-123 memory_kind=pitfall tool=codex "
+            f"session_id=s{index} evidence_id=e00001{index} lines=1-1 "
+            f"review=2026-05-22/p{index}}}\n"
+            for index, secret in enumerate(secrets)
+        ),
+        encoding="utf-8",
+    )
+
+    sync_workspace_memory(output_dir=output, workspace=workspace, targets=("agents",))
+
+    agents = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    for secret in secrets:
+        assert secret not in agents
+    assert agents.count("[REDACTED:token]") == len(secrets)
