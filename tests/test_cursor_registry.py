@@ -352,3 +352,29 @@ def test_cursor_is_not_handed_the_session_it_is_starting(bench: Bench) -> None: 
     result = bench.run("cursor", session_id="mine", session_roots=cursor_roots(bench))
 
     assert result.context is None
+
+
+def test_a_session_in_both_cursor_stores_is_handed_off_once(bench: Bench) -> None:  # noqa: F811
+    at(store_db(bench.tmp / "chats", bench.cwd, "both"), 1)
+    path = bench.tmp / "projects" / "project" / "agent-transcripts" / "both" / "both.jsonl"
+    path.parent.mkdir(parents=True)
+    line = {
+        "role": "user",
+        "message": {
+            "content": (
+                f"<user_info>\nWorkspace Path: {bench.cwd.as_posix()}\n</user_info>\n"
+                "<user_query>\n把匯出改成增量。\n</user_query>"
+            )
+        },
+    }
+    reply = {"role": "assistant", "message": {"content": [{"type": "text", "text": "好。"}]}}
+    path.write_text(
+        json.dumps(line, ensure_ascii=False) + "\n" + json.dumps(reply, ensure_ascii=False) + "\n"
+    )
+    at(path, 0.5)
+
+    first = bench.run("claude", session_id="s1", session_roots=cursor_roots(bench))
+    second = bench.run("claude", session_id="s2", session_roots=cursor_roots(bench))
+
+    assert first.context is not None and "from: cursor session both" in first.context
+    assert second.context is None, "the transcript is the same session, not a second one"

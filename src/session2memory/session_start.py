@@ -458,6 +458,10 @@ def previous_sessions(
         root = roots.get(tool)
         if root is not None and root.exists():
             found += opener(root, workspace, since)
+    # A session Cursor keeps in both of its stores is one session: handed off once, under
+    # the chat store's name.
+    chats = {c.session_id for c in found if c.tool == "cursor"}
+    found = [c for c in found if not (c.tool == "cursor-cli" and c.session_id in chats)]
     if exclude is not None:
         found = [c for c in found if not _is_starting_session(c, exclude)]
     return sorted(found, key=lambda candidate: candidate.recency, reverse=True)
