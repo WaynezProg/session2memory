@@ -443,3 +443,22 @@ def test_sync_redacts_every_shared_secret_kind(tmp_path: Path) -> None:
     for secret in secrets:
         assert secret not in agents
     assert agents.count("[REDACTED:token]") == len(secrets)
+
+
+def test_sync_reports_a_backup_it_cannot_write_and_leaves_the_file_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    claude = workspace / "CLAUDE.md"
+    claude.write_text("# Hand-written rules\n", encoding="utf-8")
+    blocked = tmp_path / "not-a-dir"
+    blocked.write_text("", encoding="utf-8")
+    monkeypatch.setenv("SESSION2MEMORY_SYNC_BACKUP_DIR", (blocked / "backups").as_posix())
+
+    with pytest.raises(SyncError, match="Could not back up"):
+        sync_workspace_memory(output_dir=output, workspace=workspace, targets=("claude",))
+
+    assert claude.read_text(encoding="utf-8") == "# Hand-written rules\n"

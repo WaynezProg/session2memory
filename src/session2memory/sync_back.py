@@ -321,7 +321,14 @@ def _write_destination(path: Path, content: str, *, existed: bool) -> Path | Non
     so the link itself stays in place.
     """
     target = Path(os.path.realpath(path))
-    backup = _backup_previous(target) if existed else None
+    try:
+        backup = _backup_previous(target) if existed else None
+    except OSError as exc:
+        # Refuse to overwrite a file that could not be backed up, but say why.
+        raise SyncError(
+            f"Could not back up {target.as_posix()} before writing it "
+            f"(backup dir {sync_backup_dir().as_posix()}): {exc}"
+        ) from exc
     _atomic_write_text(target, content)
     return backup
 
