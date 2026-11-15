@@ -11,6 +11,7 @@ from typing import Any, Literal
 from session2memory.adapters.base import iter_text_lines
 from session2memory.adapters.cursor import cursor_clean_text, cursor_texts_from_content
 from session2memory.agent_metadata import AGENT_METADATA_KEYS, sanitize_agent_metadata
+from session2memory.evidence_index import evidence_rows_for_date
 from session2memory.memory_lifecycle import open_state_store
 from session2memory.review_conflicts import (
     ConflictResolve,
@@ -65,7 +66,7 @@ def inspect_review(*, output_dir: Path, date: str, review_id: str) -> ReviewInsp
     for row in rows:
         if row.get("id") != review_id:
             continue
-        evidence = _find_evidence(output_dir=output_dir, row=row)
+        evidence = _find_evidence(output_dir=output_dir, date=date, row=row)
         return ReviewInspection(
             row=dict(row),
             evidence=dict(evidence) if evidence is not None else None,
@@ -286,12 +287,14 @@ def _review_path(*, output_dir: Path, date: str) -> Path:
     return output_dir / "review" / f"{date}.jsonl"
 
 
-def _find_evidence(*, output_dir: Path, row: dict[str, Any]) -> dict[str, Any] | None:
+def _find_evidence(*, output_dir: Path, date: str, row: dict[str, Any]) -> dict[str, Any] | None:
     evidence_id = str(row.get("evidence_id", ""))
-    for evidence in _read_jsonl(output_dir / "evidence" / "index.jsonl"):
+    rows = _read_jsonl(output_dir / "evidence" / "index.jsonl")
+    found: dict[str, Any] | None = None
+    for evidence in evidence_rows_for_date(rows, date):
         if evidence.get("id") == evidence_id or evidence.get("evidence_id") == evidence_id:
-            return evidence
-    return None
+            found = evidence
+    return found
 
 
 def _evidence_preview(evidence: dict[str, Any] | None, *, limit: int = 1200) -> str:

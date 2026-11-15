@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Any
 
 from session2memory import __version__
 from session2memory.agentic_os_index import AgenticOsIndex
+from session2memory.evidence_index import EVIDENCE_DATE_FIELD
 from session2memory.models import MemoryCandidate, WorkspaceIdentity
 from session2memory.redaction import redact_text
 from session2memory.state.store import StoredCandidate
@@ -61,7 +61,8 @@ def write_output(
         }
         review_rows = None
 
-    _clear_managed_output(output_dir)
+    previous_date = _previous_manifest_date(output_dir)
+    _clear_managed_output(output_dir, date=date)
     (output_dir / "daily").mkdir(parents=True, exist_ok=True)
     (output_dir / "memories").mkdir(parents=True, exist_ok=True)
     (output_dir / "evidence").mkdir(parents=True, exist_ok=True)
@@ -76,19 +77,25 @@ def write_output(
         ),
         encoding="utf-8",
     )
-    evidence_lines = [
-        json.dumps(
-            _evidence_record(
-                evidence_by_id[id(candidate)],
-                candidate,
-                agentic_os_index=agentic_os_index,
-            ),
-            ensure_ascii=False,
-            sort_keys=True,
+    evidence_path = output_dir / "evidence" / "index.jsonl"
+    current_evidence = [
+        _evidence_record(
+            evidence_by_id[id(candidate)],
+            candidate,
+            date=date,
+            agentic_os_index=agentic_os_index,
         )
         for candidate in ordered
     ]
-    evidence_path = output_dir / "evidence" / "index.jsonl"
+    evidence_lines = [
+        json.dumps(record, ensure_ascii=False, sort_keys=True)
+        for record in _merge_evidence_index(
+            _read_evidence_index(evidence_path),
+            current_evidence,
+            date=date,
+            legacy_date=previous_date,
+        )
+    ]
     evidence_path.write_text(
         "\n".join(evidence_lines) + ("\n" if evidence_lines else ""),
         encoding="utf-8",
@@ -171,10 +178,69 @@ def write_output(
     )
 
 
-def _clear_managed_output(output_dir: Path) -> None:
-    for directory in ("daily", "evidence", "review"):
-        shutil.rmtree(output_dir / directory, ignore_errors=True)
+def _clear_managed_output(output_dir: Path, *, date: str) -> None:
+    """Remove only the generated files that belong to ``date``.
+
+    Other dates' ``daily/`` and ``review/`` files stay in place, and their rows in
+    ``evidence/index.jsonl`` are kept by ``_merge_evidence_index``.
+    """
+    (output_dir / "daily" / f"{date}.md").unlink(missing_ok=True)
+    (output_dir / "review" / f"{date}.jsonl").unlink(missing_ok=True)
     (output_dir / "manifest.json").unlink(missing_ok=True)
+
+
+def _previous_manifest_date(output_dir: Path) -> str | None:
+    """Date of the import that wrote the current manifest, if readable."""
+    try:
+        manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = manifest.get("date") if isinstance(manifest, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _read_evidence_index(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            loaded = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(loaded, dict):
+            rows.append(loaded)
+    return rows
+
+
+def _merge_evidence_index(
+    existing: Sequence[dict[str, Any]],
+    current: Sequence[dict[str, Any]],
+    *,
+    date: str,
+    legacy_date: str | None,
+) -> list[dict[str, Any]]:
+    """Replace ``date``'s evidence rows and keep every other date's rows.
+
+    Rows written before evidence carried ``import_date`` covered only the import that
+    wrote the manifest, so they are attributed to ``legacy_date``; without a manifest
+    date they cannot be placed and are dropped, as the old full rewrite did.
+    """
+    by_date: dict[str, list[dict[str, Any]]] = {}
+    for row in existing:
+        row_date = row.get(EVIDENCE_DATE_FIELD)
+        if not isinstance(row_date, str) or not row_date:
+            if legacy_date is None:
+                continue
+            row = {**row, EVIDENCE_DATE_FIELD: legacy_date}
+            row_date = legacy_date
+        if row_date == date:
+            continue
+        by_date.setdefault(row_date, []).append(row)
+    by_date[date] = list(current)
+    return [row for row_date in sorted(by_date) for row in by_date[row_date]]
 
 
 def _candidate_sort_key(
@@ -288,6 +354,7 @@ def _evidence_record(
     evidence_id: str,
     candidate: MemoryCandidate,
     *,
+    date: str,
     agentic_os_index: AgenticOsIndex | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = candidate.evidence.to_json()
@@ -295,6 +362,7 @@ def _evidence_record(
         {
             "id": evidence_id,
             "evidence_id": evidence_id,
+            EVIDENCE_DATE_FIELD: date,
             "kind": candidate.kind,
             "workspace_id": candidate.workspace_id,
             "durable": candidate.durable,

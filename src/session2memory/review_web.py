@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hmac
+import secrets
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from email.message import Message
 from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,11 +21,16 @@ from session2memory.review import (
     reject_review,
 )
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+CSRF_FIELD = "csrf_token"
+
 
 @dataclass(frozen=True)
 class ReviewWebConfig:
     output_dir: Path
     date: str
+    # Random per server run; embedded in every served form and required on POST.
+    csrf_token: str = field(default_factory=lambda: secrets.token_urlsafe(32), repr=False)
 
 
 @dataclass(frozen=True)
@@ -96,13 +104,34 @@ def handle_review_action(
 
 
 def run_review_web(config: ReviewWebConfig, *, host: str = "127.0.0.1", port: int = 8765) -> None:
-    handler = _handler_for(config)
-    server = ThreadingHTTPServer((host, port), handler)
-    print(f"session2memory review web: http://{host}:{port}/")
+    server = create_review_server(config, host=host, port=port)
+    print(f"session2memory review web: http://{_url_host(host)}:{server.server_address[1]}/")
     try:
         server.serve_forever()
     finally:
         server.server_close()
+
+
+def create_review_server(
+    config: ReviewWebConfig, *, host: str = "127.0.0.1", port: int = 8765
+) -> ThreadingHTTPServer:
+    """Bind the review server; requests must name this host and port in ``Host``."""
+    return ThreadingHTTPServer((host, port), _handler_for(config, bind_host=host))
+
+
+def allowed_hosts(bind_host: str, port: int) -> frozenset[str]:
+    """``Host`` header values accepted for a server bound to ``bind_host:port``.
+
+    Loopback names are always accepted; a non-loopback bind host is accepted only as
+    itself. Anything else (for example a DNS-rebound attacker domain) is rejected.
+    """
+    names = set(LOOPBACK_HOSTS)
+    names.add(_url_host(bind_host))
+    return frozenset(f"{name}:{port}".lower() for name in names)
+
+
+def _url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
 
 
 def _review_rows(rows: Sequence[dict[str, Any]], selected_id: str | None) -> str:
@@ -142,24 +171,26 @@ def _review_detail(config: ReviewWebConfig, review_id: str) -> str:
         f"<p><strong>{escape(str(row.get('status', '')))}</strong></p>"
         f"<pre>{escape(str(row.get('text', '')))}</pre>"
         f"<h3>Evidence</h3><pre>{escape(inspection.preview)}</pre>"
-        f"{_action_forms(review_id, row)}"
+        f"{_action_forms(review_id, row, csrf_token=config.csrf_token)}"
     )
 
 
-def _action_forms(review_id: str, row: Mapping[str, Any]) -> str:
+def _action_forms(review_id: str, row: Mapping[str, Any], *, csrf_token: str) -> str:
     durable_checked = " checked" if row.get("durable_suggestion") is True else ""
     review_id_input = (
         f'<input type="hidden" name="review_id" value="{escape(review_id)}">'
     )
     note = '<textarea name="note" placeholder="review note"></textarea>'
+    token_input = f'<input type="hidden" name="{CSRF_FIELD}" value="{escape(csrf_token)}">'
     return (
         '<form method="post" action="/action">'
-        f"{review_id_input}{note}"
+        f"{token_input}{review_id_input}{note}"
         f'<label><input type="checkbox" name="durable"{durable_checked}> durable</label>'
         '<button name="action" value="approve">Approve</button>'
         '<button name="action" value="reject">Reject</button>'
         "</form>"
         '<form method="post" action="/action">'
+        f"{token_input}"
         '<button name="action" value="promote">Promote Approved</button>'
         "</form>"
     )
@@ -179,9 +210,56 @@ def _first(params: Mapping[str, Sequence[str]], key: str) -> str:
     return str(values[0])
 
 
-def _handler_for(config: ReviewWebConfig) -> type[BaseHTTPRequestHandler]:
+def _origin_allowed(headers: Message, hosts: frozenset[str]) -> bool:
+    """Reject cross-site requests by ``Origin`` (or ``Referer``) when the browser sends one."""
+    origin = headers.get("Origin")
+    if origin is not None:
+        parsed = urlparse(origin)
+        return parsed.scheme == "http" and parsed.netloc.lower() in hosts
+    referer = headers.get("Referer")
+    if referer is not None:
+        parsed = urlparse(referer)
+        return parsed.scheme == "http" and parsed.netloc.lower() in hosts
+    return True
+
+
+def _token_valid(params: Mapping[str, Sequence[str]], expected: str) -> bool:
+    supplied = _first(params, CSRF_FIELD)
+    return bool(supplied) and hmac.compare_digest(supplied.encode(), expected.encode())
+
+
+def _handler_for(config: ReviewWebConfig, *, bind_host: str) -> type[BaseHTTPRequestHandler]:
     class ReviewWebHandler(BaseHTTPRequestHandler):
+        def _hosts(self) -> frozenset[str]:
+            address = self.server.server_address
+            port = int(address[1]) if isinstance(address, tuple) else 0
+            return allowed_hosts(bind_host, port)
+
+        def _host_allowed(self) -> bool:
+            host = (self.headers.get("Host") or "").strip().lower()
+            if host in self._hosts():
+                return True
+            self._send_text(HTTPStatus.MISDIRECTED_REQUEST, "unexpected Host header")
+            return False
+
+        def _send_text(self, status: int, message: str) -> None:
+            body = message.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def end_headers(self) -> None:
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("Cache-Control", "no-store")
+            super().end_headers()
+
         def do_GET(self) -> None:
+            if not self._host_allowed():
+                return
             parsed = urlparse(self.path)
             selected_id = _first(parse_qs(parsed.query), "id")
             body = render_review_page(config, selected_id=selected_id).encode("utf-8")
@@ -192,20 +270,29 @@ def _handler_for(config: ReviewWebConfig) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length).decode("utf-8")
-            result = handle_review_action(config, parse_qs(raw))
+            if not self._host_allowed():
+                return
+            if not _origin_allowed(self.headers, self._hosts()):
+                self._send_text(HTTPStatus.FORBIDDEN, "cross-origin request rejected")
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_text(HTTPStatus.BAD_REQUEST, "invalid Content-Length")
+                return
+            raw = self.rfile.read(max(length, 0)).decode("utf-8", errors="replace")
+            params = parse_qs(raw)
+            if not _token_valid(params, config.csrf_token):
+                self._send_text(HTTPStatus.FORBIDDEN, "missing or invalid CSRF token")
+                return
+            result = handle_review_action(config, params)
             if result.status_code == HTTPStatus.SEE_OTHER:
                 self.send_response(result.status_code)
                 self.send_header("Location", result.location)
+                self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            body = result.message.encode("utf-8")
-            self.send_response(result.status_code)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_text(result.status_code, result.message)
 
         def log_message(self, format: str, *args: object) -> None:
             return
