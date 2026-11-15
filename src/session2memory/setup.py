@@ -22,7 +22,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from session2memory.hook_install import AGENT_HOOKS, default_executable, update_settings
+from session2memory.hook_install import (
+    AGENT_HOOKS,
+    default_executable,
+    pinned_openclaw_state_dir,
+    update_settings,
+)
 
 LABEL = "com.session2memory.nightly"
 # The steps of the nightly run. ``compress`` is left out unless asked for: it is the one
@@ -154,7 +159,12 @@ def plan_hooks(
             continue
         try:
             plan = update_settings(
-                settings, agent=agent, executable=executable, remove=remove, apply=apply
+                settings,
+                agent=agent,
+                executable=executable,
+                openclaw_state_dir=pinned_openclaw_state_dir(),
+                remove=remove,
+                apply=apply,
             )
         except (OSError, ValueError) as exc:
             # One agent's unreadable settings file must not stop the others.

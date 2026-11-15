@@ -66,7 +66,12 @@ from session2memory.handoff_find import (
     select_session,
     split_session_spec,
 )
-from session2memory.hook_install import AGENT_HOOKS, DEFAULT_SEEN_DIR, update_settings
+from session2memory.hook_install import (
+    AGENT_HOOKS,
+    DEFAULT_SEEN_DIR,
+    pinned_openclaw_state_dir,
+    update_settings,
+)
 from session2memory.llm_extract import LlmInputMode, SubprocessLlmExtractBackend
 from session2memory.llm_extract_mock import MockLlmExtractBackend
 from session2memory.memory_lifecycle import (
@@ -349,6 +354,13 @@ def session_start_hook(
     auto_store: Annotated[
         Path, typer.Option("--auto-store", help="Store of `auto run`, for distilled memory.")
     ] = Path("~/.local/share/session2memory/store"),
+    openclaw_state_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--openclaw-state-dir",
+            help="OpenClaw state directory (default: OPENCLAW_STATE_DIR, else ~/.openclaw).",
+        ),
+    ] = None,
 ) -> None:
     """Reads the hook payload on stdin and prints the hook JSON. Never fails the session."""
     claimed = ""
@@ -402,7 +414,9 @@ def session_start_hook(
             memory=memory,
             handoff=handoff,
             auto_db=auto_store.expanduser() / AUTO_DB_NAME,
-            openclaw_state_dir=_openclaw_state_dir(),
+            openclaw_state_dir=(
+                openclaw_state_dir.expanduser() if openclaw_state_dir else _openclaw_state_dir()
+            ),
         )
         result = run_hook(config, payload, os.environ)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
@@ -440,7 +454,13 @@ def hook_install(
         if agent not in AGENT_HOOKS:
             raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENT_HOOKS)}")
         target = settings or Path(AGENT_HOOKS[agent].settings)
-        plan = update_settings(target.expanduser(), agent=agent, remove=remove, apply=apply)
+        plan = update_settings(
+            target.expanduser(),
+            agent=agent,
+            openclaw_state_dir=pinned_openclaw_state_dir(),
+            remove=remove,
+            apply=apply,
+        )
     except (ValueError, OSError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc

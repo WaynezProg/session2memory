@@ -418,3 +418,82 @@ def test_parallel_callers_of_an_abandoned_claim_get_it_once(tmp_path: Path) -> N
         ]
         answers = [process.communicate()[0].strip() for process in running]
         assert answers.count("True") == 1, (attempt, answers)
+
+
+def test_a_linked_settings_file_stays_a_link_and_its_target_is_rewritten(tmp_path: Path) -> None:
+    dotfiles = tmp_path / "dotfiles" / "claude"
+    dotfiles.mkdir(parents=True)
+    real = dotfiles / "settings.json"
+    real.write_text('{"theme": "dark"}\n', encoding="utf-8")
+    real.chmod(0o640)
+    link = tmp_path / ".claude" / "settings.json"
+    link.parent.mkdir()
+    link.symlink_to(real)
+
+    plan = update_settings(link, agent="claude", executable=Path("/opt/s2m"), apply=True)
+
+    assert plan.action == "add" and link.is_symlink() and link.resolve() == real.resolve()
+    written = json.loads(real.read_text(encoding="utf-8"))
+    assert written["theme"] == "dark" and "SessionStart" in written["hooks"]
+    assert real.stat().st_mode & 0o777 == 0o640
+    # The backup is still taken beside the path that was named, as a copy of the content.
+    assert plan.backup_path is not None and plan.backup_path.parent == link.parent
+    assert not plan.backup_path.is_symlink()
+    assert json.loads(plan.backup_path.read_text(encoding="utf-8")) == {"theme": "dark"}
+    assert not list(dotfiles.glob("*.session2memory-tmp"))
+    assert update_settings(link, agent="claude", executable=Path("/opt/s2m")).action == "none"
+
+
+def test_the_hook_command_carries_the_openclaw_state_dir_it_was_installed_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from session2memory.hook_install import is_our_command, pinned_openclaw_state_dir
+
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+    assert pinned_openclaw_state_dir() is None
+    assert "--openclaw-state-dir" not in hook_command(Path("/opt/s2m"), "claude")
+    monkeypatch.setenv("OPENCLAW_STATE_DIR", "/srv/open claw/state")
+    state = pinned_openclaw_state_dir()
+    assert state == "/srv/open claw/state"
+
+    for agent in AGENT_HOOKS:
+        command = hook_command(Path("/opt/s2m"), agent, openclaw_state_dir=state)
+        assert "--openclaw-state-dir '/srv/open claw/state'" in command
+        assert is_our_command(command)
+
+    settings = tmp_path / "settings.json"
+    update_settings(settings, agent="codex", executable=Path("/opt/s2m"), apply=True)
+    pinned = update_settings(
+        settings, agent="codex", executable=Path("/opt/s2m"), openclaw_state_dir=state, apply=True
+    )
+    groups = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["SessionStart"]
+    assert pinned.action == "replace" and len(groups) == 1
+    assert "--openclaw-state-dir" in groups[0]["hooks"][0]["command"]
+
+
+def test_the_hook_uses_its_pinned_openclaw_state_dir_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "openclaw" / "state"
+    workspace = state / "workspace" / "repo"
+    workspace.mkdir(parents=True)
+    monkeypatch.delenv("OPENCLAW_STATE_DIR", raising=False)
+    monkeypatch.delenv("OPENCLAW_SHELL", raising=False)
+    monkeypatch.delenv("SESSION2MEMORY_READER", raising=False)
+    monkeypatch.setenv("PWD", workspace.as_posix())
+    monkeypatch.setenv("HOME", (tmp_path / "home").as_posix())
+    payload = json.dumps({"session_id": "s1", "source": "startup", "cwd": workspace.as_posix()})
+    arguments = [
+        "session-start-hook", "--agent", "claude", "--explain",
+        "--ledger", (tmp_path / "ledger.jsonl").as_posix(),
+        "--auto-store", (tmp_path / "store").as_posix(),
+        "--seen-dir", (tmp_path / "seen").as_posix(), "--include-automated",
+    ]  # fmt: skip
+    pin = ["--openclaw-state-dir", state.as_posix()]
+
+    pinned = CliRunner().invoke(app, [*arguments, *pin], input=payload)
+    unpinned = CliRunner().invoke(app, arguments, input=payload)
+
+    assert pinned.exit_code == 0 and unpinned.exit_code == 0
+    assert "openclaw reader" in pinned.stderr
+    assert "openclaw reader" not in unpinned.stderr

@@ -91,8 +91,17 @@ def default_executable() -> Path:
     return Path(os.path.normpath(Path(sys.executable).absolute().parent / "session2memory"))
 
 
-def hook_command(executable: Path, agent: str, seen_dir: str = DEFAULT_SEEN_DIR) -> str:
+def hook_command(
+    executable: Path,
+    agent: str,
+    seen_dir: str = DEFAULT_SEEN_DIR,
+    openclaw_state_dir: str | None = None,
+) -> str:
     base = f"'{executable.as_posix()}' session-start-hook --agent {agent}"
+    if openclaw_state_dir:
+        # An agent started from the Dock or a launcher has no OPENCLAW_STATE_DIR: the hook
+        # carries the one setup ran with, so OpenClaw's own directories are still known.
+        base += f" --openclaw-state-dir {shlex.quote(openclaw_state_dir)}"
     spec = AGENT_HOOKS[agent]
     if not spec.once_per_session:
         return base
@@ -112,7 +121,10 @@ def _seen_option(seen_dir: str) -> str:
 
 
 def hook_entries(
-    executable: Path, agent: str, seen_dir: str = DEFAULT_SEEN_DIR
+    executable: Path,
+    agent: str,
+    seen_dir: str = DEFAULT_SEEN_DIR,
+    openclaw_state_dir: str | None = None,
 ) -> dict[str, dict[str, object]]:
     """The hook group to hold under each event for this agent."""
     spec = AGENT_HOOKS[agent]
@@ -123,7 +135,7 @@ def hook_entries(
         }
         return body if spec.matcher is None else {"matcher": spec.matcher, **body}
 
-    entries = {spec.event: group(hook_command(executable, agent, seen_dir))}
+    entries = {spec.event: group(hook_command(executable, agent, seen_dir, openclaw_state_dir))}
     if spec.observe_event is not None:
         observer = (
             f"'{executable.as_posix()}' session-start-hook --agent {agent} "
@@ -131,6 +143,12 @@ def hook_entries(
         )
         entries[spec.observe_event] = group(observer)
     return entries
+
+
+def pinned_openclaw_state_dir() -> str | None:
+    """The OpenClaw state dir to write into hook commands: ``OPENCLAW_STATE_DIR`` when set."""
+    value = os.environ.get("OPENCLAW_STATE_DIR", "").strip()
+    return os.path.abspath(os.path.expanduser(value)) if value else None
 
 
 def is_our_command(command: str) -> bool:
@@ -175,15 +193,20 @@ def update_settings(
     agent: str = "claude",
     executable: Path | None = None,
     seen_dir: str = DEFAULT_SEEN_DIR,
+    openclaw_state_dir: str | None = None,
     remove: bool = False,
     apply: bool = False,
     now: datetime | None = None,
 ) -> InstallPlan:
-    """Plan (and with ``apply`` perform) the change. Other hooks are left exactly as they are."""
+    """Plan (and with ``apply`` perform) the change. Other hooks are left exactly as they are.
+
+    ``openclaw_state_dir`` is written into the hook command, for agents that are started
+    without the environment it is set in.
+    """
     if agent not in AGENT_HOOKS:
         raise ValueError(f"unknown agent {agent!r}; expected one of {', '.join(AGENT_HOOKS)}")
     exe = executable or default_executable()
-    command = hook_command(exe, agent, seen_dir)
+    command = hook_command(exe, agent, seen_dir, openclaw_state_dir)
     if AGENT_HOOKS[agent].layout == "antigravity":
         return _update_named_hook(
             settings_path, command, AGENT_HOOKS[agent].event, remove=remove, apply=apply, now=now
@@ -192,7 +215,7 @@ def update_settings(
         return _update_cursor_hooks(
             settings_path, command, AGENT_HOOKS[agent].event, remove=remove, apply=apply, now=now
         )
-    entries = hook_entries(exe, agent, seen_dir)
+    entries = hook_entries(exe, agent, seen_dir, openclaw_state_dir)
     settings: dict[str, object] = {}
     if settings_path.exists():
         loaded = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -355,14 +378,17 @@ def _update_cursor_hooks(
 
 
 def _write_settings(settings_path: Path, settings: dict[str, object]) -> None:
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    # A settings file that is a link (dotfiles managers keep the real one in their repo)
+    # is written where the link points, so the link stays and the file it names changes.
+    target = Path(os.path.realpath(settings_path))
+    target.parent.mkdir(parents=True, exist_ok=True)
     # Settings can hold credentials: the rewritten file keeps the original's mode and is
     # never readable by others on the way.
-    mode = stat.S_IMODE(settings_path.stat().st_mode) if settings_path.exists() else 0o600
-    temporary = settings_path.with_name(settings_path.name + ".session2memory-tmp")
+    mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else 0o600
+    temporary = target.with_name(target.name + ".session2memory-tmp")
     temporary.unlink(missing_ok=True)
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
     os.chmod(temporary, mode)
-    temporary.replace(settings_path)
+    temporary.replace(target)

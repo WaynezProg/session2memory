@@ -34,7 +34,7 @@ from session2memory.adapters.antigravity import (
     transcript_path,
 )
 from session2memory.adapters.claude import ClaudeAdapter
-from session2memory.adapters.codex import CodexAdapter
+from session2memory.adapters.codex import CodexAdapter, latest_state_db
 from session2memory.adapters.cursor import (
     STORE_GLOB,
     TRANSCRIPT_GLOBS,
@@ -377,11 +377,11 @@ def _grok_candidates(root: Path, workspace: Path) -> list[Candidate]:
 
 def _codex_candidates(root: Path, workspace: Path) -> list[Candidate]:
     """From Codex's thread table: no rollout is opened to learn which sessions exist."""
-    databases = sorted(root.parent.glob("state_*.sqlite"))
-    if not databases:
+    database = latest_state_db(root.parent)
+    if database is None:
         return []
     try:
-        connection = sqlite3.connect(f"file:{databases[-1].as_posix()}?mode=ro", uri=True)
+        connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
         try:
             connection.execute("PRAGMA query_only=1")
             rows = connection.execute(

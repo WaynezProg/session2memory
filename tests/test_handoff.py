@@ -760,3 +760,36 @@ def test_clipping_cannot_leave_a_token_fragment_behind(tmp_path: Path) -> None:
 
     for cap in (MIN_MAX_CHARS, 600, 900, 1200, 2000):
         assert "ghp_ZZZZ" not in build_packet(record, max_chars=cap), cap
+
+
+def test_codex_state_db_is_the_highest_numbered_not_the_last_by_name(tmp_path: Path) -> None:
+    from session2memory.adapters.codex import latest_state_db
+    from session2memory.session_start import _codex_candidates
+
+    cwd = workspace_dir(tmp_path)
+    root = tmp_path / "codex" / "sessions"
+    rollout = codex_session(root, cwd)
+    current = codex_state(root, cwd, rollout, name="alpha 增量", title=GOAL[:10])
+    current.rename(root.parent / "state_10.sqlite")
+    # An older schema's database is left behind; by name it sorts after state_10.
+    stale = sqlite3.connect(root.parent / "state_5.sqlite")
+    stale.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, cwd TEXT)")
+    stale.commit()
+    stale.close()
+
+    assert latest_state_db(root.parent) == root.parent / "state_10.sqlite"
+    assert codex_summary(read("codex", rollout)).title == "alpha 增量"
+    assert [f.record.source_path for f in recent_sessions("codex", root, cwd)] == [rollout]
+    assert [c.path for c in _codex_candidates(root, cwd)] == [rollout]
+
+
+def test_codex_state_db_without_a_number_ranks_below_numbered_ones(tmp_path: Path) -> None:
+    from session2memory.adapters.codex import latest_state_db
+
+    assert latest_state_db(tmp_path) is None
+    (tmp_path / "state_backup.sqlite").touch()
+    (tmp_path / "state_old.sqlite").touch()
+    os.utime(tmp_path / "state_old.sqlite", (1, 1))
+    assert latest_state_db(tmp_path) == tmp_path / "state_backup.sqlite"
+    (tmp_path / "state_2.sqlite").touch()
+    assert latest_state_db(tmp_path) == tmp_path / "state_2.sqlite"
