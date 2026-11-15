@@ -227,11 +227,9 @@ def resolve_workspace_id(*, output_dir: Path, workspace: Path) -> str:
                         continue
                     if Path(raw).expanduser().resolve(strict=False) == resolved:
                         return str(workspace_id)
-    memories_dir = output_dir / "memories"
-    if memories_dir.is_dir():
-        matches = sorted(path.stem for path in memories_dir.glob("*.md"))
-        if len(matches) == 1:
-            return matches[0]
+    # No guessing from memories/: a lone memories/<id>.md says nothing about which
+    # workspace it belongs to, and writing it into an unrelated repo's CLAUDE.md /
+    # AGENTS.md is worse than refusing.
     raise SyncError(
         f"Could not map workspace {resolved.as_posix()} to a session2memory workspace_id. "
         "Re-run import with --workspace or pass output that includes manifest.json."

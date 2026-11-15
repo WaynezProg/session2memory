@@ -256,3 +256,28 @@ def test_sync_cli_dry_run_reports_planned_writes(tmp_path: Path) -> None:
     assert "would_write=created" in result.output
     assert "session2memory-memory.mdc" in result.output
     assert not (workspace / ".cursor" / "rules" / "session2memory-memory.mdc").exists()
+
+
+def test_sync_refuses_a_workspace_the_manifest_does_not_know(tmp_path: Path) -> None:
+    known = tmp_path / "repo-a"
+    known.mkdir()
+    other = tmp_path / "repo-b"
+    other.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, known)  # memories/ holds exactly one file, repo-a's
+
+    with pytest.raises(SyncError, match="Could not map workspace"):
+        sync_workspace_memory(output_dir=output, workspace=other)
+
+    assert not (other / "CLAUDE.md").exists() and not (other / "AGENTS.md").exists()
+
+
+def test_sync_refuses_a_lone_memory_file_without_a_manifest(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    (output / "manifest.json").unlink()
+
+    with pytest.raises(SyncError, match="Could not map workspace"):
+        sync_workspace_memory(output_dir=output, workspace=workspace)
