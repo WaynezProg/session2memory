@@ -94,6 +94,9 @@ def test_cursor_adapter_includes_store_db_modified_on_requested_date(tmp_path: P
     records = list(CursorAdapter(tmp_path / "cursor").iter_sessions("2026-05-26"))
 
     assert [record.session_id for record in records] == ["cursor-session-1"]
+    # The file time carries its zone, like the times every other adapter reports.
+    assert records[0].updated_at == datetime.fromtimestamp(modified_at, tz=UTC)
+    assert records[0].updated_at.utcoffset() is not None
 
 
 def test_cursor_cli_adapter_reads_agent_transcripts(tmp_path: Path) -> None:

@@ -581,6 +581,25 @@ def test_muse_ignores_projection_directories_and_unwraps_frames(tmp_path: Path) 
     assert adapter.skipped == []
 
 
+def test_muse_reads_recorded_at_as_microseconds(tmp_path: Path) -> None:
+    """Current Muse logs stamp records with integer microseconds, not ISO text."""
+    path = muse_build(tmp_path)
+    first, last = 1_794_709_204_346_898, 1_794_709_206_616_916
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    stamped = [line for line in lines if "recorded_at" in line]
+    for position, line in enumerate(stamped):
+        line["recorded_at"] = first if position == 0 else last
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+    record = MuseAdapter(tmp_path).read_file(path)
+
+    # The first record sits in a frame and keeps its ISO stamp: both forms are read.
+    assert record.started_at is not None and record.started_at.isoformat().startswith(DATE)
+    assert record.updated_at is not None
+    assert record.updated_at.isoformat() == "2026-11-15T02:20:06.616916+00:00"
+    assert all(message.timestamp is not None for message in record.messages)
+
+
 # ---- CLI -------------------------------------------------------------------------------
 
 

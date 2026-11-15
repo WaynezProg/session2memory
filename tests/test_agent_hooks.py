@@ -13,7 +13,15 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from test_session_start import NOW, Bench, claude_memory, codex_summary_file, hook_arguments
+from test_session_start import (
+    CODEX_ID,
+    NOW,
+    Bench,
+    claude_memory,
+    codex_summary_file,
+    hook_arguments,
+    stamp,
+)
 from test_session_start import bench as bench  # noqa: F401 - pytest fixture
 from typer.testing import CliRunner
 
@@ -23,6 +31,7 @@ from session2memory.session_start import (
     CLAIM_RETRY_SECONDS,
     first_time,
     hook_output,
+    host_agent,
     release,
     run_hook,
     seen_marker,
@@ -219,6 +228,68 @@ def test_cli_once_injects_on_the_first_firing_only(bench: Bench) -> None:
         app, arguments, input=json.dumps({"sessionId": "g2", "cwd": bench.cwd.as_posix()})
     )
     assert "hookSpecificOutput" in json.loads(other.output)
+
+
+CURSOR_PAYLOAD = {
+    "conversation_id": "c1",
+    "session_id": "c1",
+    "hook_event_name": "sessionStart",
+    "cursor_version": "2026.11.13-eacade1",
+}
+
+
+@pytest.mark.parametrize(
+    ("agent", "payload", "env", "expected"),
+    [
+        ("claude", CURSOR_PAYLOAD, {}, "cursor"),
+        ("claude", {"session_id": "c1"}, {"CURSOR_VERSION": "2026.11.13"}, "cursor"),
+        # Claude Code started from a terminal inside Cursor is still Claude Code.
+        (
+            "claude",
+            {"session_id": "s1"},
+            {"CURSOR_VERSION": "2026.11.13", "CLAUDE_CODE_ENTRYPOINT": "cli"},
+            "claude",
+        ),
+        ("claude", {"session_id": "s1"}, {"CLAUDE_CODE_ENTRYPOINT": "cli"}, "claude"),
+        ("codex", CURSOR_PAYLOAD, {"CURSOR_VERSION": "2026.11.13"}, "codex"),
+        ("cursor", CURSOR_PAYLOAD, {}, "cursor"),
+    ],
+)
+def test_host_agent_sees_cursor_behind_claudes_entry(
+    agent: str, payload: dict[str, object], env: dict[str, str], expected: str
+) -> None:
+    assert host_agent(agent, payload, env) == expected
+
+
+@pytest.mark.parametrize("claude_first", [True, False])
+def test_cursor_session_is_served_once_and_recorded_as_cursor(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch, claude_first: bool
+) -> None:
+    """Cursor runs Claude Code's entry beside its own: one answer, and the ledger says cursor."""
+    rollout = bench.codex()
+    stamp(rollout, 0)
+    os.utime(rollout)  # the CLI uses the real clock
+    monkeypatch.setenv("CURSOR_VERSION", "2026.11.13-eacade1")
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    seen = bench.tmp / "seen"
+    claude_entry = [*hook_arguments(bench), "--seen-dir", seen.as_posix()]
+    cursor_entry = [("cursor" if a == "claude" else a) for a in claude_entry]
+    payload = json.dumps({**CURSOR_PAYLOAD, "workspace_roots": [bench.cwd.as_posix()]})
+    order = [claude_entry, cursor_entry] if claude_first else [cursor_entry, claude_entry]
+
+    first = json.loads(CliRunner().invoke(app, order[0], input=payload).output)
+    second = json.loads(CliRunner().invoke(app, order[1], input=payload).output)
+
+    # Each entry answers in the format of the settings file it was installed in.
+    context = (
+        first["hookSpecificOutput"]["additionalContext"]
+        if claude_first
+        else first["additional_context"]
+    )
+    assert f"from: codex session {CODEX_ID}" in context
+    assert second == {}
+    ledger = json.loads(bench.ledger.read_text(encoding="utf-8"))
+    assert ledger[f"codex:{CODEX_ID}"]["to"] == "cursor:c1"
 
 
 def test_a_failed_or_abandoned_claim_can_be_taken_again(tmp_path: Path) -> None:

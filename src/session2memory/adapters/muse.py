@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from session2memory.adapters.base import (
@@ -167,6 +167,14 @@ def _turn(payload: dict[str, object]) -> tuple[str, str] | None:
 
 
 def _time(value: object) -> datetime | None:
+    """``recorded_at``: microseconds since the epoch in current logs, ISO text in older ones."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        try:
+            return datetime.fromtimestamp(value / 1_000_000, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
     if not isinstance(value, str) or not value:
         return None
     try:

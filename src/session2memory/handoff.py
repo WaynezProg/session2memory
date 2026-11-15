@@ -32,7 +32,9 @@ MIN_REQUEST_WEIGHT = 9
 # Wrappers whose *content* is the user's request; any other leading <tag>…</tag> block is
 # harness-injected context (reminders, environment, notifications) and is skipped.
 REQUEST_TAGS = ("user_query", "pasted_content")
-INJECTED_TAGS = ("heartbeat", "skill")
+# ``rules``: Grok and Cursor open a session with ``<user_info>…</user_info><rules>…</rules>``
+# as a user message; without it that block was taken for the session's goal.
+INJECTED_TAGS = ("heartbeat", "skill", "rules")
 # A compacted session restarts with its own summary as a user message.
 CONTINUATION_PREFIXES = ("This session is being continued from a previous conversation",)
 _TRAILING_BLOCK = re.compile(

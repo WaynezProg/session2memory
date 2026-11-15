@@ -289,7 +289,9 @@ def _datetime_from_millis(value: object) -> datetime | None:
 
 def _file_modified_at(path: Path) -> datetime | None:
     try:
-        return datetime.fromtimestamp(path.stat().st_mtime)
+        # Aware, like every other adapter's times: a naive local time printed in a handoff
+        # reads as UTC next to them.
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
     except OSError:
         return None
 

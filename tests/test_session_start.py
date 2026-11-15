@@ -424,6 +424,8 @@ def hook_arguments(bench: Bench) -> list[str]:
     return [
         "session-start-hook", "--agent", "claude", "--include-automated",
         "--ledger", bench.ledger.as_posix(),
+        # A Cursor session claims its one answer here: never in the real directory.
+        "--seen-dir", (bench.tmp / "seen-default").as_posix(),
         "--codex-memory-root", bench.memory_root.as_posix(),
         "--source-root", f"codex={bench.codex_root.as_posix()}",
         "--source-root", f"claude={bench.claude_root.as_posix()}",

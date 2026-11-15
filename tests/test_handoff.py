@@ -246,6 +246,14 @@ tool_param = pytest.mark.parametrize("tool", sorted(BUILDERS))
             "記得捷徑也要改",
         ),
         ("比較 a < b 與 c > d", "比較 a < b 與 c > d"),
+        # Grok and Cursor open a session with this as a user message: none of it is a request.
+        (
+            "<user_info>\nOS Version: macos\n</user_info>\n\n<rules>\nThe rules section has "
+            "rules to consider.\n<user_rules>\n<user_rule>用繁體中文</user_rule>\n</user_rules>\n"
+            "</rules>",
+            None,
+        ),
+        ("<rules>\n<user_rules>x</user_rules>\n</rules>\n修正匯出的時區", "修正匯出的時區"),
     ],
 )
 def test_user_request_strips_injected_wrappers(text: str, expected: str | None) -> None:

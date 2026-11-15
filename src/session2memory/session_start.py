@@ -704,6 +704,22 @@ def run_hook(
     return result
 
 
+def host_agent(agent: str, payload: Mapping[str, object], env: Mapping[str, str]) -> str:
+    """The agent whose session this is, which is not always the one whose settings ran us.
+
+    Cursor also runs the hooks in Claude Code's ``~/.claude/settings.json``, so Claude's
+    entry fires inside a Cursor session, next to Cursor's own. Cursor puts ``cursor_version``
+    in every payload and ``CURSOR_VERSION`` in every hook's environment; Claude Code names
+    its entrypoint, which tells it apart when it was started from a Cursor terminal.
+    """
+    if agent != "claude":
+        return agent
+    from_cursor = bool(payload.get("cursor_version")) or (
+        bool(env.get("CURSOR_VERSION")) and not env.get("CLAUDE_CODE_ENTRYPOINT")
+    )
+    return "cursor" if from_cursor else agent
+
+
 def payload_session_id(payload: Mapping[str, object]) -> str:
     """The session a hook payload is about, whatever this agent calls it."""
     for key in ("session_id", "sessionId", "conversationId", "conversation_id"):

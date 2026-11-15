@@ -93,6 +93,7 @@ from session2memory.session_start import (
     HookConfig,
     first_time,
     hook_output,
+    host_agent,
     is_resume,
     payload_session_id,
     release,
@@ -351,29 +352,35 @@ def session_start_hook(
 ) -> None:
     """Reads the hook payload on stdin and prints the hook JSON. Never fails the session."""
     claimed = ""
+    host = agent
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}
         if not isinstance(payload, dict):
             payload = {}
+        host = host_agent(agent, payload, os.environ)
         if observe:
             session = payload_session_id(payload)
             if session and is_resume(payload):
                 served(seen_dir.expanduser(), agent, session)
             typer.echo("{}")
             return
-        if once:
-            claimed = payload_session_id(payload)
-            if not first_time(seen_dir.expanduser(), agent, claimed):
+        session = payload_session_id(payload)
+        # A Cursor session can be served twice at once: by Cursor's own entry and by the
+        # one in Claude Code's settings, which Cursor runs too. They share one claim.
+        if once or (host == "cursor" and session):
+            claimed = session
+            if not first_time(seen_dir.expanduser(), host, claimed):
                 typer.echo("{}")
                 return
+        if once:
             # The session's first tool call stands for its start, unless the agent says
             # what this session is (a resumed one gets nothing, as everywhere else).
             payload = {"source": "startup", **payload}
         source_roots = _default_source_roots()
         source_roots.update(_parse_source_root(source_root or []))
         config = HookConfig(
-            agent=agent,
+            agent=host,
             session_roots={
                 tool: source_roots[tool]
                 for tool in (
@@ -400,16 +407,17 @@ def session_start_hook(
         result = run_hook(config, payload, os.environ)
     except Exception as exc:  # noqa: BLE001 - a hook must never break the session
         if claimed:
-            release(seen_dir.expanduser(), agent, claimed)
+            release(seen_dir.expanduser(), host, claimed)
         if explain:
             typer.echo(f"session-start-hook: {type(exc).__name__}: {exc}", err=True)
         typer.echo("{}")
         return
     if claimed:
-        served(seen_dir.expanduser(), agent, claimed)
+        served(seen_dir.expanduser(), host, claimed)
     if explain:
         for note in result.notes:
             typer.echo(note, err=True)
+    # The answer is in the format of the settings that ran this entry, not of the host.
     style = AGENT_HOOKS[agent].output if agent in AGENT_HOOKS else "claude"
     typer.echo(hook_output(result.context, event, style=style))
 
