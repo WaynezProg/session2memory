@@ -281,3 +281,25 @@ def test_sync_refuses_a_lone_memory_file_without_a_manifest(tmp_path: Path) -> N
 
     with pytest.raises(SyncError, match="Could not map workspace"):
         sync_workspace_memory(output_dir=output, workspace=workspace)
+
+
+def test_sync_finds_a_workspace_the_latest_import_did_not_touch(tmp_path: Path) -> None:
+    from session2memory.workspace import workspace_id_for
+
+    earlier = tmp_path / "repo-a"
+    earlier.mkdir()
+    latest = tmp_path / "repo-b"
+    latest.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, latest)  # the manifest only knows repo-b
+    derived = workspace_id_for(earlier.resolve())
+    text = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
+    (output / "memories" / f"{derived}.md").write_text(
+        text.replace("repo-123", derived), encoding="utf-8"
+    )
+
+    result = sync_workspace_memory(output_dir=output, workspace=earlier)
+
+    assert result.workspace_id == derived
+    assert result.writes and all(w.path.is_relative_to(earlier) for w in result.writes)
+    assert not (latest / "CLAUDE.md").exists()

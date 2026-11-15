@@ -11,6 +11,7 @@ from pathlib import Path
 from session2memory.memory_entries import MemoryEntry, load_workspace_memory_entries
 from session2memory.memory_lifecycle import open_state_store
 from session2memory.redaction import redact_text
+from session2memory.workspace import find_git_root, workspace_id_for
 
 MARKER_START = "<!-- session2memory:sync-start -->"
 MARKER_END = "<!-- session2memory:sync-end -->"
@@ -227,7 +228,15 @@ def resolve_workspace_id(*, output_dir: Path, workspace: Path) -> str:
                         continue
                     if Path(raw).expanduser().resolve(strict=False) == resolved:
                         return str(workspace_id)
-    # No guessing from memories/: a lone memories/<id>.md says nothing about which
+    # The manifest only lists the workspaces of the latest import. A workspace_id is
+    # derived from the path alone, so recompute it and accept it when that exact
+    # memory file exists.
+    canonical = (find_git_root(resolved) if resolved.is_dir() else None) or resolved
+    for candidate in dict.fromkeys((canonical, resolved)):
+        derived = workspace_id_for(candidate)
+        if (output_dir / "memories" / f"{derived}.md").is_file():
+            return derived
+    # No guessing beyond that: a lone memories/<id>.md says nothing about which
     # workspace it belongs to, and writing it into an unrelated repo's CLAUDE.md /
     # AGENTS.md is worse than refusing.
     raise SyncError(
