@@ -66,6 +66,21 @@ def test_workspaces_named_in_the_openclaw_config_count(home: Path, tmp_path: Pat
     assert not within(tmp_path / "agents-home" / "other", roots)
 
 
+def test_a_configured_workspace_in_the_home_workspaces_folder_does_not_claim_it_all(
+    home: Path,
+) -> None:
+    state = home / ".openclaw"
+    state.mkdir()
+    agent = home / "workspaces" / "oc-agent"
+    config = {"agents": {"defaults": {"workspace": agent.as_posix()}}}
+    (state / "openclaw.json").write_text(json.dumps(config), encoding="utf-8")
+    roots = openclaw_roots(state)
+
+    assert within(agent / "notes", roots)
+    assert not within(home / "workspaces" / "my-app", roots)
+    assert forced_reader({}, home / "workspaces" / "my-app", state) is None
+
+
 def test_a_config_that_is_not_json_adds_nothing(home: Path) -> None:
     state = home / ".openclaw"
     state.mkdir()

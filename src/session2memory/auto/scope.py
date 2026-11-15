@@ -23,14 +23,16 @@ def openclaw_roots(state_dir: Path) -> tuple[Path, ...]:
     taken only when it is evident: the state dir is a folder named ``state`` that is not
     directly in the home directory, or the config puts a workspace in that folder. With
     the default ``~/.openclaw`` the sibling would be ``~/workspaces``, where coding
-    projects live.
+    projects live, so that folder is never taken whole: a workspace the config names
+    inside it counts on its own.
     """
     configured = _configured_workspaces(state_dir)
     roots = [state_dir / "agents", state_dir / "workspace", *_profile_workspaces(state_dir)]
     roots += configured
     sibling = state_dir.parent / "workspaces"
-    split = state_dir.name == "state" and _absolute(state_dir.parent) != _absolute(Path.home())
-    if split or any(within(one, (sibling,)) for one in configured):
+    in_home = _absolute(state_dir.parent) == _absolute(Path.home())
+    split = state_dir.name == "state" or any(within(one, (sibling,)) for one in configured)
+    if split and not in_home:
         roots.append(sibling)
     return tuple(dict.fromkeys(roots))
 
