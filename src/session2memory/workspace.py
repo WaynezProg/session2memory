@@ -17,6 +17,10 @@ def _short_digest(path: Path) -> str:
     return sha256(path.as_posix().encode("utf-8")).hexdigest()[:8]
 
 
+def workspace_id_for(canonical: Path) -> str:
+    return f"{_slug_base(canonical)}-{_short_digest(canonical)}"
+
+
 def find_git_root(cwd: Path) -> Path | None:
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -43,7 +47,7 @@ def resolve_workspace(record: SessionRecord) -> WorkspaceIdentity:
     else:
         repo_root = None
         canonical = source_parent
-    workspace_id = f"{_slug_base(canonical)}-{_short_digest(canonical)}"
+    workspace_id = workspace_id_for(canonical)
     return WorkspaceIdentity(
         workspace_id=workspace_id,
         canonical_path=canonical,

@@ -16,6 +16,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from session2memory.auto.secrets import scrub_secrets
 from session2memory.extraction import extract_candidates
 from session2memory.filtering import is_noise
 from session2memory.models import SessionMessage, SessionRecord
@@ -141,7 +142,10 @@ def continuation_summary(text: str) -> str | None:
 
 
 def _clip(text: str, limit: int) -> str:
-    flattened = " ".join(text.split())
+    # Every snippet that leaves a session (handoff packets, the SessionStart context,
+    # scan prompts) passes through here. Scrub before cutting, so a token clipped at
+    # the limit cannot slip past the patterns as a shorter fragment.
+    flattened = " ".join(scrub_secrets(text).split())
     if len(flattened) <= limit:
         return flattened
     return flattened[: max(limit - 1, 0)] + "…"
@@ -236,7 +240,7 @@ def build_packet(
         longest.text = _clip(longest.text, max(len(longest.text) - overflow, MIN_ITEM_CHARS))
     while len(render()) > max_chars and len(body) > 1:
         del body[min(range(len(body)), key=lambda i: body[i].priority)]
-    packet = render()
+    packet = scrub_secrets(render())
     return packet if len(packet) <= max_chars else packet[: max_chars - 1] + "…"
 
 

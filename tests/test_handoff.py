@@ -729,3 +729,34 @@ def test_cli_handoff_session_option_overrides_latest(tmp_path: Path) -> None:
     assert wrong_tool.exit_code == 1 and "no session" in wrong_tool.output
     assert ambiguous.exit_code == 1 and "ambiguous" in ambiguous.output
 
+
+# Built at runtime so the repository never holds a token-shaped literal.
+GITHUB_TOKEN = "ghp_" + "Z" * 36
+AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
+def test_packet_never_carries_credentials_into_the_next_agent(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    turns = [
+        ("user", f"{GOAL}，部署時用這個 token {GITHUB_TOKEN} 推上去"),
+        ("assistant", f"已設定 AWS_ACCESS_KEY_ID={AWS_KEY}，下一步跑 DRIFT-409 測試"),
+    ]
+    record = read("codex", codex_session(tmp_path / "codex", cwd, turns))
+
+    packet = build_packet(record)
+
+    assert GOAL in packet and "DRIFT-409" in packet
+    assert "[REDACTED]" in packet
+    assert GITHUB_TOKEN[:12] not in packet and AWS_KEY[:12] not in packet
+
+
+def test_clipping_cannot_leave_a_token_fragment_behind(tmp_path: Path) -> None:
+    cwd = workspace_dir(tmp_path)
+    # The token straddles every reasonable clip point of a long final reply.
+    reply = "完成部署。" + "細節" * 150 + f" token={GITHUB_TOKEN} " + "後續" * 400
+    record = read(
+        "codex", codex_session(tmp_path / "codex", cwd, [("user", GOAL), ("assistant", reply)])
+    )
+
+    for cap in (MIN_MAX_CHARS, 600, 900, 1200, 2000):
+        assert "ghp_ZZZZ" not in build_packet(record, max_chars=cap), cap

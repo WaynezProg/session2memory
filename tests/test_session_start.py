@@ -537,3 +537,18 @@ def test_cli_hook_install_reports_the_plan(tmp_path: Path) -> None:
     assert "action: add\n" in applied.output and "backup: " in applied.output
     assert "action: remove" in removed.output
     assert json.loads(settings.read_text(encoding="utf-8")) == EXISTING
+
+
+def test_codex_own_summary_is_scrubbed_before_it_reaches_another_agent(bench: Bench) -> None:
+    token = "ghp_" + "Y" * 36
+    bench.codex(hours_ago=2)
+    summary = codex_summary_file(
+        bench.memory_root, CODEX_ID, bench.cwd, "匯出增量化", hours_ago=1, name="s"
+    )
+    with summary.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n部署用的 token 是 {token}，記得換掉。\n")
+
+    context = bench.run("claude").context
+
+    assert context is not None and "Codex 自己寫的摘要" in context
+    assert "[REDACTED]" in context and "ghp_YYYY" not in context

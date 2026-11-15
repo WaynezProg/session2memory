@@ -256,3 +256,50 @@ def test_sync_cli_dry_run_reports_planned_writes(tmp_path: Path) -> None:
     assert "would_write=created" in result.output
     assert "session2memory-memory.mdc" in result.output
     assert not (workspace / ".cursor" / "rules" / "session2memory-memory.mdc").exists()
+
+
+def test_sync_refuses_a_workspace_the_manifest_does_not_know(tmp_path: Path) -> None:
+    known = tmp_path / "repo-a"
+    known.mkdir()
+    other = tmp_path / "repo-b"
+    other.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, known)  # memories/ holds exactly one file, repo-a's
+
+    with pytest.raises(SyncError, match="Could not map workspace"):
+        sync_workspace_memory(output_dir=output, workspace=other)
+
+    assert not (other / "CLAUDE.md").exists() and not (other / "AGENTS.md").exists()
+
+
+def test_sync_refuses_a_lone_memory_file_without_a_manifest(tmp_path: Path) -> None:
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, workspace)
+    (output / "manifest.json").unlink()
+
+    with pytest.raises(SyncError, match="Could not map workspace"):
+        sync_workspace_memory(output_dir=output, workspace=workspace)
+
+
+def test_sync_finds_a_workspace_the_latest_import_did_not_touch(tmp_path: Path) -> None:
+    from session2memory.workspace import workspace_id_for
+
+    earlier = tmp_path / "repo-a"
+    earlier.mkdir()
+    latest = tmp_path / "repo-b"
+    latest.mkdir()
+    output = tmp_path / "session-memory"
+    _write_memory_fixture(output, latest)  # the manifest only knows repo-b
+    derived = workspace_id_for(earlier.resolve())
+    text = (output / "memories" / "repo-123.md").read_text(encoding="utf-8")
+    (output / "memories" / f"{derived}.md").write_text(
+        text.replace("repo-123", derived), encoding="utf-8"
+    )
+
+    result = sync_workspace_memory(output_dir=output, workspace=earlier)
+
+    assert result.workspace_id == derived
+    assert result.writes and all(w.path.is_relative_to(earlier) for w in result.writes)
+    assert not (latest / "CLAUDE.md").exists()

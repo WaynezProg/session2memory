@@ -2057,6 +2057,15 @@ def test_secrets_never_reach_stored_memory(secret: str) -> None:
     )
 
 
+def test_a_token_glued_to_cjk_text_is_still_scrubbed() -> None:
+    from session2memory.auto.secrets import scrub_secrets
+
+    token = "ghp_" + "a1B2" * 6
+
+    assert token not in scrub_secrets(f"部署用{token}推上去")
+    assert scrub_secrets("task-12345678 不是金鑰") == "task-12345678 不是金鑰"
+
+
 def test_reply_to_a_bare_acknowledgement_does_not_replace_the_real_reply(
     tmp_path: Path,
 ) -> None:
