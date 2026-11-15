@@ -16,9 +16,11 @@ from test_handoff import (
     CODEX_ID,
     GOAL,
     LAST_REPLY,
+    MUSE_ID,
     claude_session,
     codex_session,
     codex_state,
+    muse_session,
     snapshot,
     workspace_dir,
 )
@@ -245,6 +247,69 @@ def test_the_starting_session_is_never_its_own_previous_session(bench: Bench) ->
 
     assert own is not None and f"from: codex session {CODEX_ID}" in own
     assert another is not None and f"from: claude session {CLAUDE_ID}" in another
+
+
+def muse_roots(bench: Bench) -> dict[str, Path]:
+    return {
+        "codex": bench.codex_root,
+        "claude": bench.claude_root,
+        "muse": bench.tmp / "muse",
+    }
+
+
+def test_a_muse_session_is_handed_off_like_any_other(bench: Bench) -> None:
+    # Muse keeps no index of sessions by workspace: the hook has to open them to know.
+    stamp(muse_session(bench.tmp / "muse", bench.cwd), 1)
+
+    first = bench.run("grok", session_id="g1", session_roots=muse_roots(bench))
+    second = bench.run("grok", session_id="g2", session_roots=muse_roots(bench))
+
+    assert first.context is not None and f"from: muse session {MUSE_ID}" in first.context
+    assert GOAL in first.context
+    assert second.context is None, "delivered once, as for every other agent"
+    ledger = json.loads(bench.ledger.read_text(encoding="utf-8"))
+    assert ledger[f"muse:{MUSE_ID}"]["to"] == "grok:g1"
+
+
+def test_the_newest_session_wins_whichever_agent_it_was_in(bench: Bench) -> None:
+    bench.codex(hours_ago=5)
+    stamp(muse_session(bench.tmp / "muse", bench.cwd), 1)
+
+    context = bench.run("claude", session_roots=muse_roots(bench)).context
+
+    assert context is not None and f"from: muse session {MUSE_ID}" in context
+    assert f"from: codex session {CODEX_ID}" not in context
+
+
+def test_a_muse_session_of_another_workspace_or_too_old_is_left_out(bench: Bench) -> None:
+    stamp(muse_session(bench.tmp / "muse", bench.other), 1)
+    assert bench.run("claude", session_roots=muse_roots(bench)).context is None
+
+    stamp(muse_session(bench.tmp / "muse-old", bench.cwd), 100)
+    roots = {**muse_roots(bench), "muse": bench.tmp / "muse-old"}
+    assert bench.run("claude", session_roots=roots).context is None
+    assert bench.run("claude", session_roots=roots, max_age_hours=200).context is not None
+
+
+def test_only_the_newest_few_sessions_of_an_unindexed_store_are_opened(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A hook has seconds: with the limit at zero nothing is opened and nothing is found.
+    stamp(muse_session(bench.tmp / "muse", bench.cwd), 1)
+    monkeypatch.setattr(session_start, "MAX_OPENED_SESSIONS", 0)
+    assert bench.run("claude", session_roots=muse_roots(bench)).context is None
+
+    monkeypatch.setattr(session_start, "MAX_OPENED_SESSIONS", 1)
+    assert bench.run("claude", session_roots=muse_roots(bench)).context is not None
+
+
+def test_muse_starting_a_session_is_not_handed_its_own(bench: Bench) -> None:
+    stamp(muse_session(bench.tmp / "muse", bench.cwd), 0.1)
+    bench.codex(hours_ago=3)
+
+    own = bench.run("muse", session_id=MUSE_ID, session_roots=muse_roots(bench)).context
+
+    assert own is not None and f"from: codex session {CODEX_ID}" in own
 
 
 def test_an_old_previous_session_is_not_handed_off(bench: Bench) -> None:

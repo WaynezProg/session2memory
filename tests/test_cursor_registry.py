@@ -290,3 +290,91 @@ def test_cli_answers_cursor_in_its_own_shape(bench: Bench) -> None:
     answer = json.loads(CliRunner().invoke(app, arguments, input=payload).output)
 
     assert "匯出格式" in answer["additional_context"]
+
+
+# ---- handoff from Cursor sessions ------------------------------------------------------
+
+
+def cursor_roots(bench: Bench) -> dict[str, Path]:
+    return {
+        "codex": bench.codex_root,
+        "claude": bench.claude_root,
+        "cursor": bench.tmp / "chats",
+        "cursor-cli": bench.tmp / "projects",
+    }
+
+
+def at(path: Path, hours_ago: float) -> Path:
+    moment = HOOK_NOW.timestamp() - hours_ago * 3600
+    os.utime(path, (moment, moment))
+    return path
+
+
+def test_hook_hands_off_a_cursor_chat_of_the_workspace(bench: Bench) -> None:  # noqa: F811
+    at(store_db(bench.tmp / "chats", bench.cwd, "mine"), 1)
+    at(store_db(bench.tmp / "chats", bench.other, "theirs"), 0.5)
+
+    result = bench.run("claude", session_roots=cursor_roots(bench))
+
+    assert result.context is not None and "from: cursor session mine" in result.context
+    assert "請把 Cursor 的對話也納入每晚的整理流程。" in result.context
+    assert "theirs" not in result.context
+
+
+def test_hook_hands_off_a_cursor_cli_transcript_of_the_workspace(bench: Bench) -> None:  # noqa: F811
+    path = bench.tmp / "projects" / "project" / "agent-transcripts" / "cli-9" / "cli-9.jsonl"
+    path.parent.mkdir(parents=True)
+    lines = [
+        {
+            "role": "user",
+            "message": {
+                "content": (
+                    f"<user_info>\nWorkspace Path: {bench.cwd.as_posix()}\n</user_info>\n"
+                    "<user_query>\n把匯出改成增量。\n</user_query>"
+                )
+            },
+        },
+        {"role": "assistant", "message": {"content": [{"type": "text", "text": "已改成增量。"}]}},
+    ]
+    path.write_text("\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n")
+    at(path, 1)
+
+    result = bench.run("codex", session_roots=cursor_roots(bench))
+
+    assert result.context is not None and "from: cursor-cli session cli-9" in result.context
+    assert "把匯出改成增量。" in result.context
+
+
+def test_cursor_is_not_handed_the_session_it_is_starting(bench: Bench) -> None:  # noqa: F811
+    # Cursor names a session the same in its chat store and in its transcripts.
+    at(store_db(bench.tmp / "chats", bench.cwd, "mine"), 0.1)
+
+    result = bench.run("cursor", session_id="mine", session_roots=cursor_roots(bench))
+
+    assert result.context is None
+
+
+def test_a_session_in_both_cursor_stores_is_handed_off_once(bench: Bench) -> None:  # noqa: F811
+    at(store_db(bench.tmp / "chats", bench.cwd, "both"), 1)
+    path = bench.tmp / "projects" / "project" / "agent-transcripts" / "both" / "both.jsonl"
+    path.parent.mkdir(parents=True)
+    line = {
+        "role": "user",
+        "message": {
+            "content": (
+                f"<user_info>\nWorkspace Path: {bench.cwd.as_posix()}\n</user_info>\n"
+                "<user_query>\n把匯出改成增量。\n</user_query>"
+            )
+        },
+    }
+    reply = {"role": "assistant", "message": {"content": [{"type": "text", "text": "好。"}]}}
+    path.write_text(
+        json.dumps(line, ensure_ascii=False) + "\n" + json.dumps(reply, ensure_ascii=False) + "\n"
+    )
+    at(path, 0.5)
+
+    first = bench.run("claude", session_id="s1", session_roots=cursor_roots(bench))
+    second = bench.run("claude", session_id="s2", session_roots=cursor_roots(bench))
+
+    assert first.context is not None and "from: cursor session both" in first.context
+    assert second.context is None, "the transcript is the same session, not a second one"
