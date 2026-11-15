@@ -16,6 +16,6 @@ _SECRETS = re.compile(
 )
 
 
-def scrub_secrets(text: str) -> str:
+def scrub_secrets(text: str, *, placeholder: str = "[REDACTED]") -> str:
     """Whatever the model was told, a credential must never land in stored memory."""
-    return _SECRETS.sub("[REDACTED]", text)
+    return _SECRETS.sub(placeholder, text)

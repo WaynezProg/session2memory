@@ -1356,10 +1356,11 @@ def sync_back(
     for write in result.writes:
         action = "would_write" if dry_run else "wrote"
         status = "created" if write.created else ("updated" if write.changed else "unchanged")
+        backup = f" backup={write.backup.as_posix()}" if write.backup else ""
         typer.echo(
             f"workspace_id={result.workspace_id} target={write.target} "
             f"path={write.path.as_posix()} entries={write.entry_count} "
-            f"{action}={status}"
+            f"{action}={status}{backup}"
         )
 
 
