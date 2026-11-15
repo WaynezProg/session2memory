@@ -162,3 +162,130 @@ def test_opencode_adapter_filters_session_dates_by_utc_boundary(tmp_path: Path) 
     records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-22"))
 
     assert records == []
+
+
+def add_v2_tables(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE session_v2 (
+            id text PRIMARY KEY,
+            project_id text NOT NULL,
+            workspace_id text,
+            directory text NOT NULL,
+            time_created integer NOT NULL,
+            time_updated integer NOT NULL
+        );
+        CREATE TABLE session_message (
+            id text PRIMARY KEY,
+            session_id text NOT NULL,
+            type text NOT NULL,
+            seq integer NOT NULL,
+            time_created integer NOT NULL,
+            time_updated integer NOT NULL,
+            data text NOT NULL
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+
+def insert_v2_message(
+    connection: sqlite3.Connection, session_id: str, seq: int, kind: str, data: object
+) -> None:
+    connection.execute(
+        "insert into session_message values (?, ?, ?, ?, ?, ?, ?)",
+        (
+            f"{session_id}-m{seq}",
+            session_id,
+            kind,
+            seq,
+            1779412155000 + seq,
+            1779412155000 + seq,
+            json.dumps(data),
+        ),
+    )
+
+
+def test_opencode_adapter_reads_session_v2_messages(tmp_path: Path) -> None:
+    db_path = tmp_path / "opencode.db"
+    create_opencode_db(db_path)
+    add_v2_tables(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "insert into session_v2 values (?, ?, ?, ?, ?, ?)",
+        ("ses2", "proj1", None, "/tmp/v2", 1779412154000, 1779412160000),
+    )
+    insert_v2_message(connection, "ses2", 1, "system", {"text": "tool catalog"})
+    insert_v2_message(connection, "ses2", 2, "user", {"text": "呼叫 hks_workspace_list"})
+    insert_v2_message(
+        connection,
+        "ses2",
+        3,
+        "assistant",
+        {
+            "content": [
+                {"type": "reasoning", "text": "internal chain of thought"},
+                {"type": "tool", "name": "execute"},
+                {"type": "text", "text": "沒有 hks 工具。"},
+            ]
+        },
+    )
+    insert_v2_message(
+        connection, "ses2", 4, "synthetic", {"text": "Continue if you have next steps"}
+    )
+    insert_v2_message(connection, "ses2", 5, "idle", {"outcome": "succeeded"})
+    connection.commit()
+    connection.close()
+
+    records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-22"))
+
+    by_id = {record.session_id: record for record in records}
+    assert set(by_id) == {"ses1", "ses2"}
+    v2 = by_id["ses2"]
+    assert v2.cwd == Path("/tmp/v2")
+    assert v2.tool_workspace_id is None
+    assert [(m.role, m.text) for m in v2.messages] == [
+        ("user", "呼叫 hks_workspace_list"),
+        ("assistant", "沒有 hks 工具。"),
+    ]
+    assert by_id["ses1"].messages[0].text == "驗證：uv run pytest -q passed。"
+
+
+def test_opencode_adapter_reads_migrated_session_once_with_legacy_fallback(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "opencode.db"
+    create_opencode_db(db_path)
+    add_v2_tables(db_path)
+    connection = sqlite3.connect(db_path)
+    # Migrated session: listed in session_v2 but its messages are still only in message/part.
+    connection.execute(
+        "insert into session_v2 values (?, ?, ?, ?, ?, ?)",
+        ("ses1", "proj1", "ws1", "/tmp/repo", 1779412154000, 1779412160000),
+    )
+    connection.commit()
+    connection.close()
+
+    records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-22"))
+
+    assert [record.session_id for record in records] == ["ses1"]
+    assert [message.text for message in records[0].messages] == ["驗證：uv run pytest -q passed。"]
+
+
+def test_opencode_adapter_reads_v2_only_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "opencode.db"
+    add_v2_tables(db_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "insert into session_v2 values (?, ?, ?, ?, ?, ?)",
+        ("ses3", "proj1", None, "/tmp/v2", 1779412154000, 1779412160000),
+    )
+    insert_v2_message(connection, "ses3", 1, "user", {"text": "hello"})
+    connection.commit()
+    connection.close()
+
+    records = list(OpenCodeAdapter(db_path).iter_sessions("2026-05-22"))
+
+    assert [(r.session_id, [m.text for m in r.messages]) for r in records] == [("ses3", ["hello"])]
