@@ -243,9 +243,14 @@ uv run session2memory import \
 - `--tool codex \`: scan only Codex sessions. Repeat `--tool` for more tools.
 - `--output ./out/session-memory`: write generated docs under this folder.
 
-Re-running import with the same `--output` replaces the managed generated files:
-`daily/`, `evidence/`, `review/`, and `manifest.json`. It does not delete local
-raw session stores, `worklogs/`, or HKS data under `KS_ROOT`.
+Re-running import with the same `--output` replaces only the generated files for that
+`--date`: `daily/<date>.md`, `review/<date>.jsonl`, that date's rows in
+`evidence/index.jsonl`, and `manifest.json` (which always describes the latest import).
+Other dates' daily logs, review queues (including review decisions made with
+`--no-state`), and evidence rows are kept, so `review list --date <earlier date>` keeps
+working after importing a later day. Each evidence row carries `import_date`; rows written
+by older versions without it are attributed to the date in the existing `manifest.json`.
+Import does not delete local raw session stores, `worklogs/`, or HKS data under `KS_ROOT`.
 
 Import writes three layers:
 
@@ -296,9 +301,9 @@ uv run session2memory import \
 
 ## Worklog Aggregation
 
-Weekly or monthly rollups must read `session2memory.db`, not `daily/*.md`, because
-re-import replaces managed generated files and would drop older daily markdown from the
-export tree. `worklog` aggregates `candidates` by `import_date` range and writes
+Weekly or monthly rollups must read `session2memory.db`, not `daily/*.md`: re-importing
+a date rewrites that day's daily markdown, and an output tree only holds the dates that
+were imported into it. `worklog` aggregates `candidates` by `import_date` range and writes
 HKS-ingestable markdown under `worklogs/` with date-based filenames.
 
 `worklog` always reads state from `session2memory.db`. By default it looks for
@@ -441,6 +446,12 @@ uv run session2memory review web \
   --host 127.0.0.1 \
   --port 8765
 ```
+
+The web UI only answers requests whose `Host` header is the bound loopback address and
+port (`127.0.0.1`, `localhost`, or `[::1]` with `--port`; otherwise HTTP 421), which blocks
+DNS-rebinding reads. Approve, reject, and promote POSTs must carry the random per-run
+CSRF token embedded in the served forms, and are refused (HTTP 403) when `Origin` or
+`Referer` names another site. Reload the page after restarting the server.
 
 Phase 2 state (default on import) keeps stable ids in `session2memory.db`, supports
 incremental re-import, redacted exports, memory revoke/supersede, and sync hash skip.

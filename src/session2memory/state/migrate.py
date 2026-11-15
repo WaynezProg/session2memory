@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from session2memory.agent_metadata import sanitize_agent_metadata
+from session2memory.evidence_index import EVIDENCE_DATE_FIELD
 from session2memory.memory_entries import parse_memory_markdown
 from session2memory.models import EvidencePointer, MemoryCandidate
 
@@ -27,13 +28,15 @@ def migrate_legacy_output(store: StateStore, output_dir: Path) -> MigrationRepor
     if not evidence_path.is_file():
         return MigrationReport()
     report = MigrationReport()
-    legacy_evidence: dict[str, dict[str, object]] = {}
+    # Keyed by (import_date, id): ids from imports without state repeat across dates.
+    # Rows written before evidence carried import_date use "" as their date.
+    legacy_evidence: dict[tuple[str, str], dict[str, object]] = {}
     for line in evidence_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
         legacy_id = str(row.get("evidence_id", row.get("id", "")))
-        legacy_evidence[legacy_id] = row
+        legacy_evidence[(str(row.get(EVIDENCE_DATE_FIELD) or ""), legacy_id)] = row
     review_dir = output_dir / "review"
     if not review_dir.is_dir():
         return report
@@ -44,7 +47,9 @@ def migrate_legacy_output(store: StateStore, output_dir: Path) -> MigrationRepor
                 continue
             review_row = json.loads(line)
             legacy_evidence_id = str(review_row.get("evidence_id", ""))
-            evidence_row = legacy_evidence.get(legacy_evidence_id)
+            evidence_row = legacy_evidence.get(
+                (import_date, legacy_evidence_id)
+            ) or legacy_evidence.get(("", legacy_evidence_id))
             if evidence_row is None:
                 report.unmapped_legacy_evidence_ids.append(legacy_evidence_id)
                 continue

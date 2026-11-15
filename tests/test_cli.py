@@ -710,3 +710,66 @@ def test_openclaw_roots_follow_the_state_dir_override(
 
     assert roots["openclaw"] == state_dir / "logs"
     assert roots["openclaw-native"] == state_dir / "agents"
+
+
+@pytest.mark.parametrize("state_flag", ["--use-state", "--no-state"])
+def test_import_of_another_date_keeps_earlier_review_and_evidence(
+    tmp_path: Path, state_flag: str
+) -> None:
+    output_dir = tmp_path / "memory"
+    runner = CliRunner()
+
+    def run_import(date: str) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "import",
+                "--date",
+                date,
+                "--tool",
+                "claude",
+                "--source-root",
+                "claude=tests/fixtures/claude",
+                "--output",
+                str(output_dir),
+                state_flag,
+                "--agent-metadata-file",
+                str(tmp_path / "missing-marker.json"),
+                "--agent-metadata-log",
+                str(tmp_path / "missing-log.jsonl"),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    run_import("2026-05-22")
+    review_id = read_one_jsonl(output_dir / "review" / "2026-05-22.jsonl")["id"]
+    approved = runner.invoke(
+        app,
+        ["review", "approve", review_id, "--date", "2026-05-22", "--output", str(output_dir)],
+    )
+    assert approved.exit_code == 0, approved.output
+
+    run_import("2026-05-23")
+
+    listed = runner.invoke(
+        app, ["review", "list", "--date", "2026-05-22", "--output", str(output_dir)]
+    )
+    assert listed.exit_code == 0, listed.output
+    assert listed.output.startswith(f"{review_id} approved ")
+    inspected = runner.invoke(
+        app,
+        ["review", "inspect", review_id, "--date", "2026-05-22", "--output", str(output_dir)],
+    )
+    assert inspected.exit_code == 0, inspected.output
+    assert "evidence:\nmissing" not in inspected.output
+    assert "tool=claude " in inspected.output
+    assert (output_dir / "daily" / "2026-05-22.md").exists()
+
+    run_import("2026-05-22")
+
+    rows = [
+        json.loads(line)
+        for line in (output_dir / "evidence" / "index.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert [row["import_date"] for row in rows] == ["2026-05-22"]
+    assert read_one_jsonl(output_dir / "review" / "2026-05-22.jsonl")["id"] == review_id

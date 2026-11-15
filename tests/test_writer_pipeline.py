@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from session2memory.adapters.codex import CodexAdapter
 from session2memory.models import (
@@ -16,6 +17,7 @@ from session2memory.models import (
     digest_text,
 )
 from session2memory.pipeline import run_pipeline
+from session2memory.review import inspect_review, list_reviews
 from session2memory.writer import write_output
 
 
@@ -213,20 +215,24 @@ def test_write_output_creates_hks_ingestable_folder_without_raw_markdown(tmp_pat
     ]
 
 
-def test_write_output_removes_stale_import_files_but_preserves_promoted_memories(
+def test_write_output_replaces_only_its_date_and_preserves_promoted_memories(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "session-memory"
     stale_memory = output / "memories" / "old.md"
-    stale_daily = output / "daily" / "2026-05-21.md"
-    stale_evidence = output / "evidence" / "old.jsonl"
+    other_daily = output / "daily" / "2026-05-21.md"
+    other_review = output / "review" / "2026-05-21.jsonl"
+    same_daily = output / "daily" / "2026-05-22.md"
+    same_review = output / "review" / "2026-05-22.jsonl"
     unmanaged = output / "notes.txt"
     stale_memory.parent.mkdir(parents=True)
-    stale_daily.parent.mkdir(parents=True)
-    stale_evidence.parent.mkdir(parents=True)
+    other_daily.parent.mkdir(parents=True)
+    other_review.parent.mkdir(parents=True)
     stale_memory.write_text("obsolete", encoding="utf-8")
-    stale_daily.write_text("obsolete", encoding="utf-8")
-    stale_evidence.write_text("obsolete", encoding="utf-8")
+    other_daily.write_text("other day", encoding="utf-8")
+    other_review.write_text('{"id": "r1"}\n', encoding="utf-8")
+    same_daily.write_text("obsolete", encoding="utf-8")
+    same_review.write_text('{"id": "stale"}\n', encoding="utf-8")
     unmanaged.write_text("keep", encoding="utf-8")
 
     write_output(
@@ -244,9 +250,103 @@ def test_write_output_removes_stale_import_files_but_preserves_promoted_memories
     )
 
     assert stale_memory.read_text(encoding="utf-8") == "obsolete"
-    assert not stale_daily.exists()
-    assert not stale_evidence.exists()
+    assert other_daily.read_text(encoding="utf-8") == "other day"
+    assert other_review.read_text(encoding="utf-8") == '{"id": "r1"}\n'
+    assert same_daily.read_text(encoding="utf-8") != "obsolete"
+    assert same_review.read_text(encoding="utf-8") == ""
     assert unmanaged.read_text(encoding="utf-8") == "keep"
+
+
+def _write_day(output: Path, date: str, candidates: list[MemoryCandidate]) -> None:
+    write_output(
+        output_dir=output,
+        date=date,
+        candidates=candidates,
+        workspaces={"repo-123": workspace("repo-123")},
+        scanned_tools=["codex"],
+        source_roots={"codex": Path("/tmp/raw")},
+        skipped=[],
+        session_count=1,
+        message_count=2,
+        filtered_count=0,
+        dry_run=False,
+    )
+
+
+def _evidence_rows(output: Path) -> list[dict[str, Any]]:
+    text = (output / "evidence" / "index.jsonl").read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines()]
+
+
+def test_write_output_keeps_other_dates_evidence_when_ids_repeat(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    day1 = candidate("decision", "day one fact", "repo-123", digest="sha256:d1")
+    day2 = candidate("decision", "day two fact", "repo-123", digest="sha256:d2")
+
+    _write_day(output, "2026-05-21", [day1])
+    _write_day(output, "2026-05-22", [day2])
+
+    rows = _evidence_rows(output)
+    assert [(row["import_date"], row["id"], row["digest"]) for row in rows] == [
+        ("2026-05-21", "e000001", "sha256:d1"),
+        ("2026-05-22", "e000001", "sha256:d2"),
+    ]
+    assert (output / "daily" / "2026-05-21.md").exists()
+    assert (output / "review" / "2026-05-21.jsonl").exists()
+    first_id = list_reviews(output_dir=output, date="2026-05-21")[0]["id"]
+    inspection = inspect_review(output_dir=output, date="2026-05-21", review_id=first_id)
+    assert inspection.evidence is not None
+    assert inspection.evidence["digest"] == "sha256:d1"
+    second_id = list_reviews(output_dir=output, date="2026-05-22")[0]["id"]
+    inspection = inspect_review(output_dir=output, date="2026-05-22", review_id=second_id)
+    assert inspection.evidence is not None
+    assert inspection.evidence["digest"] == "sha256:d2"
+
+
+def test_write_output_reimport_replaces_only_that_dates_rows(tmp_path: Path) -> None:
+    output = tmp_path / "session-memory"
+    old_day1 = candidate("decision", "old day one fact", "repo-123", digest="sha256:old")
+    extra_day1 = candidate("decision", "dropped day one fact", "repo-123", digest="sha256:x")
+    day2 = candidate("decision", "day two fact", "repo-123", digest="sha256:d2")
+    new_day1 = candidate("decision", "new day one fact", "repo-123", digest="sha256:new")
+
+    _write_day(output, "2026-05-21", [old_day1, extra_day1])
+    _write_day(output, "2026-05-22", [day2])
+    _write_day(output, "2026-05-21", [new_day1])
+
+    rows = _evidence_rows(output)
+    assert [(row["import_date"], row["digest"]) for row in rows] == [
+        ("2026-05-21", "sha256:new"),
+        ("2026-05-22", "sha256:d2"),
+    ]
+    day1_reviews = list_reviews(output_dir=output, date="2026-05-21")
+    assert [row["text"] for row in day1_reviews] == ["new day one fact"]
+    daily = (output / "daily" / "2026-05-21.md").read_text(encoding="utf-8")
+    assert "new day one fact" in daily
+    assert "old day one fact" not in daily
+    assert [row["text"] for row in list_reviews(output_dir=output, date="2026-05-22")] == [
+        "day two fact"
+    ]
+
+
+def test_write_output_attributes_untagged_evidence_to_previous_manifest_date(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "session-memory"
+    _write_day(output, "2026-05-21", [candidate("decision", "legacy", "repo-123")])
+    evidence_path = output / "evidence" / "index.jsonl"
+    legacy = [
+        {key: value for key, value in row.items() if key != "import_date"}
+        for row in _evidence_rows(output)
+    ]
+    evidence_path.write_text("".join(json.dumps(row) + "\n" for row in legacy), encoding="utf-8")
+
+    _write_day(output, "2026-05-22", [candidate("decision", "fresh", "repo-123")])
+
+    assert [row["import_date"] for row in _evidence_rows(output)] == [
+        "2026-05-21",
+        "2026-05-22",
+    ]
 
 
 def test_write_output_queues_all_candidates_without_creating_workspace_memories(

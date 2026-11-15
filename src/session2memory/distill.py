@@ -7,6 +7,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
+from session2memory.evidence_index import evidence_rows_for_date
+
 JSONDict = dict[str, Any]
 CandidateType = Literal["memory_candidate", "rule_candidate", "validator_candidate"]
 
@@ -36,7 +38,7 @@ def distill_reviews(*, output_dir: Path, date: str) -> DistillResult:
 
     rows = _read_jsonl_strict(review_path) if review_path.exists() else []
     evidence_rows = _read_jsonl_strict(evidence_path) if evidence_path.exists() else []
-    evidence_by_id = _evidence_by_id(evidence_rows)
+    evidence_by_id = _evidence_by_id(evidence_rows_for_date(evidence_rows, date))
     approved: list[JSONDict] = []
     for row in rows:
         if row.get("status") != "approved":
