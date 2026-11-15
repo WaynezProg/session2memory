@@ -16,6 +16,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
+from session2memory.adapters.codex import latest_state_db
 from session2memory.auto.secrets import scrub_secrets
 from session2memory.extraction import extract_candidates
 from session2memory.filtering import is_noise
@@ -271,11 +272,11 @@ def grok_summary(record: SessionRecord) -> NativeSummary:
 def codex_summary(record: SessionRecord) -> NativeSummary:
     """Thread name/title from the ``state_*.sqlite`` of the CODEX_HOME holding the rollout."""
     for directory in list(record.source_path.parents)[:6]:
-        databases = sorted(directory.glob("state_*.sqlite"))
-        if not databases:
+        database = latest_state_db(directory)
+        if database is None:
             continue
         try:
-            connection = sqlite3.connect(f"file:{databases[-1].as_posix()}?mode=ro", uri=True)
+            connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
         except sqlite3.Error:
             return NativeSummary()
         try:

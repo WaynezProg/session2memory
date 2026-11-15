@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -17,6 +18,27 @@ from session2memory.models import SessionMessage, SessionRecord, SourceHome
 
 MAIN_HOME_ID = "codex@main"
 ROLLOUT_PATTERNS = ("*.jsonl", "*.jsonl.zst")
+_STATE_DB = re.compile(r"state_(\d+)\.sqlite")
+
+
+def latest_state_db(directory: Path) -> Path | None:
+    """The newest ``state_<n>.sqlite`` of a CODEX_HOME: the highest ``n``, not the last name.
+
+    By name ``state_5`` sorts after ``state_10``. A file without a number in that place
+    ranks below every numbered one, newest modification last.
+    """
+
+    def rank(path: Path) -> tuple[int, int, float]:
+        matched = _STATE_DB.fullmatch(path.name)
+        if matched:
+            return (1, int(matched.group(1)), 0.0)
+        try:
+            return (0, 0, path.stat().st_mtime)
+        except OSError:
+            return (0, 0, 0.0)
+
+    databases = list(directory.glob("state_*.sqlite"))
+    return max(databases, key=rank) if databases else None
 
 
 class CodexAdapter:

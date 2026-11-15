@@ -156,7 +156,7 @@ Options after `--` are passed to every run. To remove the job:
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `OPENCLAW_STATE_DIR` | `auto run`, discovery, `import`, `sync` | OpenClaw state directory (default `~/.openclaw`): its `logs`, `agents` and `memory` folders are looked for under it |
+| `OPENCLAW_STATE_DIR` | `auto run`, discovery, `import`, `sync`, `setup`/`hook-install` (written into the hook) | OpenClaw state directory (default `~/.openclaw`): its `logs`, `agents` and `memory` folders are looked for under it |
 | `SESSION2MEMORY_AUTO_LLM_CMD` | `auto run` | curation command; the prompt arrives on stdin |
 | `SESSION2MEMORY_LLM_CMD` | `import --llm-extract` | extraction command |
 | `SESSION2MEMORY_EMBED_MODEL`, `SESSION2MEMORY_RERANK_MODEL` | `auto search`, `embed` | local model names |
@@ -770,7 +770,13 @@ OpenClaw agents (their own session stores, their Codex homes, or work inside an 
 workspace), `coding` otherwise. A `coding` reader sees everything. An `openclaw` reader
 sees only `openclaw` rows, and a process is forced to that reader when it runs inside an
 OpenClaw workspace, with an OpenClaw-owned `CODEX_HOME`, or with
-`SESSION2MEMORY_READER=openclaw`, whatever `--reader` says. The SessionStart hook injects
+`SESSION2MEMORY_READER=openclaw`, whatever `--reader` says. OpenClaw workspaces are
+`workspace` and `workspace-<profile>` in the state directory, every `workspace` that
+`openclaw.json` assigns, and, when the state directory is `<root>/state` (not directly in
+the home directory) or the config puts a workspace there, `<root>/workspaces`; with the
+default `~/.openclaw`, `~/workspaces` is not one. The hook command that `setup` and
+`hook-install` write carries `--openclaw-state-dir` when `OPENCLAW_STATE_DIR` is set, so
+an agent started without that variable still knows OpenClaw's directories. The SessionStart hook injects
 the distilled memory of the workspace (`這個專案的記憶`) and stays silent for headless
 sessions, which is how OpenClaw starts its agents.
 
