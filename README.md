@@ -667,6 +667,12 @@ test in front of the command answers every later call without starting Python, a
 second entry on `SessionStart` only notes resumed sessions so that they stay silent. A
 Grok session that never runs a tool gets nothing.
 
+Cursor also runs the hooks in Claude Code's `~/.claude/settings.json`, so in a Cursor
+session Claude's entry fires next to Cursor's own. The command recognises this (Cursor's
+`cursor_version` in the payload, or `CURSOR_VERSION` in the environment without Claude
+Code's entrypoint), lets only the first of the two answer, and records the session in the
+ledger as `cursor`.
+
 `hook-install` adds one `SessionStart` entry to Claude Code's settings, leaves every other
 hook as it is, and writes a timestamped backup (`settings.json.bak-session2memory-…`)
 before changing the file. The entry runs `session2memory session-start-hook`, which adds
