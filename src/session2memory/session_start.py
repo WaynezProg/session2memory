@@ -22,10 +22,11 @@ import os
 import re
 import sqlite3
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
 
 from session2memory.adapters.antigravity import (
@@ -46,6 +47,9 @@ from session2memory.adapters.muse import SESSION_FILE, MuseAdapter
 from session2memory.handoff import _clip, build_packet, native_summary
 from session2memory.handoff_find import has_conversation
 from session2memory.models import SessionRecord
+
+if TYPE_CHECKING:
+    from session2memory.auto.store import TopicRow
 
 DEFAULT_MAX_CHARS = 3000
 DEFAULT_MAX_AGE_HOURS = 72.0
@@ -253,35 +257,95 @@ def memory_items(config: HookConfig, workspace: Path) -> list[MemoryItem]:
 def render_project_memory(
     config: HookConfig, workspace: Path, budget: int, *, openclaw_only: bool = False
 ) -> str | None:
-    """Distilled memory of this workspace from the unattended pipeline, most recent first."""
+    """Distilled memory for a session opened in this folder, most recent first.
+
+    Memory is filed under topics, so the folder only decides what comes first: the
+    memory of the topics that came up here. A folder nothing came up in (a new one, or
+    the wrong one) gets the list of topics instead, to read from on demand. Memory from
+    before topics that was learnt here and is not filed yet is still shown.
+    """
     if config.auto_db is None:
         return None
     from session2memory.auto.export import KIND_TITLES
     from session2memory.auto.store import AutoStore
 
+    reader: Literal["coding", "openclaw"] = "openclaw" if openclaw_only else "coding"
     try:
         store = AutoStore.open_read_only(config.auto_db)
         if store is None:
             return None
         try:
             project = workspace.resolve(strict=False).as_posix()
-            memories = store.memories(
-                project=project,
-                reader="openclaw" if openclaw_only else "coding",
-                limit=config.project_memory_items,
+            topic_ids = store.workspace_topics(project, reader=reader)
+            # Every topic that came up here gets a say, the most recent topic first,
+            # instead of the largest one filling the list.
+            per_topic = [
+                store.memories(
+                    topic_ids=[topic_id], reader=reader, limit=config.project_memory_items
+                )
+                for topic_id in topic_ids
+            ]
+            filed = [
+                rows[index]
+                for index in range(config.project_memory_items)
+                for rows in per_topic
+                if index < len(rows)
+            ]
+            unfiled = [
+                memory
+                for memory in store.memories(
+                    project=project, reader=reader, limit=config.project_memory_items
+                )
+                if memory.topic_id is None
+            ]
+            # An agent has one topic, itself; other readers are listed subjects only.
+            catalogue = (
+                []
+                if filed or unfiled or openclaw_only
+                else store.topics(reader=reader, scope="coding")
             )
+            names = {topic.topic_id: topic.name for topic in store.topics(reader=reader)}
         finally:
             store.close()
     except sqlite3.Error:
         return None
+    memories = [*filed, *unfiled][: config.project_memory_items]
     if not memories:
+        return _render_topic_index([topic for topic in catalogue if topic.active], budget)
+    if filed:
+        shown = [names[topic_id] for topic_id in topic_ids if topic_id in names]
+        lines = [
+            f"## 相關主題的記憶（{'、'.join(shown[:6])}；由過去的 Session 整理；"
+            "其他主題用 `session2memory auto topics` 列出，"
+            "或用 `session2memory auto search <關鍵字>` 搜尋）"
+        ]
+    else:
+        lines = [
+            "## 這個專案的記憶（由過去的 Session 整理；"
+            "需要更多用 `session2memory auto search <關鍵字>`）"
+        ]
+    for memory in memories:
+        tag = KIND_TITLES.get(memory.kind, memory.kind)
+        if filed and memory.topic_id in names:
+            tag = f"{tag}｜{names[memory.topic_id]}"
+        line = f"- [{tag}] {_clip(memory.text, 200)}"
+        if len("\n".join([*lines, line])) > budget:
+            break
+        lines.append(line)
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
+def _render_topic_index(topics: Sequence[TopicRow], budget: int) -> str | None:
+    if not topics:
         return None
     lines = [
-        "## 這個專案的記憶（由過去的 Session 整理；"
-        "需要更多用 `session2memory auto search <關鍵字>`）"
+        "## 記憶主題目錄（這個資料夾還沒有相關主題的記憶；"
+        "需要時用 `session2memory auto topics <主題名稱>` 讀取，"
+        "或用 `session2memory auto search <關鍵字>` 搜尋）"
     ]
-    for memory in memories:
-        line = f"- [{KIND_TITLES.get(memory.kind, memory.kind)}] {_clip(memory.text, 200)}"
+    for topic in topics:
+        about = f"：{_clip(topic.description, 60)}" if topic.description else ""
+        line = f"- {topic.name}（{topic.active} 筆）{about}"
         if len("\n".join([*lines, line])) > budget:
             break
         lines.append(line)

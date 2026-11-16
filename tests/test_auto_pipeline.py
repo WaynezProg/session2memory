@@ -600,7 +600,7 @@ def test_prompt_lists_existing_memory_and_every_digest_of_the_project(store: Aut
     listed = re.findall(r"^- (m_[0-9a-f]{10})｜fact｜", first, flags=re.MULTILINE)
     assert len(listed) == MAX_MEMORY_LISTED and set(listed) <= set(ids)
     assert foreign not in first and BETA_NOTE not in first
-    assert f"專案「{ALPHA}」" in first
+    assert f"資料夾「{ALPHA}」" in first
     for name in names:
         assert sum(marker(name) in prompt for prompt in runner.prompts) == 1
     assert report.prompt_chars == sum(len(prompt) for prompt in runner.prompts)
@@ -807,7 +807,15 @@ def test_adds_over_the_per_batch_limit_are_rejected(store: AutoStore) -> None:
     assert report.rejections == ["add: over the per-batch limit"] * 2
     assert len(store.memories(project=ALPHA)) == MAX_ADDS_PER_BATCH
     assert f"最多 {MAX_ADDS_PER_BATCH} 筆 add" in INSTRUCTIONS.format(
-        project="", max_adds=MAX_ADDS_PER_BATCH, memories="", sessions=""
+        project="",
+        parts="",
+        topic_column="",
+        topic_part="",
+        topic_field="",
+        topic_rules="",
+        max_adds=MAX_ADDS_PER_BATCH,
+        memories="",
+        sessions="",
     )
 
 
@@ -851,13 +859,13 @@ def test_call_budget_leaves_the_rest_pending_for_the_next_run(store: AutoStore) 
     first = curate(store, runner, max_calls=1)
 
     assert (first.llm_calls, first.sessions_curated, first.sessions_left) == (1, 2, 1)
-    assert f"專案「{BETA}」" in runner.prompts[0], "the project with more sessions goes first"
+    assert f"資料夾「{BETA}」" in runner.prompts[0], "the project with more sessions goes first"
     assert pending_keys(store) == [alpha]
 
     second = curate(store, runner, max_calls=1)
 
     assert (second.llm_calls, second.sessions_curated, second.sessions_left) == (1, 1, 0)
-    assert f"專案「{ALPHA}」" in runner.prompts[1]
+    assert f"資料夾「{ALPHA}」" in runner.prompts[1]
     assert pending_keys(store) == []
 
 
@@ -926,7 +934,7 @@ def test_coding_projects_are_served_before_openclaw_only_projects(store: AutoSto
 
     report = curate(store, runner, max_calls=1)
 
-    assert len(runner.prompts) == 1 and f"專案「{BETA}」" in runner.prompts[0]
+    assert len(runner.prompts) == 1 and f"資料夾「{BETA}」" in runner.prompts[0]
     assert report.sessions_left == 3
     assert pending_keys(store) == sorted(agent_keys)
 

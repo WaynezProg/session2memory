@@ -191,23 +191,34 @@ struct Backend {
         try await console(["memories", "--project", project, "--status", status])
     }
 
+    /// Every workspace's memory of one scope: coding to read by topic, openclaw by agent.
+    func memories(scope: String, status: String) async throws -> [Memory] {
+        try await console(["memories", "--scope", scope, "--status", status])
+    }
+
     func memory(id: String) async throws -> MemoryDetail {
         try await console(["memory", "--id", id])
     }
 
     /// Memory whose text holds every word of `query`, in one workspace or (nil) in all.
-    func search(query: String, project: String?, status: String) async throws -> [Memory] {
-        try await console(Self.searchArguments(query: query, project: project, status: status))
+    func search(
+        query: String, project: String?, status: String, scope: String = ""
+    ) async throws -> [Memory] {
+        try await console(
+            Self.searchArguments(query: query, project: project, status: status, scope: scope))
     }
 
     /// How many search results are asked for; as many shown means there may be more.
     static let searchLimit = 500
 
-    static func searchArguments(query: String, project: String?, status: String) -> [String] {
+    static func searchArguments(
+        query: String, project: String?, status: String, scope: String = ""
+    ) -> [String] {
         var arguments = [
             "search", "--query", query, "--status", status, "--limit", String(searchLimit),
         ]
         if let project, !project.isEmpty { arguments += ["--project", project] }
+        if !scope.isEmpty { arguments += ["--scope", scope] }
         return arguments
     }
 
@@ -256,11 +267,42 @@ struct Backend {
         try await console(["edit", "--id", id, "--text", text, "--reason", reason])
     }
 
-    func add(project: String, kind: String, text: String, reason: String) async throws
+    /// Write a memory by hand, under a topic.
+    func add(topic: String, kind: String, text: String, reason: String) async throws
         -> MemoryDetail
     {
         try await console(
-            ["add", "--project", project, "--kind", kind, "--text", text, "--reason", reason])
+            ["add", "--topic", topic, "--kind", kind, "--text", text, "--reason", reason])
+    }
+
+    // MARK: topics
+
+    func topics(scope: String) async throws -> [Topic] {
+        try await console(["topics", "--scope", scope])
+    }
+
+    /// File a memory under another topic.
+    func move(id: String, topic: String, reason: String) async throws -> MemoryDetail {
+        try await console(["move", "--id", id, "--topic", topic, "--reason", reason])
+    }
+
+    func addTopic(name: String, description: String, scope: String) async throws -> Topic {
+        try await console(Self.topicArguments(
+            ["topic-add", "--scope", scope], name: name, description: description))
+    }
+
+    func editTopic(id: String, name: String, description: String) async throws -> Topic {
+        try await console(Self.topicArguments(
+            ["topic-edit", "--topic", id], name: name, description: description))
+    }
+
+    /// Move everything filed under `id` to `into`; the emptied topic goes.
+    func mergeTopic(id: String, into: String, reason: String) async throws -> Topic {
+        try await console(["topic-merge", "--topic", id, "--into", into, "--reason", reason])
+    }
+
+    static func topicArguments(_ base: [String], name: String, description: String) -> [String] {
+        base + ["--name", name, "--description", description]
     }
 
     /// Have the next run curate the session again.

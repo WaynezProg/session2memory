@@ -26,7 +26,6 @@ from session2memory.auto.store import (
     memory_id_for,
     now_iso,
 )
-from session2memory.auto.topics import memory_topic
 
 STATUSES = ("active", "superseded", "retired", "stale")
 # By hand, a memory can come back only from a state nothing replaced it in.
@@ -36,7 +35,22 @@ RESTORABLE = ("retired", "stale")
 CURATE_MAX_AGE_DAYS = 21.0
 
 
-def _memory(row: MemoryRow) -> dict[str, object]:
+UNFILED = {"id": "general", "label": "待歸類"}
+
+
+def _topic(store: AutoStore, row: MemoryRow) -> dict[str, str]:
+    """What a memory is filed under: a subject, or for OpenClaw memory its agent (with
+    its team). Memory nobody has filed yet reads as waiting to be."""
+    topic = store.get_topic(row.topic_id) if row.topic_id else None
+    if topic is None:
+        return dict(UNFILED)
+    label = topic.name
+    if topic.scope == "openclaw" and topic.description:
+        label = f"{topic.name} · {topic.description}"
+    return {"id": topic.topic_id, "label": label}
+
+
+def _memory(row: MemoryRow, store: AutoStore | None = None) -> dict[str, object]:
     return {
         "id": row.memory_id,
         "project": row.project,
@@ -48,7 +62,7 @@ def _memory(row: MemoryRow) -> dict[str, object]:
         "last_confirmed_at": row.last_confirmed_at,
         "supersedes_id": row.supersedes_id,
         "evidence": list(row.evidence),
-        "topic": memory_topic(row.text),
+        "topic": _topic(store, row) if store is not None else dict(UNFILED),
     }
 
 
@@ -117,9 +131,38 @@ def projects(store: AutoStore) -> list[dict[str, object]]:
     )[::-1]
 
 
-def memories(store: AutoStore, project: str, *, status: str = ACTIVE) -> list[dict[str, object]]:
-    rows = store.memories(project=project, status=None if status == "all" else status, limit=1000)
-    return [_memory(row) for row in rows]
+def memories(
+    store: AutoStore,
+    project: str | None = None,
+    *,
+    scope: str | None = None,
+    topic: str | None = None,
+    status: str = ACTIVE,
+    limit: int = 2000,
+) -> list[dict[str, object]]:
+    """The memory of one scope (coding, filed by subject; openclaw, filed by agent), of
+    one topic, or of the folder it was learnt in. Most recently confirmed first."""
+    if project is None and scope is None and topic is None:
+        raise ValueError("memories needs --scope, --topic or --project")
+    sql = f"SELECT {store._MEMORY_COLUMNS} FROM auto_memories WHERE 1=1"
+    args: list[object] = []
+    if topic is not None:
+        sql += " AND topic_id IS NULL" if topic == UNFILED["id"] else " AND topic_id=?"
+        if topic != UNFILED["id"]:
+            args.append(topic)
+    if project is not None:
+        sql += " AND project=?"
+        args.append(project)
+    if scope is not None:
+        sql += " AND scope=?"
+        args.append(scope)
+    if status != "all":
+        sql += " AND status=?"
+        args.append(status)
+    rows = store._connection.execute(
+        sql + " ORDER BY last_confirmed_at DESC, memory_id LIMIT ?", [*args, limit]
+    ).fetchall()
+    return [_memory(store._memory(row), store) for row in rows]
 
 
 def memory(store: AutoStore, memory_id: str) -> dict[str, object] | None:
@@ -143,7 +186,7 @@ def memory(store: AutoStore, memory_id: str) -> dict[str, object] | None:
             else {"key": key, "tool": key.partition(":")[0], "title": None, "summary": None}
         )
     return {
-        **_memory(row),
+        **_memory(row, store),
         "replaced_by": replaced_by,
         "restorable": row.status in RESTORABLE,
         "events": [
@@ -206,11 +249,12 @@ def search(
     query: str,
     *,
     project: str | None = None,
+    scope: str | None = None,
     status: str = ACTIVE,
     limit: int = 200,
 ) -> list[dict[str, object]]:
-    """Memory whose text holds every word of ``query``, in one workspace or in all, the
-    most recently confirmed first."""
+    """Memory whose text holds every word of ``query``, in one workspace or in all (of
+    one scope, when given), the most recently confirmed first."""
     words = _words(query)
     if not words:
         raise ValueError("search needs at least one word")
@@ -219,6 +263,9 @@ def search(
     if project is not None:
         sql += " AND project=?"
         args.append(project)
+    if scope is not None:
+        sql += " AND scope=?"
+        args.append(scope)
     if status != "all":
         sql += " AND status=?"
         args.append(status)
@@ -228,7 +275,7 @@ def search(
     rows = store._connection.execute(
         sql + " ORDER BY last_confirmed_at DESC, memory_id LIMIT ?", [*args, limit]
     ).fetchall()
-    return [_memory(store._memory(row)) for row in rows]
+    return [_memory(store._memory(row), store) for row in rows]
 
 
 def session(store: AutoStore, source_key: str) -> dict[str, object] | None:
@@ -236,7 +283,7 @@ def session(store: AutoStore, source_key: str) -> dict[str, object] | None:
     if row is None:
         return None
     fed = [
-        _memory(store._memory(found))
+        _memory(store._memory(found), store)
         for found in store._connection.execute(
             f"SELECT {store._MEMORY_COLUMNS} FROM auto_memories, json_each(evidence_json) "
             "WHERE json_each.value=? ORDER BY last_confirmed_at DESC",
@@ -387,6 +434,7 @@ def edit(store: AutoStore, memory_id: str, text: str, reason: str) -> dict[str, 
         evidence=list(row.evidence),
         run_id=None,
         supersedes_id=memory_id,
+        topic_id=row.topic_id,
     )
     store.set_memory_status(
         memory_id,
@@ -413,26 +461,116 @@ def _scope_of(store: AutoStore, project: str) -> Scope:
     return "openclaw" if scopes == {"openclaw"} else "coding"
 
 
-def add(store: AutoStore, project: str, kind: str, text: str, reason: str) -> dict[str, object]:
-    """Write a memory by hand. It has no session behind it, which its history says."""
+BY_HAND = "(手動)"
+
+
+def add(
+    store: AutoStore,
+    project: str | None,
+    kind: str,
+    text: str,
+    reason: str,
+    *,
+    topic: str | None = None,
+) -> dict[str, object]:
+    """Write a memory by hand, under a topic. It has no session behind it, which its
+    history says; without a folder it was learnt in, that reads as written by hand."""
     if kind not in MEMORY_KINDS:
         raise ValueError(f"unknown kind {kind}; choose from {', '.join(MEMORY_KINDS)}")
-    if not project.strip():
-        raise ValueError("the workspace is empty")
+    filed = store.get_topic(topic) if topic else None
+    if topic and filed is None:
+        raise ValueError(f"no topic {topic}")
+    project = (project or "").strip() or (BY_HAND if filed is not None else "")
+    if not project:
+        raise ValueError("a memory needs a topic")
     text = _tidy(text)
     taken = _same_text(store, project, kind, text)
     if taken is not None:
         raise ValueError(f"{taken.memory_id} ({taken.status}) already says this")
+    scope: Scope = _scope_of(store, project)
+    if filed is not None:
+        scope = "openclaw" if filed.scope == "openclaw" else "coding"
+    before = (
+        {row.memory_id for row in store.memories(topic_ids=[topic], limit=5000)} if topic else set()
+    )
     memory_id, _created = store.add_memory(
         project=project,
-        scope=_scope_of(store, project),
+        scope=scope,
         kind=kind,
         text=text,
         evidence=[],
         run_id=None,
+        topic_id=topic,
     )
+    if memory_id in before:
+        raise ValueError(f"{memory_id} (active) already says this")
     store._event(memory_id, "note", {"reason": f"by hand: {reason}".strip()}, None)
     store._connection.commit()
+    updated = memory(store, memory_id)
+    assert updated is not None
+    return updated
+
+
+def topics(store: AutoStore, *, scope: str | None = None) -> list[dict[str, object]]:
+    """Every topic with how much active memory it holds, the most recent first."""
+    return [
+        {
+            "id": row.topic_id,
+            "scope": row.scope,
+            "name": row.name,
+            "description": row.description,
+            "active": row.active,
+            "last_confirmed_at": row.last_confirmed_at,
+        }
+        for row in store.topics(scope=scope)
+    ]
+
+
+def _one_topic(store: AutoStore, topic_id: str) -> dict[str, object]:
+    found = next((item for item in topics(store) if item["id"] == topic_id), None)
+    if found is None:
+        raise ValueError(f"no topic {topic_id}")
+    return found
+
+
+def topic_add(
+    store: AutoStore, name: str, *, scope: str = "coding", description: str | None = None
+) -> dict[str, object]:
+    if scope not in ("coding", "openclaw"):
+        raise ValueError(f"unknown scope {scope}")
+    kind: Scope = "openclaw" if scope == "openclaw" else "coding"
+    if store.topic_named(name, kind) is not None:
+        raise ValueError("there is already a topic with this name")
+    return _one_topic(store, store.ensure_topic(name, scope=kind, description=description))
+
+
+def topic_edit(
+    store: AutoStore, topic_id: str, *, name: str | None, description: str | None
+) -> dict[str, object]:
+    """Rename a topic or say what it holds. Memory filed under it follows."""
+    store.update_topic(topic_id, name=name, description=description)
+    return _one_topic(store, topic_id)
+
+
+def topic_merge(store: AutoStore, source: str, target: str, reason: str) -> dict[str, object]:
+    """Move everything filed under ``source`` to ``target``; the empty topic goes."""
+    moved = store.merge_topic(source, target, reason=f"by hand: {reason}".strip())
+    return {**_one_topic(store, target), "moved": moved}
+
+
+def move(store: AutoStore, memory_id: str, topic_id: str, reason: str) -> dict[str, object]:
+    """File a memory under another topic of the same scope. Nothing else changes."""
+    row = store.get_memory(memory_id)
+    target = store.get_topic(topic_id)
+    if row is None:
+        raise ValueError(f"no memory {memory_id}")
+    if target is None:
+        raise ValueError(f"no topic {topic_id}")
+    if (row.scope == "openclaw") != (target.scope == "openclaw"):
+        raise ValueError("coding memory and OpenClaw agents' memory are kept apart")
+    if row.topic_id == topic_id:
+        raise ValueError("it is already filed there")
+    store.set_memory_topic(memory_id, topic_id, reason=f"by hand: {reason}".strip())
     updated = memory(store, memory_id)
     assert updated is not None
     return updated

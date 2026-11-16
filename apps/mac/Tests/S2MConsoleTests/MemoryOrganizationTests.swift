@@ -41,4 +41,43 @@ final class MemoryOrganizationTests: XCTestCase {
         XCTAssertEqual(MemoryOrganization.filter(entries, kind: "", topic: "audio").map(\.id), ["a", "c"])
         XCTAssertTrue(MemoryOrganization.filter(entries, kind: "fact", topic: "visual").isEmpty)
     }
+
+    func testBothViewsGroupByWhatTheMemoryIsFiledUnder() throws {
+        let entries = try [memory("a", topic: "t_albedo"), memory("b", topic: "t_tuji"),
+                           memory("c", topic: "t_albedo"), memory("d")]
+        for lens in MemoryLens.allCases {
+            let grouped = MemoryOrganization.groups(entries, by: lens)
+            XCTAssertEqual(grouped.map(\.id), ["t_albedo", "t_tuji", "general"])
+            XCTAssertEqual(grouped[0].memories.map(\.id), ["a", "c"])
+            XCTAssertEqual(
+                MemoryOrganization.filter(entries, kind: "", topic: "t_tuji", by: lens).map(\.id),
+                ["b"])
+        }
+        XCTAssertEqual(MemoryTopic.general.label, "待歸類")
+    }
+
+    func testEachViewListsOneScopeAndSearchesWithinIt() {
+        XCTAssertEqual(MemoryLens.topics.scope, "coding")
+        XCTAssertEqual(MemoryLens.agents.scope, "openclaw")
+        XCTAssertEqual(
+            Backend.searchArguments(query: "q", project: nil, status: "active", scope: "openclaw")
+                .suffix(2), ["--scope", "openclaw"])
+        XCTAssertFalse(
+            Backend.searchArguments(query: "q", project: "/p", status: "active").contains("--scope"))
+    }
+
+    func testAnAgentIsShownWithItsTeamAndATopicByItsName() throws {
+        func topic(_ scope: String, _ about: String?) throws -> Topic {
+            var data: [String: Any] = ["id": "t_1", "scope": scope, "name": "albedo", "active": 3]
+            if let about { data["description"] = about }
+            return try JSONDecoder().decode(
+                Topic.self, from: JSONSerialization.data(withJSONObject: data))
+        }
+        XCTAssertEqual(try topic("openclaw", "video-studio").label, "albedo · video-studio")
+        XCTAssertEqual(try topic("openclaw", nil).label, "albedo")
+        XCTAssertEqual(try topic("coding", "收什麼").label, "albedo")
+        XCTAssertEqual(
+            Backend.topicArguments(["topic-edit", "--topic", "t_1"], name: "新名", description: ""),
+            ["topic-edit", "--topic", "t_1", "--name", "新名", "--description", ""])
+    }
 }

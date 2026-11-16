@@ -7,18 +7,21 @@ paths and raw figures sit in a closed "給工程用" group on each page. It has 
 - **總覽** (overview): how many memories are in use, how many sessions have been dealt
   with and how many still wait, the sessions each recent run read, and the workspaces
   with the most memory.
-- **記憶** (memory): one workspace's memory, picked from a menu, with a chip per kind and
-  a status menu. **專案概覽** shows the selected workspace's path, memory and session
-  counts, and topic cards. The list defaults to **依主題分組**; **依確認時間** keeps the
-  original order. The topic picker works together with the kind, status and search filters.
-  Topics are keyword hints computed by the CLI, not stored classifications or proof that
-  a memory is current. An older CLI puts entries under **其他專案規則**. Global-search
-  overviews describe only the returned results. Choosing an entry shows its text, sources
-  and history; **專案概覽** returns to the topic cards without changing memory.
-  - The search field looks through the chosen workspace or, with **搜尋所有專案**,
-    through every one (every word must be in the text; at most 500 are shown).
+- **記憶** (memory): memory is filed under topics, not under the folder a session was
+  opened in. **開發記憶 · 主題** lists coding memory grouped by subject; **OpenClaw ·
+  代理人** lists OpenClaw memory grouped by the agent it belongs to. The two are never
+  mixed. Each has a chip per kind, a status menu, an overview with a card per topic, and
+  **依確認時間** for the plain order. Memory nobody has filed yet is under **待歸類** (all
+  of it, with a command line from before topics). Choosing an entry shows its text,
+  topic, sources and history; **概覽** returns to the cards.
+  - The search field looks through the view's memory (every word must be in the text; at
+    most 500 are shown).
+  - An entry can be moved to another topic (**搬到別的主題**; several at once), which
+    changes nothing else and is recorded on it. A topic can be renamed, described or
+    merged into another (**整理** on its card), and added (**新增主題**); agents are not
+    renamed or merged here.
   - Entries can be retired (**停用**), restored (**復原**), reworded (**改寫**, ⌘E) and
-    written by hand (**新增記憶**, ⇧⌘N). Several can be selected and retired or restored
+    written by hand under a topic (**新增記憶**, ⇧⌘N). Several can be selected and retired or restored
     together, from the detail side, the context menu or the Delete key.
   - Every change asks for a reason, with a few ready-made ones, and is recorded. What a
     change came to stays on screen until dismissed, also when part of it failed.

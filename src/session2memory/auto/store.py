@@ -5,6 +5,12 @@ days, answers "what do we know about this workspace". Memory is never deleted: a
 changes status (``active`` -> ``superseded`` / ``retired`` / ``stale``) and every change
 is recorded in ``auto_memory_events``, so a bad automated decision can be reversed.
 
+Memory belongs to a topic (``auto_topics``), not to the folder a session happened to be
+opened in: ``project`` on a memory only says where it was learnt. Coding memory is filed
+under subjects ("coding agent", "HKS 檢索"); OpenClaw memory under the agent it belongs
+to, since each agent has its own job. A memory from before topics has none until it is
+filed.
+
 Scope implements the isolation rule: a row derived only from OpenClaw agent sessions has
 scope ``openclaw``; anything a coding agent contributed to has scope ``coding``. A
 ``coding`` reader sees everything, an ``openclaw`` reader sees only ``openclaw`` rows.
@@ -65,6 +71,18 @@ CREATE TABLE IF NOT EXISTS auto_memories (
     evidence_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_auto_memories_project ON auto_memories (project, status);
+
+-- What memory is filed under. ``scope`` keeps coding subjects and OpenClaw agents apart.
+CREATE TABLE IF NOT EXISTS auto_topics (
+    topic_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    name TEXT NOT NULL,
+    name_norm TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (scope, name_norm)
+);
 
 CREATE TABLE IF NOT EXISTS auto_memory_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,6 +166,25 @@ class SessionRow:
     last_activity: str | None
 
 
+MAX_TOPIC_NAME_CHARS = 30
+MAX_TOPIC_DESCRIPTION_CHARS = 120
+
+
+def topic_name(value: str) -> str:
+    """A topic name as stored: one line, trimmed, bounded."""
+    return " ".join(value.split())[:MAX_TOPIC_NAME_CHARS].strip()
+
+
+@dataclass(frozen=True)
+class TopicRow:
+    topic_id: str
+    scope: str
+    name: str
+    description: str | None
+    active: int = 0
+    last_confirmed_at: str | None = None
+
+
 @dataclass(frozen=True)
 class MemoryRow:
     memory_id: str
@@ -160,6 +197,7 @@ class MemoryRow:
     last_confirmed_at: str
     supersedes_id: str | None
     evidence: tuple[str, ...]
+    topic_id: str | None = None
 
 
 def _readable(reader: Reader) -> tuple[str, ...]:
@@ -170,6 +208,17 @@ class AutoStore:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
         connection.executescript(SCHEMA)
+        if not self._has_topic_column():
+            connection.execute("ALTER TABLE auto_memories ADD COLUMN topic_id TEXT")
+            connection.commit()
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auto_memories_topic ON auto_memories (topic_id, status)"
+        )
+        self._topics = True
+
+    def _has_topic_column(self) -> bool:
+        columns = self._connection.execute("PRAGMA table_info(auto_memories)").fetchall()
+        return any(str(column[1]) == "topic_id" for column in columns)
 
     @classmethod
     def open(cls, path: Path) -> AutoStore:
@@ -183,6 +232,11 @@ class AutoStore:
             return None
         store = cls.__new__(cls)
         store._connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        # A database from before topics cannot be upgraded here: it reads as unfiled.
+        try:
+            store._topics = store._has_topic_column()
+        except sqlite3.Error:
+            store._topics = False
         return store
 
     def close(self) -> None:
@@ -440,12 +494,15 @@ class AutoStore:
             last_confirmed_at=str(row[7]),
             supersedes_id=str(row[8]) if row[8] is not None else None,
             evidence=tuple(str(item) for item in evidence) if isinstance(evidence, list) else (),
+            topic_id=str(row[10]) if len(row) > 10 and row[10] is not None else None,
         )
 
-    _MEMORY_COLUMNS = (
-        "memory_id, project, scope, kind, text, status, created_at, last_confirmed_at, "
-        "supersedes_id, evidence_json"
-    )
+    @property
+    def _MEMORY_COLUMNS(self) -> str:  # noqa: N802 - read as a constant by the console
+        return (
+            "memory_id, project, scope, kind, text, status, created_at, last_confirmed_at, "
+            "supersedes_id, evidence_json, " + ("topic_id" if self._topics else "NULL")
+        )
 
     def memories(
         self,
@@ -454,7 +511,9 @@ class AutoStore:
         status: str | None = ACTIVE,
         reader: Reader = "coding",
         limit: int = 200,
+        topic_ids: list[str] | None = None,
     ) -> list[MemoryRow]:
+        """``project`` is where a memory was learnt; ``topic_ids`` what it is filed under."""
         scopes = _readable(reader)
         query = (
             f"SELECT {self._MEMORY_COLUMNS} FROM auto_memories "
@@ -464,6 +523,11 @@ class AutoStore:
         if project is not None:
             query += " AND project=?"
             args.append(project)
+        if topic_ids is not None:
+            if not topic_ids or not self._topics:
+                return []
+            query += f" AND topic_id IN ({','.join('?' * len(topic_ids))})"
+            args += topic_ids
         if status is not None:
             query += " AND status=?"
             args.append(status)
@@ -507,30 +571,44 @@ class AutoStore:
         run_id: str | None,
         supersedes_id: str | None = None,
         now: datetime | None = None,
+        topic_id: str | None = None,
     ) -> tuple[str, bool]:
-        """Insert a memory, or confirm the identical one. Returns ``(id, created)``."""
+        """Insert a memory, or confirm the identical one. Returns ``(id, created)``.
+
+        Identical means the same kind and text learnt in the same folder or, when a topic
+        is given, already active in that topic wherever it was learnt.
+        """
         # Scrub first: the id, the stored text and the normalised index all come from
         # the same cleaned text.
         text = scrub_secrets(text.strip())
         memory_id = memory_id_for(project, kind, text)
         stamp = now_iso(now)
         existing = self.get_memory(memory_id)
+        if existing is None and topic_id is not None:
+            same = self._connection.execute(
+                "SELECT memory_id FROM auto_memories WHERE topic_id=? AND kind=? AND text_norm=? "
+                "AND status=? ORDER BY created_at LIMIT 1",
+                (topic_id, kind, normalize(text), ACTIVE),
+            ).fetchone()
+            if same is not None:
+                memory_id = str(same[0])
+                existing = self.get_memory(memory_id)
         if existing is not None:
             merged = sorted({*existing.evidence, *evidence})
             # Saying it again makes it current again, and widens who may read it.
             widened = "coding" if "coding" in (existing.scope, scope) else "openclaw"
             self._connection.execute(
                 "UPDATE auto_memories SET status=?, scope=?, last_confirmed_at=?, updated_at=?, "
-                "evidence_json=? WHERE memory_id=?",
-                (ACTIVE, widened, stamp, stamp, json.dumps(merged), memory_id),
+                "evidence_json=?, topic_id=COALESCE(topic_id, ?) WHERE memory_id=?",
+                (ACTIVE, widened, stamp, stamp, json.dumps(merged), topic_id, memory_id),
             )
             self._event(memory_id, "confirm", {"evidence": evidence}, run_id)
             self._connection.commit()
             return memory_id, False
         self._connection.execute(
             "INSERT INTO auto_memories (memory_id, project, scope, kind, text, text_norm, status, "
-            "created_at, updated_at, last_confirmed_at, supersedes_id, evidence_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, updated_at, last_confirmed_at, supersedes_id, evidence_json, topic_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 memory_id,
                 project,
@@ -544,6 +622,7 @@ class AutoStore:
                 stamp,
                 supersedes_id,
                 json.dumps(sorted(set(evidence))),
+                topic_id,
             ),
         )
         self._event(memory_id, "add", {"evidence": evidence, "supersedes": supersedes_id}, run_id)
@@ -617,6 +696,226 @@ class AutoStore:
                 evidence=[],
             )
         return len(rows)
+
+    # ---- topics --------------------------------------------------------------
+    def _topic(self, row: tuple[object, ...]) -> TopicRow:
+        return TopicRow(
+            topic_id=str(row[0]),
+            scope=str(row[1]),
+            name=str(row[2]),
+            description=str(row[3]) if row[3] is not None else None,
+            active=int(str(row[4])) if len(row) > 4 else 0,
+            last_confirmed_at=str(row[5]) if len(row) > 5 and row[5] is not None else None,
+        )
+
+    def get_topic(self, topic_id: str) -> TopicRow | None:
+        if not self._topics:
+            return None
+        row = self._connection.execute(
+            "SELECT topic_id, scope, name, description FROM auto_topics WHERE topic_id=?",
+            (topic_id,),
+        ).fetchone()
+        return self._topic(row) if row else None
+
+    def topic_named(self, name: str, scope: Scope) -> TopicRow | None:
+        if not self._topics:
+            return None
+        row = self._connection.execute(
+            "SELECT topic_id, scope, name, description FROM auto_topics "
+            "WHERE scope=? AND name_norm=?",
+            (scope, normalize(topic_name(name))),
+        ).fetchone()
+        return self._topic(row) if row else None
+
+    def ensure_topic(self, name: str, *, scope: Scope, description: str | None = None) -> str:
+        """The topic of this name in this scope, created when there is none.
+
+        Names are compared without case or spacing differences. A description is only
+        taken for a topic that has none: what a person wrote is not replaced.
+        """
+        name = topic_name(name)
+        if not name:
+            raise ValueError("a topic needs a name")
+        description = (
+            " ".join(description.split())[:MAX_TOPIC_DESCRIPTION_CHARS] if description else None
+        ) or None
+        found = self.topic_named(name, scope)
+        stamp = now_iso()
+        if found is not None:
+            if description and not found.description:
+                self._connection.execute(
+                    "UPDATE auto_topics SET description=?, updated_at=? WHERE topic_id=?",
+                    (description, stamp, found.topic_id),
+                )
+                self._connection.commit()
+            return found.topic_id
+        raw = "\0".join((scope, normalize(name), stamp))
+        topic_id = "t_" + sha256(raw.encode("utf-8")).hexdigest()[:10]
+        self._connection.execute(
+            "INSERT INTO auto_topics (topic_id, scope, name, name_norm, description, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (topic_id, scope, name, normalize(name), description, stamp, stamp),
+        )
+        self._connection.commit()
+        return topic_id
+
+    def topics(self, *, reader: Reader = "coding", scope: str | None = None) -> list[TopicRow]:
+        """Topics this reader may see, with their active memory, the most recent first."""
+        if not self._topics:
+            return []
+        scopes = [scope] if scope is not None else list(_readable(reader))
+        marks = ",".join("?" * len(scopes))
+        rows = self._connection.execute(
+            "SELECT t.topic_id, t.scope, t.name, t.description, count(m.memory_id), "
+            "max(m.last_confirmed_at) FROM auto_topics t "
+            "LEFT JOIN auto_memories m ON m.topic_id=t.topic_id AND m.status=? "
+            f"AND m.scope IN ({','.join('?' * len(_readable(reader)))}) "
+            f"WHERE t.scope IN ({marks}) GROUP BY t.topic_id "
+            "ORDER BY max(m.last_confirmed_at) DESC, t.name",
+            (ACTIVE, *_readable(reader), *scopes),
+        ).fetchall()
+        return [self._topic(row) for row in rows]
+
+    def update_topic(
+        self, topic_id: str, *, name: str | None = None, description: str | None = None
+    ) -> None:
+        """Rename or describe a topic. Raises ``ValueError`` when the name is taken."""
+        found = self.get_topic(topic_id)
+        if found is None:
+            raise ValueError(f"no topic {topic_id}")
+        new_name = topic_name(name) if name is not None else found.name
+        if not new_name:
+            raise ValueError("a topic needs a name")
+        other = self.topic_named(new_name, "coding" if found.scope == "coding" else "openclaw")
+        if other is not None and other.topic_id != topic_id:
+            raise ValueError(f"there is already a topic named {other.name}; merge them instead")
+        new_description = found.description
+        if description is not None:
+            new_description = " ".join(description.split())[:MAX_TOPIC_DESCRIPTION_CHARS] or None
+        self._connection.execute(
+            "UPDATE auto_topics SET name=?, name_norm=?, description=?, updated_at=? "
+            "WHERE topic_id=?",
+            (new_name, normalize(new_name), new_description, now_iso(), topic_id),
+        )
+        self._connection.commit()
+
+    def set_memory_topic(
+        self, memory_id: str, topic_id: str | None, *, reason: str, run_id: str | None = None
+    ) -> bool:
+        """File a memory under another topic; the move is recorded on the memory."""
+        existing = self.get_memory(memory_id)
+        if existing is None or existing.topic_id == topic_id:
+            return False
+        self._connection.execute(
+            "UPDATE auto_memories SET topic_id=?, updated_at=? WHERE memory_id=?",
+            (topic_id, now_iso(), memory_id),
+        )
+        self._event(
+            memory_id,
+            "retopic",
+            {"from": existing.topic_id, "to": topic_id, "reason": reason},
+            run_id,
+        )
+        self._connection.commit()
+        return True
+
+    def merge_topic(self, source_id: str, target_id: str, *, reason: str) -> int:
+        """Move everything filed under ``source_id`` to ``target_id`` and drop the empty
+        topic. Returns how many memories moved."""
+        source, target = self.get_topic(source_id), self.get_topic(target_id)
+        if source is None or target is None or source_id == target_id:
+            raise ValueError("merging needs two different topics")
+        if source.scope != target.scope:
+            raise ValueError("a coding topic and an OpenClaw agent cannot be merged")
+        rows = self._connection.execute(
+            "SELECT memory_id FROM auto_memories WHERE topic_id=?", (source_id,)
+        ).fetchall()
+        for (memory_id,) in rows:
+            self.set_memory_topic(str(memory_id), target_id, reason=reason)
+        self._connection.execute("DELETE FROM auto_topics WHERE topic_id=?", (source_id,))
+        self._connection.commit()
+        return len(rows)
+
+    def drop_empty_topic(self, topic_id: str) -> bool:
+        """Remove a topic nothing is filed under (in any status)."""
+        used = self._connection.execute(
+            "SELECT 1 FROM auto_memories WHERE topic_id=? LIMIT 1", (topic_id,)
+        ).fetchone()
+        if used is not None:
+            return False
+        cursor = self._connection.execute("DELETE FROM auto_topics WHERE topic_id=?", (topic_id,))
+        self._connection.commit()
+        return bool(cursor.rowcount)
+
+    def workspace_topics(self, project: str, *, reader: Reader = "coding") -> list[str]:
+        """Topics that came up in this folder, the most recently confirmed first.
+
+        A topic came up here when one of its active memories was learnt here or has a
+        session of this folder as evidence. This only orders what a new session is shown
+        first: every topic stays reachable from every folder.
+        """
+        if not self._topics:
+            return []
+        here = {
+            str(key)
+            for (key,) in self._connection.execute(
+                "SELECT source_key FROM auto_sessions WHERE project=?", (project,)
+            )
+        }
+        scopes = _readable(reader)
+        rows = self._connection.execute(
+            "SELECT topic_id, project, evidence_json, last_confirmed_at FROM auto_memories "
+            f"WHERE status=? AND topic_id IS NOT NULL AND scope IN ({','.join('?' * len(scopes))}) "
+            "ORDER BY last_confirmed_at DESC",
+            (ACTIVE, *scopes),
+        ).fetchall()
+        found: list[str] = []
+        for topic_id, row_project, evidence, _ in rows:
+            if str(topic_id) in found:
+                continue
+            if str(row_project) == project or here.intersection(json.loads(str(evidence))):
+                found.append(str(topic_id))
+        return found
+
+    def agent_of(self, project: str, evidence: tuple[str, ...] | list[str]) -> tuple[str, str]:
+        """``(agent, team)`` an OpenClaw memory belongs to; the team may be empty.
+
+        Memory is handed to whoever works in a workspace, so a workspace folder named
+        after an agent that has sessions decides (the folder above it is the team).
+        Elsewhere it is the agent whose sessions are the evidence (the most frequent,
+        then the first), and failing that the folder name.
+        """
+        folder = Path(project)
+        owner = self._connection.execute(
+            "SELECT 1 FROM auto_sessions WHERE agent=? LIMIT 1", (f"openclaw/{folder.name}",)
+        ).fetchone()
+        if owner is not None:
+            return folder.name, folder.parent.name
+        names: list[str] = []
+        for key in evidence:
+            session = self.get_session(key)
+            agent = session.agent if session is not None else None
+            if agent and agent.startswith("openclaw/"):
+                names.append(agent.partition("/")[2])
+            elif key.startswith("openclaw-native:") and "/" in key:
+                names.append(key.partition(":")[2].partition("/")[0])
+        return (max(names, key=names.count) if names else folder.name), ""
+
+    def agent_topic(self, project: str, evidence: tuple[str, ...] | list[str]) -> str | None:
+        """The topic of the agent an OpenClaw memory belongs to, created when missing."""
+        agent, team = self.agent_of(project, evidence)
+        if not agent:
+            return None
+        return self.ensure_topic(agent, scope="openclaw", description=team or None)
+
+    def unfiled_memories(self, *, limit: int = 5000) -> list[MemoryRow]:
+        """Active memory no topic has been chosen for yet, oldest first."""
+        rows = self._connection.execute(
+            f"SELECT {self._MEMORY_COLUMNS} FROM auto_memories "
+            "WHERE status=? AND topic_id IS NULL ORDER BY project, created_at LIMIT ?",
+            (ACTIVE, limit),
+        ).fetchall()
+        return [self._memory(row) for row in rows]
 
     def events(self, memory_id: str) -> list[tuple[str, dict[str, object], str]]:
         rows = self._connection.execute(

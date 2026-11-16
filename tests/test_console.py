@@ -170,7 +170,7 @@ def test_what_cannot_be_done_is_refused_as_json(tmp_path: Path) -> None:
         (("retire", "--id", ids["new"]), "needs --reason"),
         (("retire", "--id", "m_missing", "--reason", "x"), "no memory m_missing"),
         (("memory", "--id", "m_missing"), "not found"),
-        (("memories",), "needs --project"),
+        (("memories",), "needs --scope"),
         (("memories", "--project", ALPHA, "--status", "odd"), "unknown status"),
         (("nonsense",), "unknown view"),
     ]:

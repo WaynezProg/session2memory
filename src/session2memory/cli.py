@@ -806,6 +806,89 @@ def auto_search(
         typer.echo(f"[{kind}] {ref}｜{hit_project or '-'}\n  {text[:500]}")
 
 
+@auto_app.command("topics", help="List the topics memory is filed under, or one topic's memory.")
+def auto_topics(
+    name: Annotated[str | None, typer.Argument(help="A topic name: print its memory.")] = None,
+    reader: Annotated[
+        str, typer.Option("--reader", help="coding (everything) or openclaw (its own only).")
+    ] = "coding",
+    limit: Annotated[int, typer.Option("--limit")] = 40,
+    store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
+) -> None:
+    scope = _reader(reader)
+    opened = AutoStore.open_read_only(store.expanduser() / AUTO_DB_NAME)
+    if opened is None:
+        raise typer.Exit(code=1)
+    try:
+        found = [topic for topic in opened.topics(reader=scope) if topic.active]
+        if name is None:
+            for topic in found:
+                about = f"｜{topic.description}" if topic.description else ""
+                typer.echo(f"{topic.name}｜{topic.active} 筆{about}")
+            if not found:
+                typer.echo("no topics yet")
+            return
+        wanted = " ".join(name.split()).lower()
+        chosen = [topic for topic in found if topic.name.lower() == wanted] or [
+            topic for topic in found if wanted in topic.name.lower()
+        ]
+        if not chosen:
+            typer.echo("no topic with that name; run `session2memory auto topics` for the list")
+            raise typer.Exit(code=1)
+        for topic in chosen:
+            typer.echo(f"# {topic.name}")
+            rows = opened.memories(topic_ids=[topic.topic_id], reader=scope, limit=limit)
+            for row in rows:
+                typer.echo(f"- [{row.kind}] {row.text}")
+    finally:
+        opened.close()
+
+
+@auto_app.command(
+    "retopic",
+    help=(
+        "File active memory that has no topic yet: OpenClaw memory under its agent, the "
+        "rest under a subject an LLM picks. Back the store up first."
+    ),
+)
+def auto_retopic(
+    max_calls: Annotated[int, typer.Option("--max-calls", help="LLM calls at most.")] = 20,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Only say how much there is to file.")
+    ] = False,
+    llm_command: Annotated[str | None, typer.Option("--llm-command")] = None,
+    store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
+) -> None:
+    from session2memory.auto.curate import default_runner
+    from session2memory.auto.retopic import BATCH_MEMORIES, retopic
+
+    database = store.expanduser() / AUTO_DB_NAME
+    if not database.is_file():
+        raise typer.Exit(code=1)
+    if dry_run:
+        opened = AutoStore.open_read_only(database)
+        assert opened is not None
+        try:
+            unfiled = opened.unfiled_memories() if opened._topics else opened.memories(limit=5000)
+        finally:
+            opened.close()
+        by_agent = sum(1 for row in unfiled if row.scope == "openclaw")
+        rest = len(unfiled) - by_agent
+        calls = -(-rest // BATCH_MEMORIES) + (1 if rest else 0)
+        typer.echo(
+            json.dumps(
+                {"unfiled": len(unfiled), "by_agent": by_agent, "by_topic": rest, "calls": calls}
+            )
+        )
+        return
+    writable = AutoStore.open(database)
+    try:
+        report = retopic(writable, default_runner(llm_command), max_calls=max_calls)
+    finally:
+        writable.close()
+    typer.echo(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+
+
 @auto_app.command("memory", help="List or retire the distilled memory of a workspace.")
 def auto_memory(
     workspace: Annotated[Path, typer.Option("--workspace")],
@@ -856,8 +939,12 @@ def auto_memory(
 CONSOLE_VIEWS = (
     "overview", "projects", "memories", "memory", "search", "sessions", "session", "runs",
     "retire", "restore", "edit", "add", "requeue", "skip",
+    "topics", "move", "topic-add", "topic-edit", "topic-merge",
 )  # fmt: skip
-CONSOLE_WRITES = ("retire", "restore", "edit", "add", "requeue", "skip")
+CONSOLE_WRITES = (
+    "retire", "restore", "edit", "add", "requeue", "skip",
+    "move", "topic-add", "topic-edit", "topic-merge",
+)  # fmt: skip
 
 
 @auto_app.command(
@@ -888,7 +975,19 @@ def auto_console(
         bool, typer.Option("--pending", help="Only sessions waiting for curation (sessions).")
     ] = False,
     scope: Annotated[
-        str | None, typer.Option("--scope", help="coding or openclaw (sessions).")
+        str | None, typer.Option("--scope", help="coding or openclaw (memories, search, sessions).")
+    ] = None,
+    topic: Annotated[
+        str | None, typer.Option("--topic", help="Topic id (memories, add, move, topic-*).")
+    ] = None,
+    into: Annotated[
+        str | None, typer.Option("--into", help="Topic id to merge into (topic-merge).")
+    ] = None,
+    name: Annotated[
+        str | None, typer.Option("--name", help="Topic name (topic-add, topic-edit).")
+    ] = None,
+    description: Annotated[
+        str | None, typer.Option("--description", help="What a topic holds (topic-add, -edit).")
     ] = None,
     limit: Annotated[int, typer.Option("--limit")] = 200,
     offset: Annotated[int, typer.Option("--offset")] = 0,
@@ -929,12 +1028,17 @@ def auto_console(
         elif view == "projects":
             data = console.projects(opened)
         elif view == "memories":
-            data = console.memories(opened, need(project, "--project"), status=status)
+            data = console.memories(opened, project, scope=scope, topic=topic, status=status)
         elif view == "memory":
             data = console.memory(opened, need(memory_id, "--id"))
         elif view == "search":
             data = console.search(
-                opened, need(query, "--query"), project=project, status=status, limit=limit
+                opened,
+                need(query, "--query"),
+                project=project,
+                scope=scope,
+                status=status,
+                limit=limit,
             )
         elif view == "sessions":
             data = console.sessions(
@@ -960,12 +1064,35 @@ def auto_console(
                 opened, need(memory_id, "--id"), need(text, "--text"), need(reason, "--reason")
             )
         elif view == "add":
+            if topic is None:
+                need(project, "--topic")
             data = console.add(
                 opened,
-                need(project, "--project"),
+                project,
                 need(kind, "--kind"),
                 need(text, "--text"),
                 need(reason, "--reason"),
+                topic=topic,
+            )
+        elif view == "topics":
+            data = console.topics(opened, scope=scope)
+        elif view == "move":
+            data = console.move(
+                opened, need(memory_id, "--id"), need(topic, "--topic"), need(reason, "--reason")
+            )
+        elif view == "topic-add":
+            data = console.topic_add(
+                opened, need(name, "--name"), scope=scope or "coding", description=description
+            )
+        elif view == "topic-edit":
+            if name is None and description is None:
+                need(name, "--name")
+            data = console.topic_edit(
+                opened, need(topic, "--topic"), name=name, description=description
+            )
+        elif view == "topic-merge":
+            data = console.topic_merge(
+                opened, need(topic, "--topic"), need(into, "--into"), need(reason, "--reason")
             )
         elif view == "requeue":
             data = console.requeue(opened, need(key, "--key"))
