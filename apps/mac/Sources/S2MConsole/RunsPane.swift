@@ -80,13 +80,19 @@ struct RunStory {
         }
         if run.report["reconcile"] != nil {
             var line =
-                "檢查了 \(number("reconcile", "projects_checked") ?? 0) 個專案的記憶："
+                "檢查了 \(number("reconcile", "projects_checked") ?? 0) 個主題的記憶："
                 + "合併 \(number("reconcile", "memories_merged") ?? 0) 條、"
                 + "停用 \(number("reconcile", "memories_retired") ?? 0) 條。"
             if let left = number("reconcile", "projects_left"), left > 0 {
-                line += "還有 \(left) 個專案排在後面。"
+                line += "還有 \(left) 個主題排在後面。"
             }
             lines.append(line)
+            let filing = run.report["reconcile"]?["filing"]
+            let filed = filing?["memories_filed"]?.numberValue.map { Int($0) } ?? 0
+            let moved = filing?["memories_moved"]?.numberValue.map { Int($0) } ?? 0
+            if filed > 0 || moved > 0 {
+                lines.append("補歸了 \(filed) 條還沒有主題的記憶，另把 \(moved) 條改歸到真正在講的主題。")
+            }
         }
         if let done = number("archive", "done"), done > 0 {
             lines.append("歸檔了 \(grouped(done)) 個舊的對話檔。")

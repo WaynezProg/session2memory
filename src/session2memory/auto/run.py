@@ -21,6 +21,7 @@ from session2memory.auto.curate import Runner, curate, default_runner
 from session2memory.auto.export import export
 from session2memory.auto.files import archive_claude, compress_codex_rollouts, purge_holding
 from session2memory.auto.reconcile import reconcile
+from session2memory.auto.retopic import refile, retopic
 from session2memory.auto.scan import DEFAULT_MAX_FILE_BYTES, ScanSources, scan
 from session2memory.auto.semantic import Embedder, embed_pending, load_embedder
 from session2memory.auto.store import AutoStore, now_iso
@@ -50,6 +51,10 @@ class AutoConfig:
     # Calls the reconcile step may spend looking for contradicting or repeated memories;
     # 0 turns the step off.
     max_reconcile_calls: int = 5
+    # Calls the reconcile step may spend first on filing: memory curation left without
+    # a topic, then topics whose memory changed, looked over for entries that are really
+    # about another subject. 0 turns filing off.
+    max_retopic_calls: int = 6
     llm_command: str | None = None
     compress_min_age_days: float = 14.0
     hold_days: float = 3.0
@@ -122,6 +127,38 @@ def _open_state(config: AutoConfig) -> StateStore:
     state = StateStore(memory)
     state._apply_schema()
     return state
+
+
+def _file_memory(
+    store: AutoStore, runner: Runner, max_calls: int, *, run_id: str | None
+) -> dict[str, object] | None:
+    """File what has no topic, then refile within what is left of the budget."""
+    if max_calls <= 0:
+        return None
+    # Topics that are one subject are merged by reconcile itself, right after.
+    filed = retopic(store, runner, max_calls=max_calls, run_id=run_id, merge=False)
+    moved = refile(
+        store,
+        runner,
+        max_calls=max(max_calls - filed.llm_calls, 0),
+        run_id=run_id,
+        only_changed=True,
+    )
+    return {
+        "llm_calls": filed.llm_calls + moved.llm_calls,
+        "llm_failures": filed.llm_failures + moved.llm_failures,
+        "input_tokens": filed.input_tokens + moved.input_tokens,
+        "output_tokens": filed.output_tokens + moved.output_tokens,
+        "cost_usd": filed.cost_usd + moved.cost_usd,
+        "memories_filed": filed.filed_by_agent + filed.filed_by_topic,
+        "memories_left_unfiled": filed.left_unfiled,
+        "memories_moved": moved.memories_moved,
+        "topics_created": filed.topics_created + moved.topics_created,
+        "topics_looked_over": moved.topics_looked_over,
+        "topics_left": moved.topics_left,
+        "ops_rejected": filed.ops_rejected + moved.ops_rejected,
+        "rejections": [*filed.rejections, *moved.rejections][:20],
+    }
 
 
 def run_auto(
@@ -239,14 +276,25 @@ def _run_step(
             return {"skipped": "dry run"}
         if config.max_reconcile_calls <= 0:
             return {"skipped": "turned off (--max-reconcile-calls 0)"}
-        return reconcile(
+        llm = runner or default_runner(config.llm_command)
+        # Filing comes first: what it moves next to each other is what the look-over
+        # for repeated entries then sees.
+        filing = _file_memory(store, llm, config.max_retopic_calls, run_id=run_id)
+        result = reconcile(
             store,
-            runner or default_runner(config.llm_command),
+            llm,
             max_calls=config.max_reconcile_calls,
             run_id=run_id,
             now=now,
             scopes=config.curate_scopes,
         ).as_dict()
+        if filing is not None:
+            # One total for the step, with what filing did kept apart.
+            for name in ("llm_calls", "llm_failures", "input_tokens", "output_tokens"):
+                result[name] = int(str(result[name])) + int(str(filing[name]))
+            result["cost_usd"] = float(str(result["cost_usd"])) + float(str(filing["cost_usd"]))
+            result["filing"] = filing
+        return result
     if step == "embed":
         if config.dry_run:
             return {"skipped": "dry run"}

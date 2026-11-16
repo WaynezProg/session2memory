@@ -12,6 +12,7 @@ each move is recorded on the entry.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 
 from session2memory.auto.curate import Runner, _clean, extract_json
@@ -111,6 +112,7 @@ class RetopicReport:
     topics_created: int = 0
     topics_merged: int = 0
     topics_looked_over: int = 0
+    topics_left: int = 0
     memories_moved: int = 0
     ops_rejected: int = 0
     rejections: list[str] = field(default_factory=list)
@@ -193,8 +195,21 @@ REFILE_NEW_TOPICS = 2
 REFILE_REASON = "is about this subject, not the product it was learnt in"
 
 
+REFILE_META = "refile:"
+
+
+def _looked_over(memories: list[MemoryRow]) -> str:
+    joined = "\n".join(sorted(memory.memory_id for memory in memories))
+    return sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
 def refile(
-    store: AutoStore, runner: Runner, *, max_calls: int, run_id: str | None = None
+    store: AutoStore,
+    runner: Runner,
+    *,
+    max_calls: int,
+    run_id: str | None = None,
+    only_changed: bool = False,
 ) -> RetopicReport:
     """Look over each coding topic for memory that is really about something else.
 
@@ -203,14 +218,22 @@ def refile(
     moved to the topic of that subject, where the same thing learnt elsewhere is, so
     that the next reconcile can see them side by side. A call can move at most half of
     what it was shown; only where an entry is filed changes.
+
+    Each topic is remembered as looked over with the entries it then held. With
+    ``only_changed`` (the unattended run) a topic is looked over again only once that
+    set changed, the most recently changed first, so a quiet store costs no calls.
     """
     report = RetopicReport()
     for topic in [one for one in store.topics(scope="coding") if one.active]:
-        if report.llm_calls >= max_calls:
-            break
         memories = store.memories(topic_ids=[topic.topic_id], limit=200)
         memories = [memory for memory in memories if memory.scope == "coding"]
         if not memories:
+            continue
+        key = REFILE_META + topic.topic_id
+        if only_changed and store.get_meta(key) == _looked_over(memories):
+            continue
+        if report.llm_calls >= max_calls:
+            report.topics_left += 1
             continue
         listed = [f"- {memory.memory_id}｜{memory.kind}｜{memory.text}" for memory in memories]
         prompt = REFILE_INSTRUCTIONS.format(
@@ -271,6 +294,10 @@ def refile(
                 report.memories_moved += 1
         if not shown:
             store.drop_empty_topic(topic.topic_id)
+        else:
+            store.set_meta(
+                key, _looked_over([memory for memory in memories if memory.memory_id in shown])
+            )
     return report
 
 

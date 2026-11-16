@@ -18,6 +18,8 @@ from session2memory.auto.curate import (
 )
 from session2memory.auto.reconcile import cross_topic_groups, reconcile
 from session2memory.auto.retopic import refile, retopic
+from session2memory.auto.run import AutoConfig, run_auto
+from session2memory.auto.scan import ScanSources
 from session2memory.auto.store import AutoStore
 from session2memory.session_start import HookConfig, run_hook
 
@@ -372,6 +374,74 @@ def test_entries_alike_under_different_topics_are_looked_over_together(store: Au
     git = store.topic_named("git", "coding")
     assert git is not None and [m.topic_id for m in kept] == [git.topic_id]
     assert reconcile(store, Runner(), max_calls=9).groups_across_topics == 0
+
+
+def test_refile_only_looks_again_at_topics_whose_memory_changed(store: AutoStore) -> None:
+    remember(store, "甲", "/w", topic="A")
+    remember(store, "乙", "/w", topic="B")
+    remember(store, "丙", "/w", topic="C")
+
+    first = refile(store, Runner(), max_calls=2, only_changed=True)
+    assert (first.topics_looked_over, first.topics_left) == (2, 1)
+    second = refile(store, Runner(), max_calls=2, only_changed=True)
+    assert (second.topics_looked_over, second.topics_left) == (1, 0), "the one that was left"
+    quiet = Runner()
+    assert refile(store, quiet, max_calls=2, only_changed=True).llm_calls == 0
+    assert quiet.prompts == []
+
+    remember(store, "丁", "/w", topic="B")
+    changed = Runner()
+    assert refile(store, changed, max_calls=2, only_changed=True).topics_looked_over == 1
+    assert "主題「B」的全部內容" in changed.prompts[0]
+    # Asked for by hand, every topic is looked over whatever was seen before.
+    assert refile(store, Runner(), max_calls=9).topics_looked_over == 3
+
+
+def test_the_nightly_run_files_what_curation_left_and_refiles_within_its_budget(
+    tmp_path: Path,
+) -> None:
+    store_dir = tmp_path / "store"
+    opened = AutoStore.open(store_dir / "session2memory.db")
+    left = remember(opened, "curate 沒給主題的那條", "/w")
+    general = remember(opened, "有未提交工作時不要直接 git pull", "/w", topic="HKS")
+    remember(opened, "HKS alias 要先合併", "/w", topic="HKS")
+    remember(opened, "未提交時不要 checkout main", "/w", topic="git 流程")
+    opened.close()
+
+    def config(calls: int) -> AutoConfig:
+        return AutoConfig(
+            store_dir=store_dir, sources=ScanSources(), steps=("reconcile",),
+            max_retopic_calls=calls, max_reconcile_calls=9,
+        )  # fmt: skip
+
+    off = Runner()
+    report = run_auto(config(0), runner=off)
+    assert "filing" not in report["reconcile"]  # type: ignore[operator]
+    assert not any("待歸檔的記憶" in prompt for prompt in off.prompts)
+
+    runner = Runner(
+        {"assign": [{"id": left, "topic": "git 流程"}]},
+        {"move": [{"id": general, "topic": "git 流程"}]},
+    )
+    result = run_auto(config(2), runner=runner)["reconcile"]
+
+    filing = result["filing"]  # type: ignore[index]
+    assert (filing["memories_filed"], filing["memories_moved"], filing["llm_calls"]) == (1, 1, 2)
+    assert (filing["memories_left_unfiled"], filing["topics_left"]) == (0, 1)
+    assert "待歸檔的記憶" in runner.prompts[0] and "的全部內容" in runner.prompts[1]
+    # The step's total counts filing too, and reconcile ran after it, on the moved entries.
+    assert result["llm_calls"] == len(runner.prompts) > 2  # type: ignore[index]
+    assert any(
+        "主題「git 流程」" in p and "不要直接 git pull" in p and "curate 沒給主題的那條" in p
+        for p in runner.prompts[2:]
+    )
+    check = AutoStore.open(store_dir / "session2memory.db")
+    try:
+        git = check.topic_named("git 流程", "coding")
+        assert git is not None and len(check.memories(topic_ids=[git.topic_id])) == 3
+        assert check.unfiled_memories() == []
+    finally:
+        check.close()
 
 
 # ---- what a new session is given -----------------------------------------------
