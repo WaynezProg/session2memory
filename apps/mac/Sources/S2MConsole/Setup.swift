@@ -28,7 +28,9 @@ struct CommandChoice: Equatable {
 /// Picks how to start a command without asking: what Settings says wins, then the
 /// checkout the app belongs to, then the command installed on PATH.
 enum CommandFinder {
-    static let s2mInstall = "uv tool install git+https://github.com/WaynezProg/session2memory"
+    /// With the `semantic` extra: without it `auto search` falls back to keyword mode.
+    static let s2mInstall =
+        "uv tool install 'session2memory[semantic] @ git+https://github.com/WaynezProg/session2memory'"
     static let hksInstall = "uv tool install git+https://github.com/WaynezProg/Hybrid-Knowledge-System"
     static let uvInstall = "curl -LsSf https://astral.sh/uv/install.sh | sh"
 

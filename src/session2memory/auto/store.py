@@ -204,9 +204,21 @@ def _readable(reader: Reader) -> tuple[str, ...]:
     return ("coding", "openclaw") if reader == "coding" else ("openclaw",)
 
 
+_SearchRow = tuple[int, str, tuple[str, str, str | None, str], str]
+
+
+def is_memory(kind: str) -> bool:
+    """Whether a search row's kind names distilled memory (``memory:<kind>``)."""
+    return kind.startswith("memory")
+
+
 class AutoStore:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+        # One search reads the searchable rows several times (is there anything to
+        # compare, the keyword hits, the vectors' rows); they are read once per state of
+        # this connection.
+        self._rows_cache: tuple[tuple[str | None, str, int, int], list[_SearchRow]] | None = None
         connection.executescript(SCHEMA)
         if not self._has_topic_column():
             connection.execute("ALTER TABLE auto_memories ADD COLUMN topic_id TEXT")
@@ -232,6 +244,7 @@ class AutoStore:
             return None
         store = cls.__new__(cls)
         store._connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        store._rows_cache = None
         # A database from before topics cannot be upgraded here: it reads as unfiled.
         try:
             store._topics = store._has_topic_column()
@@ -944,10 +957,19 @@ class AutoStore:
         return [(str(op), json.loads(str(detail)), str(at)) for op, detail, at in rows]
 
     # ---- search --------------------------------------------------------------
-    def _search_rows(
-        self, project: str | None, reader: Reader
-    ) -> list[tuple[int, str, tuple[str, str, str | None, str], str]]:
+    def _search_rows(self, project: str | None, reader: Reader) -> list[_SearchRow]:
         """Every row ``reader`` may search: ``(order, recency, hit, lowered text)``."""
+        # ``data_version`` moves when another connection commits, ``total_changes`` when
+        # this one writes.
+        version = int(self._connection.execute("PRAGMA data_version").fetchone()[0])
+        key = (project, reader, version, self._connection.total_changes)
+        if self._rows_cache is not None and self._rows_cache[0] == key:
+            return self._rows_cache[1]
+        rows = self._read_search_rows(project, reader)
+        self._rows_cache = (key, rows)
+        return rows
+
+    def _read_search_rows(self, project: str | None, reader: Reader) -> list[_SearchRow]:
         scopes = _readable(reader)
         marks = ",".join("?" * len(scopes))
         memory_sql = (
@@ -966,7 +988,7 @@ class AutoStore:
             session_sql += " AND project=?"
             memory_args.append(project)
             session_args.append(project)
-        rows: list[tuple[int, str, tuple[str, str, str | None, str], str]] = []
+        rows: list[_SearchRow] = []
         for sql, args in ((memory_sql, memory_args), (session_sql, session_args)):
             for kind, ref, row_project, text, recency, order in self._connection.execute(sql, args):
                 hit = (str(kind), str(ref), str(row_project) if row_project else None, str(text))
@@ -1014,12 +1036,28 @@ class AutoStore:
         self, model: str, *, project: str | None = None, reader: Reader = "coding"
     ) -> bool:
         """Whether any row this reader may search in this workspace has a vector."""
-        known = self.vector_digests(model)
-        if not known:
+        scopes = _readable(reader)
+        marks = ",".join("?" * len(scopes))
+        in_project = " AND project=?" if project is not None else ""
+        args: list[object] = [model, ACTIVE, *scopes]
+        if project is not None:
+            args.append(project)
+        args += scopes
+        if project is not None:
+            args.append(project)
+        try:
+            row = self._connection.execute(
+                "SELECT 1 FROM auto_vectors v WHERE v.model=? AND ("
+                "EXISTS (SELECT 1 FROM auto_memories m WHERE m.memory_id=v.ref "
+                f"AND m.status=? AND m.scope IN ({marks}){in_project}) "
+                "OR EXISTS (SELECT 1 FROM auto_sessions s WHERE s.source_key=v.ref "
+                f"AND s.summary IS NOT NULL AND s.scope IN ({marks}){in_project})"
+                ") LIMIT 1",
+                args,
+            ).fetchone()
+        except sqlite3.OperationalError:  # a database from before vectors, opened read-only
             return False
-        return any(
-            ref in known for _, ref, _, _ in self.search_rows(project=project, reader=reader)
-        )
+        return row is not None
 
     def vectors(self, model: str, refs: set[str]) -> dict[str, bytes]:
         try:
@@ -1041,6 +1079,12 @@ class AutoStore:
         a row must contain two of the rest (one, when there is only one). Rows matching
         more and rarer pieces rank first, then memories before session summaries, newer
         before older.
+
+        Session summaries are long and outnumber memory by far, so they match more pieces
+        of any question. Half of ``limit`` is therefore kept for matching memory: when
+        fewer memories made it on their score, the best of the rest take the place of the
+        weakest session summaries. A session summary repeating the text of a better one
+        (one session recorded by two tools) is left out.
         """
         tokens = search_tokens(query)
         if not tokens:
@@ -1062,7 +1106,22 @@ class AutoStore:
             scored.append((sum(weight[token] for token in matched), order, recency, hit))
         scored.sort(key=lambda item: item[2], reverse=True)  # newest first
         scored.sort(key=lambda item: (-round(item[0], 6), item[1]))  # rarer matches first
-        return [hit for _, _, _, hit in scored[:limit]]
+        hits: list[tuple[str, str, str | None, str]] = []
+        texts: set[str] = set()
+        for _, _, _, hit in scored:
+            if not is_memory(hit[0]):
+                if hit[3] in texts:
+                    continue
+                texts.add(hit[3])
+            hits.append(hit)
+        top = hits[:limit]
+        wanted = limit // 2 - sum(1 for hit in top if is_memory(hit[0]))
+        extra = [hit for hit in hits[limit:] if is_memory(hit[0])][: max(0, wanted)]
+        if not extra:
+            return top
+        sessions = [hit for hit in top if not is_memory(hit[0])]
+        dropped = {hit[1] for hit in sessions[len(sessions) - len(extra) :]}
+        return [hit for hit in top if hit[1] not in dropped] + extra
 
     # ---- runs and file actions -----------------------------------------------
     def start_run(self, run_id: str) -> None:

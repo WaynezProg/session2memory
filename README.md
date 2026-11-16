@@ -64,9 +64,15 @@ There are two independent pipelines; pick by what you want out of it.
 As a command, for daily use:
 
 ```bash
-uv tool install git+https://github.com/WaynezProg/session2memory
+uv tool install "session2memory[semantic] @ git+https://github.com/WaynezProg/session2memory"
 session2memory --help
 ```
+
+The `[semantic]` extra is what lets `auto search` rank by meaning. Without it
+(`uv tool install git+https://github.com/WaynezProg/session2memory`) everything else
+works the same, but `auto search` says `semantic search is unavailable` and falls back
+to keyword mode: it then finds only memory that shares words with the query, even when
+the store already holds embeddings.
 
 From a checkout, for development and for the scripts under `scripts/`:
 
@@ -165,6 +171,11 @@ Options after `--` are passed to every run. To remove the job:
 | `SESSION2MEMORY_LLM_CMD` | `import --llm-extract` | extraction command |
 | `SESSION2MEMORY_EMBED_MODEL`, `SESSION2MEMORY_RERANK_MODEL` | `auto search`, `embed` | local model names |
 | `SESSION2MEMORY_MODEL_CACHE` | `auto search`, `embed` | model directory (default `~/.cache/session2memory/models`) |
+| `SESSION2MEMORY_ENV_FILE` | every command | the shared settings file (default `~/.config/session2memory/env`) |
+| `SESSION2MEMORY_EMBED_API_URL` | `auto search`, `embed` | an embeddings service used instead of the local model (unset: everything stays local) |
+| `SESSION2MEMORY_EMBED_API_KEY`, `SESSION2MEMORY_EMBED_API_MODEL`, `SESSION2MEMORY_EMBED_API_TIMEOUT` | `auto search`, `embed` | its bearer key, model name (default `text-embedding-3-small`), and timeout in seconds (default 30) |
+| `SESSION2MEMORY_RERANK_API_URL` | `auto search` | a rerank service used instead of the local reranker (unset: everything stays local) |
+| `SESSION2MEMORY_RERANK_API_KEY`, `SESSION2MEMORY_RERANK_API_MODEL`, `SESSION2MEMORY_RERANK_API_TIMEOUT` | `auto search` | its bearer key, model name, and timeout in seconds (default 5) |
 | `SESSION2MEMORY_READER` | hook, `auto search` | `openclaw` restricts a reader to OpenClaw memory |
 | `SESSION2MEMORY_AUTO_STORE` | `nightly-auto.sh` | store directory |
 | `SESSION2MEMORY_AUTO_MAX_LLM_CALLS` | `nightly-auto.sh` | curation calls per run (script default 40, CLI default 20) |
@@ -803,10 +814,37 @@ on stdin and the reply must contain one JSON object.
 **Search.** `auto search` takes keywords or a whole question. With the optional extra
 (`uv sync --extra semantic`, about 3 GB of local models) and after one `embed` step it ranks by meaning as well:
 local embeddings pick the candidates (keyword hits are added so an exact name or id is
-never missed), then the best 20 are re-read by a local cross-encoder (`--no-rerank` skips that, `--mode keyword` skips both). Models run on
+never missed), then the best 20 are re-read by a local cross-encoder (`--no-rerank` skips that, `--mode keyword` skips both).
+Memory and session summaries are ranked apart and each brings half of those 20: there are
+some forty summaries to one memory, and in one ranking they pushed the memory that answers
+the question out of the candidates. Keyword search keeps half of its results for matching
+memory for the same reason. A session recorded by two tools is listed once, and memory
+written after the last `embed` is embedded for the question when it shares a word with it.
+Models run on
 this machine through `fastembed` (ONNX), are downloaded once into
 `~/.cache/session2memory/models`, and can be changed with `SESSION2MEMORY_EMBED_MODEL` /
 `SESSION2MEMORY_RERANK_MODEL`. No text leaves the machine and a query costs no tokens.
+Reading the candidates is the slow part, and a rerank service can do it instead: set
+`SESSION2MEMORY_RERANK_API_URL` (https; the request is the `{"model", "query",
+"documents"}` one of Cohere, Jina and Voyage) with `SESSION2MEMORY_RERANK_API_KEY` and
+`SESSION2MEMORY_RERANK_API_MODEL`. Then the question and the first 400 characters of
+about 20 candidate rows leave the machine on every search; embeddings stay local. When
+the service fails or does not answer in time, the local reranker reads them and stderr
+says so.
+Vectors can come from a service too: set `SESSION2MEMORY_EMBED_API_URL` (the OpenAI
+`{"model", "input"}` request, e.g. `https://api.openai.com/v1/embeddings`) with
+`SESSION2MEMORY_EMBED_API_KEY` and `SESSION2MEMORY_EMBED_API_MODEL`, for the `embed` step
+and for every search alike. The `embed` step then sends the first 1,000 characters of
+every active memory and session summary to that service and removes the local model's
+vectors (a store holds the vectors of one model); each search sends its question. Vectors
+of two models cannot be compared, so when the service fails, search is by keywords.
+
+**Shared settings file.** The nightly job that makes the vectors and every agent that
+searches them must use the same model, and they run in different environments (launchd,
+an agent's shell, the console app). Put the `SESSION2MEMORY_*` variables once in
+`~/.config/session2memory/env`, as `NAME=value` lines, and every command reads them at
+start; a variable set in the environment wins. The file may hold a key: it is ignored
+unless only you can read it (`chmod 600`).
 Without the extra, or before the first `embed`, search is by keywords. The reader and
 workspace filters are applied before anything is compared, as in keyword search.
 
