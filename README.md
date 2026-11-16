@@ -817,7 +817,8 @@ local embeddings pick the candidates (keyword hits are added so an exact name or
 never missed), then the best 20 are re-read by a local cross-encoder (`--no-rerank` skips that, `--mode keyword` skips both).
 Memory and session summaries are ranked apart and each brings half of those 20: there are
 some forty summaries to one memory, and in one ranking they pushed the memory that answers
-the question out of the candidates. Keyword search keeps half of its results for matching
+the question out of the candidates. The cross-encoder orders each kind and the result lists
+them in turn, memory first: scored against each other, the longer summaries won too often. Keyword search keeps half of its results for matching
 memory for the same reason. A session recorded by two tools is listed once, and memory
 written after the last `embed` is embedded for the question when it shares a word with it.
 Models run on

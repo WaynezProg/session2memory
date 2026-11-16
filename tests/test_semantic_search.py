@@ -641,3 +641,23 @@ def test_the_embed_step_waits_and_asks_again_when_the_service_says_to_slow_down(
     report = embed_pending(store, embedder)
 
     assert report.embedded == 1 and waited == [3.0]
+
+
+def test_the_reranker_orders_each_kind_and_never_puts_a_summary_above_the_best_memory(
+    store: AutoStore,
+) -> None:
+    """A long summary repeating the question outscores the memory; it still comes second."""
+    weak = remember(store, "部署 注意事項")
+    best = remember(store, "上線前必須確認 migration 已套用")
+    loud = summarised(store, "loud", "部署 部署 當時請求：部署要注意什麼 migration migration")
+    quiet = summarised(store, "quiet", "部署流程整理")
+    embedder = ConceptEmbedder()
+    embed_pending(store, embedder)
+
+    class CountWord:
+        def score(self, query: str, texts: Sequence[str]) -> list[float]:
+            return [float(text.count("migration")) for text in texts]
+
+    hits = refs(semantic_search(store, "部署", embedder=embedder, reranker=CountWord()))
+
+    assert hits == [best, loud, weak, quiet]
