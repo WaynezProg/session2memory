@@ -224,6 +224,9 @@ class Machine:
             "store_dir": self.store_dir,
             "sources": self.sources(),
             "compress_homes": tuple(h for h in self.homes() if h.home_id != "codex@main"),
+            # Filing has its own tests (test_topics.py); here it would add calls to
+            # runs that are about something else.
+            "max_retopic_calls": 0,
         }
         values.update(overrides)
         return AutoConfig(**values)  # type: ignore[arg-type]

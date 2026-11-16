@@ -534,6 +534,7 @@ def _auto_config(
     rescan: bool,
     max_llm_calls: int,
     max_reconcile_calls: int,
+    max_retopic_calls: int = 6,
     curate_scope: list[str] | None,
     llm_cmd: str | None,
     index_cmd: str | None,
@@ -567,6 +568,7 @@ def _auto_config(
         rescan=rescan,
         max_llm_calls=max_llm_calls,
         max_reconcile_calls=max_reconcile_calls,
+        max_retopic_calls=max_retopic_calls,
         curate_scopes=tuple(curate_scope) if curate_scope else None,
         llm_command=llm_cmd,
         index_command=tuple(shlex.split(index_cmd)) if index_cmd else (),
@@ -617,6 +619,17 @@ def auto_run(
             ),
         ),
     ] = 5,
+    max_retopic_calls: Annotated[
+        int,
+        typer.Option(
+            "--max-retopic-calls",
+            help=(
+                "Upper bound on calls the reconcile step first spends on filing: memory "
+                "left without a topic, then topics whose memory changed, looked over for "
+                "entries that are really about another subject; 0 turns filing off."
+            ),
+        ),
+    ] = 6,
     curate_scope: Annotated[
         list[str] | None,
         typer.Option(
@@ -668,6 +681,7 @@ def auto_run(
         rescan=rescan,
         max_llm_calls=max_llm_calls,
         max_reconcile_calls=max_reconcile_calls,
+        max_retopic_calls=max_retopic_calls,
         curate_scope=curate_scope,
         llm_cmd=llm_cmd,
         index_cmd=index_cmd,
@@ -894,6 +908,7 @@ def auto_retopic(
     writable = AutoStore.open(database)
     try:
         runner = default_runner(llm_command)
+        # Refiling merges nothing itself; without it the filing pass does, as before.
         report = retopic(writable, runner, max_calls=max_calls)
         result: dict[str, object] = {"file": report.as_dict()}
         if refile_topics:
