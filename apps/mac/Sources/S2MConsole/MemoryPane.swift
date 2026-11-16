@@ -7,6 +7,8 @@ struct MemoryPane: View {
     @State private var selectedProject: String?
     @State private var status = "active"
     @State private var kind = ""
+    @State private var topic = ""
+    @State private var groupByTopic = true
     @State private var query = ""
     @State private var everywhere = false
     @State private var memories: [Memory] = []
@@ -55,6 +57,9 @@ struct MemoryPane: View {
         VStack(spacing: 0) {
             PageHeader("記憶", subtitle: "代理人開新對話時，會先讀到這個專案的記憶。") {
                 SearchField(text: $query, prompt: "搜尋記憶")
+                Button("專案概覽") { selection = [] }
+                    .buttonStyle(OutlineButtonStyle())
+                    .disabled(selection.isEmpty)
                 Button {
                     if let project = selectedProject { startAdd(project: project) }
                 } label: {
@@ -96,6 +101,7 @@ struct MemoryPane: View {
         .onAppear { takeTarget() }
         .onChange(of: app.memoryTarget) { _ in takeTarget() }
         .onChange(of: selectedProject) { _ in
+            topic = ""
             if keepSelection {
                 keepSelection = false
             } else if !(searching && everywhere) {
@@ -126,7 +132,7 @@ struct MemoryPane: View {
 
     /// The loaded entries of the chosen kind.
     private var shown: [Memory] {
-        kind.isEmpty ? memories : memories.filter { $0.kind == kind }
+        MemoryOrganization.filter(memories, kind: kind, topic: topic)
     }
 
     // MARK: filters
@@ -148,43 +154,58 @@ struct MemoryPane: View {
     }
 
     private var filterBar: some View {
-        HStack(spacing: 10) {
-            Menu(projectName) {
-                ForEach(listedProjects) { project in
-                    Button("\(project.name)　\(project.active) 條") {
-                        selectedProject = project.project
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Menu(projectName) {
+                    ForEach(listedProjects) { project in
+                        Button("\(project.name)　\(project.active) 條") {
+                            selectedProject = project.project
+                        }
+                    }
+                    Divider()
+                    Toggle("也列出還沒有記憶的專案", isOn: $showEmpty)
+                }
+                .fixedSize()
+                .help(selectedProject ?? "選一個專案")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Chip(title: "全部 \(memories.count)", selected: kind.isEmpty) { kind = "" }
+                        ForEach(kindCounts, id: \.kind) { item in
+                            Chip(
+                                title: "\(Lexicon.kind(item.kind)) \(item.count)",
+                                selected: kind == item.kind
+                            ) { kind = item.kind }
+                        }
                     }
                 }
-                Divider()
-                Toggle("也列出還沒有記憶的專案", isOn: $showEmpty)
-            }
-            .fixedSize()
-            .help(selectedProject ?? "選一個專案")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    Chip(title: "全部 \(memories.count)", selected: kind.isEmpty) { kind = "" }
-                    ForEach(kindCounts, id: \.kind) { item in
-                        Chip(
-                            title: "\(Lexicon.kind(item.kind)) \(item.count)",
-                            selected: kind == item.kind
-                        ) { kind = item.kind }
+                if searching {
+                    Toggle("搜尋所有專案", isOn: $everywhere)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
+                }
+                Text(countLine).font(.system(size: 12)).foregroundColor(Theme.secondary).fixedSize()
+                Picker("狀態", selection: $status) {
+                    ForEach(statuses, id: \.self) { item in
+                        Text(Lexicon.status(item)).tag(item)
                     }
                 }
+                .labelsHidden()
+                .fixedSize()
+                .help("要看哪種狀態的記憶")
             }
-            if searching {
-                Toggle("搜尋所有專案", isOn: $everywhere)
-                    .toggleStyle(.checkbox)
-                    .fixedSize()
+            HStack(spacing: 12) {
+                Picker("排列", selection: $groupByTopic) {
+                    Text("依主題分組").tag(true)
+                    Text("依確認時間").tag(false)
+                }.pickerStyle(.segmented).frame(width: 245)
+                Picker("主題", selection: Binding(get: { topic }, set: { topic = $0; selection = [] })) {
+                    Text("全部主題").tag("")
+                    ForEach(MemoryOrganization.groups(memories)) { group in
+                        Text("\(group.topic.label)（\(group.memories.count)）").tag(group.id)
+                    }
+                }.fixedSize()
+                Spacer()
             }
-            Text(countLine).font(.system(size: 12)).foregroundColor(Theme.secondary).fixedSize()
-            Picker("狀態", selection: $status) {
-                ForEach(statuses, id: \.self) { item in
-                    Text(Lexicon.status(item)).tag(item)
-                }
-            }
-            .labelsHidden()
-            .fixedSize()
-            .help("要看哪種狀態的記憶")
         }
         .padding(.horizontal, 32)
         .padding(.bottom, 14)
@@ -209,10 +230,23 @@ struct MemoryPane: View {
                 Placeholder(text: loading ? "讀取中…" : emptyText)
             } else {
                 ScrollViewReader { proxy in
-                    List(shown, selection: $selection) { memory in
-                        row(memory)
-                            .listCell(gap: 5)
-                            .tag(memory.id)
+                    List(selection: $selection) {
+                        if groupByTopic {
+                            ForEach(MemoryOrganization.groups(shown)) { group in
+                                Section {
+                                    ForEach(group.memories) { memory in
+                                        row(memory).listCell(gap: 5).tag(memory.id)
+                                    }
+                                } header: {
+                                    Text("\(group.topic.label) · \(group.memories.count) 條")
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
+                            }
+                        } else {
+                            ForEach(shown) { memory in
+                                row(memory).listCell(gap: 5).tag(memory.id)
+                            }
+                        }
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
@@ -326,8 +360,17 @@ struct MemoryPane: View {
             }
         } else if let detailError, !selection.isEmpty {
             LoadFailed(message: detailError) { Task { await loadDetail() } }
+        } else if selection.isEmpty {
+            MemoryProjectOverview(
+                project: projects.first { $0.project == selectedProject }, memories: memories,
+                globalSearch: searching && everywhere, searching: searching, status: status,
+                selectedTopic: topic
+            ) { chosen in
+                topic = chosen
+                selection = []
+            }
         } else {
-            Placeholder(text: selection.isEmpty ? "選一條記憶，看它的內容與來源" : "讀取中…")
+            Placeholder(text: "讀取中…")
         }
     }
 
@@ -656,6 +699,7 @@ struct MemoryPane: View {
     private func open(_ id: String) {
         status = "all"
         kind = ""
+        topic = ""
         reveal = id
         selection = [id]
     }
@@ -666,6 +710,7 @@ struct MemoryPane: View {
         query = ""
         everywhere = false
         kind = ""
+        topic = ""
         status = "all"
         keepSelection = target.project != selectedProject
         selectedProject = target.project
@@ -690,7 +735,8 @@ struct MemoryPane: View {
             projects = try await Backend.current().projects()
             message = nil
             if selectedProject == nil {
-                selectedProject = projects.first?.project
+                selectedProject = projects.first(where: { $0.active > 0 })?.project
+                    ?? projects.first?.project
             }
         } catch {
             message = error.localizedDescription
@@ -724,6 +770,9 @@ struct MemoryPane: View {
             }
             if Task.isCancelled { return }
             memories = found
+            if !topic.isEmpty && !found.contains(where: { ($0.topic ?? .general).id == topic }) {
+                topic = ""
+            }
             message = nil
         } catch {
             if Task.isCancelled { return }

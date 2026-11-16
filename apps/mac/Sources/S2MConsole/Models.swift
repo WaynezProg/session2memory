@@ -62,9 +62,10 @@ struct Memory: Decodable, Identifiable, Hashable {
     let lastConfirmedAt: String
     let supersedesId: String?
     let evidence: [String]
+    var topic: MemoryTopic? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, project, scope, kind, text, status, evidence
+        case id, project, scope, kind, text, status, evidence, topic
         case createdAt = "created_at"
         case lastConfirmedAt = "last_confirmed_at"
         case supersedesId = "supersedes_id"

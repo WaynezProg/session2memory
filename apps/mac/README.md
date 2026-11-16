@@ -8,8 +8,13 @@ paths and raw figures sit in a closed "給工程用" group on each page. It has 
   with and how many still wait, the sessions each recent run read, and the workspaces
   with the most memory.
 - **記憶** (memory): one workspace's memory, picked from a menu, with a chip per kind and
-  a status menu. The right side shows one entry: its text, the sessions it rests on and
-  its history.
+  a status menu. **專案概覽** shows the selected workspace's path, memory and session
+  counts, and topic cards. The list defaults to **依主題分組**; **依確認時間** keeps the
+  original order. The topic picker works together with the kind, status and search filters.
+  Topics are keyword hints computed by the CLI, not stored classifications or proof that
+  a memory is current. An older CLI puts entries under **其他專案規則**. Global-search
+  overviews describe only the returned results. Choosing an entry shows its text, sources
+  and history; **專案概覽** returns to the topic cards without changing memory.
   - The search field looks through the chosen workspace or, with **搜尋所有專案**,
     through every one (every word must be in the text; at most 500 are shown).
   - Entries can be retired (**停用**), restored (**復原**), reworded (**改寫**, ⌘E) and
