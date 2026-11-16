@@ -133,5 +133,8 @@ final class WordingTests: XCTestCase {
         XCTAssertEqual(Lexicon.event("retopic"), "改歸到別的主題")
         XCTAssertEqual(Lexicon.reason("filed by topic"), "整理時依內容歸到主題")
         XCTAssertEqual(Lexicon.reason("by hand: 歸錯了"), "by hand: 歸錯了")
+        XCTAssertEqual(Lexicon.event("narrow"), "改為 OpenClaw 代理人的記憶")
+        XCTAssertEqual(
+            Lexicon.reason("from an OpenClaw agent's plugin sessions"), "來自代理人透過 plugin 執行的對話")
     }
 }

@@ -718,6 +718,13 @@ def run_hook(
 
         if forced_reader(env, workspace, config.openclaw_state_dir) == "openclaw":
             # An OpenClaw agent: its own memory only, nothing from other tools' sessions.
+            # Run by a plugin in a session folder, it is still the agent of its workspace.
+            from session2memory.auto.scope import openclaw_roots, plugin_session_owner
+
+            workspace = (
+                plugin_session_owner(workspace, openclaw_roots(config.openclaw_state_dir))
+                or workspace
+            )
             own = (
                 render_project_memory(config, workspace, config.max_chars, openclaw_only=True)
                 if config.memory and source in MEMORY_SOURCES

@@ -767,7 +767,7 @@ order:
 | `compress` | Cold `rollout-*.jsonl` files in Codex homes that Codex does not maintain itself are compressed in place to `.jsonl.zst` (Codex reads and re-inflates these on resume). The original is moved to `holding/` and removed only after the holding period, once the compressed file has been verified again. |
 | `archive` | Cold Claude Code transcripts are copied into `archive/claude/` as `.zst`. The originals are not touched; Claude Code deletes them itself after `cleanupPeriodDays`. |
 | `curate` | One small LLM call per batch of sessions (batched by folder) summarises them and maintains memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Each added memory is filed under a topic the model picks from the existing ones or names anew (at most two new ones per batch; what is left over stays unfiled for `auto retopic` or the console); OpenClaw agents' memory is filed under the agent without asking. `project` on a memory only records the folder it was learnt in. Memory not confirmed for 120 days becomes `stale`. |
-| `reconcile` | Looks over a topic's whole active memory (for memory not filed yet, a folder's) for entries that contradict each other (the older one is retired, naming the newer one that replaced it) or repeat each other (merged into one). One LLM call per topic, and only when that topic's set of active memories changed since it was last checked; `--max-reconcile-calls` (default 5) bounds a run and `0` turns the step off. A call can never retire more than half of what it was shown, and a newer memory is never retired in favour of an older one. Nothing is deleted. |
+| `reconcile` | Looks over a topic's whole active memory (for memory not filed yet, a folder's) for entries that contradict each other (the older one is retired, naming the newer one that replaced it) or repeat each other (merged into one). One LLM call per topic, and only when that topic's set of active memories changed since it was last checked; `--max-reconcile-calls` (default 5) bounds a run and `0` turns the step off. After the topics, entries filed under different topics that read alike are shown together, and one call asks whether any topics are one subject (or one a part of another) and merges those. A call can never retire more than half of what it was shown, and a newer memory is never retired in favour of an older one. Nothing is deleted. |
 | `embed` | Gives every active memory and session summary a vector for `auto search` (local model; skipped unless the `semantic` extra is installed). Only rows whose text changed are embedded again. |
 | `export` | Renders memory and session summaries as Markdown under `memory/` (rewritten only when changed). |
 | `index` | Optional `--index-cmd`, e.g. HKS `ks update {memory_dir}`. |
@@ -826,10 +826,21 @@ the memory of the topics that came up in the workspace (`相關主題的記憶`)
 topics (`記憶主題目錄`) when none did, and stays silent for headless sessions, which is how
 OpenClaw starts its agents. An OpenClaw agent only ever gets its own memory.
 
+A plugin that runs an agent's turn through another command line (muse-cli) gives each
+session a folder under `plugin-state/<plugin>/sessions` in OpenClaw's state dir. Those
+folders are OpenClaw's: such a session belongs to the agent whose workspace the folder's
+`AGENTS.md` names (`Working directory:`), and is registered there. `auto rehome` moves
+sessions registered before this rule, and the memory only they are evidence for, to the
+agent (`--dry-run` only counts; back the store up first). With the nightly default of
+curating coding sessions only, these sessions are no longer distilled.
+
 `session2memory auto topics` lists the topics and `auto topics <name>` prints one
 topic's memory. `auto retopic` files active memory that has no topic yet (everything
 from before topics): OpenClaw memory under its agent by rule, the rest under a subject an
 LLM picks, about one call per 60 memories plus one that merges topics which are the same
-subject under two names; `--dry-run` only counts. Back the store up first. The Markdown
+subject under two names; `--dry-run` only counts. Back the store up first. With
+`--refile` it also looks over each topic (one call each) for memory that is really about
+another subject — what holds for any product, filed under the product it was learnt on —
+and moves it there, so that the same thing learnt in two places ends up side by side. The Markdown
 export for HKS is still one file per folder (`projects/`), which is what HKS reads.
 

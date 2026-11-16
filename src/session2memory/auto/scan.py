@@ -30,7 +30,7 @@ from session2memory.adapters.cursor import (
 from session2memory.adapters.grok import CHAT_HISTORY, GrokAdapter
 from session2memory.adapters.muse import SESSION_FILE, MuseAdapter
 from session2memory.adapters.openclaw_native import OpenClawNativeAdapter
-from session2memory.auto.scope import forced_reader, openclaw_roots, within
+from session2memory.auto.scope import forced_reader, openclaw_roots, plugin_session_owner, within
 from session2memory.auto.secrets import scrub_secrets
 from session2memory.auto.store import AutoStore, Scope
 from session2memory.filtering import is_noise
@@ -315,7 +315,11 @@ def scan(
     for record in iter_records(sources, since=since, max_bytes=max_bytes, report=report):
         if not record.content_digest:
             continue
-        project = record.cwd.resolve(strict=False).as_posix() if record.cwd else None
+        # A plugin's session folder is not where the work belongs: the agent's workspace is.
+        workspace = record.cwd
+        if workspace is not None:
+            workspace = plugin_session_owner(workspace, sources.openclaw_roots) or workspace
+        project = workspace.resolve(strict=False).as_posix() if workspace else None
         observation = registry.observe(record, workspace_id=project)
         known = store.get_session(record.source_key)
         if observation.reason == "first-seen":

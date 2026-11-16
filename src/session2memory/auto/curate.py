@@ -108,7 +108,8 @@ TOPIC_PART = """\
 TOPIC_RULES = """\
 - 每筆 add 都要有 topic：這條記憶在講什麼（一個工具、系統、產品、領域或工作類型），例如「coding agent」「HKS 檢索」「影片製作」。
   資料夾只是這次剛好開在哪裡，使用者有時會開錯資料夾；不要因為在某個資料夾談到就用資料夾名當主題。
-  只有內容確實只跟某個產品或 repo 本身有關時，才用它的名字當主題。
+  先問「這條換到別的產品、別的 repo 還成立嗎」。成立的就是通用的事（工具的行為、做事的方法、踩過的坑、使用者偏好），
+  要歸到講那件事的主題，即使是在做某個產品時學到的。只有離開那個產品就沒有意義的內容才用產品或 repo 的名字當主題。
 - 優先使用現有主題，名稱要一字不差。確實沒有合適的才新建：名稱 ≤12 字的名詞，並加上 "topic_description"（≤40字，說明這個主題收什麼）。
   一次最多新建 {max_topics} 個主題；主題要夠寬，之後別的 Session 也歸得進來。
 
@@ -379,7 +380,11 @@ def apply_reply(
         known = (
             target is not None
             and target.status == "active"
-            and (target.memory_id in shown_ids if shown_ids is not None else target.project == project)
+            and (
+                target.memory_id in shown_ids
+                if shown_ids is not None
+                else target.project == project
+            )
         )
         if kind_of_op in {"confirm", "supersede", "retire"} and not known:
             reject(f"{kind_of_op}: {op.get('id')} is not an active memory of this project")
