@@ -26,6 +26,7 @@ from session2memory.auto.store import (
     memory_id_for,
     now_iso,
 )
+from session2memory.auto.topics import memory_topic
 
 STATUSES = ("active", "superseded", "retired", "stale")
 # By hand, a memory can come back only from a state nothing replaced it in.
@@ -47,6 +48,7 @@ def _memory(row: MemoryRow) -> dict[str, object]:
         "last_confirmed_at": row.last_confirmed_at,
         "supersedes_id": row.supersedes_id,
         "evidence": list(row.evidence),
+        "topic": memory_topic(row.text),
     }
 
 
