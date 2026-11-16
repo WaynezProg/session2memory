@@ -96,7 +96,15 @@ final class WordingTests: XCTestCase {
         XCTAssertEqual(full.seconds, 177)
         XCTAssertEqual(full.cost, 0.0267, accuracy: 0.00001)
         XCTAssertEqual(full.sentences.count, 3)
-        XCTAssertTrue(full.sentences[2].hasSuffix("還有 7 個專案排在後面。"))
+        XCTAssertTrue(full.sentences[2].hasSuffix("還有 7 個主題排在後面。"))
+
+        let filing = RunStory(
+            run: try run(
+                #"""
+                {"reconcile": {"llm_calls": 3, "projects_checked": 1,
+                               "filing": {"memories_filed": 4, "memories_moved": 2}}}
+                """#))
+        XCTAssertEqual(filing.sentences.last, "補歸了 4 條還沒有主題的記憶，另把 2 條改歸到真正在講的主題。")
         XCTAssertFalse(full.hasError)
 
         let reconcile = RunStory(run: try run(#"{"reconcile": {"llm_calls": 52}}"#))
