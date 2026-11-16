@@ -29,7 +29,7 @@ func barScale(_ counts: [Int]) -> Int {
 struct OverviewPane: View {
     @EnvironmentObject private var app: AppState
     @State private var overview: Overview?
-    @State private var projects: [Project] = []
+    @State private var topics: [Topic] = []
     @State private var runs: [RunRecord] = []
     @State private var message: String?
     @State private var loading = false
@@ -219,11 +219,11 @@ struct OverviewPane: View {
     }
 
     private var topProjects: some View {
-        let top = projects.filter { $0.active > 0 }.sorted { $0.active > $1.active }.prefix(6)
+        let top = topics.filter { $0.active > 0 }.sorted { $0.active > $1.active }.prefix(6)
         let most = max(top.first?.active ?? 1, 1)
         return VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                Text("記憶最多的專案").font(.system(size: 15, weight: .semibold))
+                Text("記憶最多的主題").font(.system(size: 15, weight: .semibold))
                 Spacer()
                 Button("看全部") { app.pane = .memory }
                     .buttonStyle(.plain)
@@ -233,12 +233,12 @@ struct OverviewPane: View {
             if top.isEmpty {
                 Text("還沒有記憶。").font(.system(size: 13)).foregroundColor(Theme.secondary)
             }
-            ForEach(Array(top)) { project in
+            ForEach(Array(top)) { topic in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text(project.name).font(.system(size: 14)).lineLimit(1)
+                        Text(topic.label).font(.system(size: 14)).lineLimit(1)
                         Spacer()
-                        Text(String(project.active)).font(.system(size: 14, weight: .semibold))
+                        Text(String(topic.active)).font(.system(size: 14, weight: .semibold))
                     }
                     GeometryReader { box in
                         ZStack(alignment: .leading) {
@@ -246,12 +246,12 @@ struct OverviewPane: View {
                             Capsule().fill(Theme.accent)
                                 .frame(
                                     width: max(
-                                        box.size.width * CGFloat(project.active) / CGFloat(most), 6))
+                                        box.size.width * CGFloat(topic.active) / CGFloat(most), 6))
                         }
                     }
                     .frame(height: 8)
                 }
-                .help(project.project)
+                .help(topic.description ?? "")
             }
             Spacer(minLength: 0)
         }
@@ -268,7 +268,10 @@ struct OverviewPane: View {
         do {
             let backend = Backend.current()
             overview = try await backend.overview()
-            projects = try await backend.projects()
+            // Subjects and agents together; an older command line has neither.
+            topics =
+                ((try? await backend.topics(scope: "coding")) ?? [])
+                + ((try? await backend.topics(scope: "openclaw")) ?? [])
             runs = try await backend.runs(limit: 60)
             app.lastRunAt = overview?.lastRun?.finishedAt
             message = nil

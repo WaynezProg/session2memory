@@ -3,14 +3,15 @@ import SwiftUI
 
 struct MemoryPane: View {
     @EnvironmentObject private var app: AppState
-    @State private var projects: [Project] = []
-    @State private var selectedProject: String?
+    /// Coding memory under its subjects, or OpenClaw memory under its agents.
+    @State private var lens: MemoryLens = .topics
+    /// Every topic of this view, also the ones nothing is filed under.
+    @State private var topics: [Topic] = []
     @State private var status = "active"
     @State private var kind = ""
     @State private var topic = ""
     @State private var groupByTopic = true
     @State private var query = ""
-    @State private var everywhere = false
     @State private var memories: [Memory] = []
     @State private var selection: Set<String> = []
     @State private var detail: MemoryDetail?
@@ -28,24 +29,32 @@ struct MemoryPane: View {
     @State private var reason = ""
     @State private var draft = ""
     @State private var draftKind = "fact"
-    /// The workspace is about to change because another pane asked for an entry in it:
+    /// The topic an entry is written under or moved to; a topic's new name; what it holds.
+    @State private var draftTopic = ""
+    @State private var draftName = ""
+    @State private var draftAbout = ""
+    /// The view is about to change because an entry of the other one was asked for:
     /// that entry stays selected.
-    @State private var keepSelection = false
+    @State private var keepSelection = 0
     /// An entry to scroll to once the list holds it.
     @State private var reveal: String?
-    /// Workspaces that only have sessions are left out unless asked for.
-    @State private var showEmpty = false
 
     private enum Sheet: Identifiable {
         case status(ids: [String], restore: Bool)
         case edit(id: String, text: String)
-        case add(project: String)
+        case add
+        case move(ids: [String])
+        case topic(Topic)
+        case newTopic
 
         var id: String {
             switch self {
             case .status(let ids, let restore): return "status|\(restore)|\(ids.joined(separator: ","))"
             case .edit(let id, _): return "edit|\(id)"
-            case .add(let project): return "add|\(project)"
+            case .add: return "add"
+            case .move(let ids): return "move|\(ids.joined(separator: ","))"
+            case .topic(let topic): return "topic|\(topic.id)"
+            case .newTopic: return "newTopic"
             }
         }
     }
@@ -55,20 +64,20 @@ struct MemoryPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PageHeader("記憶", subtitle: "代理人開新對話時，會先讀到這個專案的記憶。") {
+            PageHeader("記憶", subtitle: "記憶歸在主題下，不看當時開的是哪個資料夾；OpenClaw 的記憶歸給各自的代理人。") {
                 SearchField(text: $query, prompt: "搜尋記憶")
-                Button("專案概覽") { selection = [] }
+                Button("概覽") { selection = [] }
                     .buttonStyle(OutlineButtonStyle())
                     .disabled(selection.isEmpty)
                 Button {
-                    if let project = selectedProject { startAdd(project: project) }
+                    startAdd()
                 } label: {
                     Label("新增記憶", systemImage: "plus")
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                .disabled(selectedProject == nil || working)
-                .help("替這個專案手動寫一條記憶（⇧⌘N）")
+                .disabled(topics.isEmpty || working)
+                .help("手動寫一條記憶到某個\(lens.noun)下（⇧⌘N）")
                 Button {
                     Task { await reloadAll() }
                 } label: {
@@ -95,26 +104,25 @@ struct MemoryPane: View {
                 detailView.detailPanel()
             }
         }
-        .task { await loadProjects() }
         .task(id: listKey) { await loadMemories(wait: searching) }
         .task(id: selection) { await loadDetail() }
         .onAppear { takeTarget() }
         .onChange(of: app.memoryTarget) { _ in takeTarget() }
-        .onChange(of: selectedProject) { _ in
+        .onChange(of: lens) { _ in
             topic = ""
-            if keepSelection {
-                keepSelection = false
-            } else if !(searching && everywhere) {
-                // Another workspace's list: what was selected is no longer in sight.
-                selection = []
-            }
+            // What is listed belongs to the other view until the new list arrives.
+            memories = []
+            if keepSelection > 0 { keepSelection -= 1 } else { selection = [] }
         }
         .sheet(item: $sheet) { item in
             Group {
                 switch item {
                 case .status(let ids, let restore): statusSheet(ids: ids, restore: restore)
                 case .edit(let id, let text): editSheet(id: id, original: text)
-                case .add(let project): addSheet(project: project)
+                case .add: addSheet()
+                case .move(let ids): moveSheet(ids: ids)
+                case .topic(let topic): topicSheet(topic)
+                case .newTopic: newTopicSheet()
                 }
             }
             .foregroundColor(Theme.ink)
@@ -123,7 +131,7 @@ struct MemoryPane: View {
     }
 
     private var listKey: String {
-        [selectedProject ?? "", status, query, everywhere ? "1" : "0"].joined(separator: "|")
+        [lens.rawValue, status, query].joined(separator: "|")
     }
 
     private var searching: Bool {
@@ -132,18 +140,10 @@ struct MemoryPane: View {
 
     /// The loaded entries of the chosen kind.
     private var shown: [Memory] {
-        MemoryOrganization.filter(memories, kind: kind, topic: topic)
+        MemoryOrganization.filter(memories, kind: kind, topic: topic, by: lens)
     }
 
     // MARK: filters
-
-    private var listedProjects: [Project] {
-        workspacesToList(projects, filter: "", withoutMemory: showEmpty, keeping: selectedProject)
-    }
-
-    private var projectName: String {
-        projects.first(where: { $0.project == selectedProject })?.name ?? "選擇專案"
-    }
 
     /// The kinds the loaded entries have, with how many of each.
     private var kindCounts: [(kind: String, count: Int)] {
@@ -155,18 +155,29 @@ struct MemoryPane: View {
 
     private var filterBar: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Menu(projectName) {
-                    ForEach(listedProjects) { project in
-                        Button("\(project.name)　\(project.active) 條") {
-                            selectedProject = project.project
-                        }
+            HStack(spacing: 12) {
+                Picker("檢視", selection: $lens) {
+                    ForEach(MemoryLens.allCases) { item in
+                        Text(item.title).tag(item)
                     }
-                    Divider()
-                    Toggle("也列出還沒有記憶的專案", isOn: $showEmpty)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
                 .fixedSize()
-                .help(selectedProject ?? "選一個專案")
+                .help("開發記憶歸在主題下；OpenClaw 的記憶歸給各自的代理人")
+                Spacer()
+                Picker("排列", selection: $groupByTopic) {
+                    Text("依\(lens.noun)分組").tag(true)
+                    Text("依確認時間").tag(false)
+                }.pickerStyle(.segmented).labelsHidden().fixedSize()
+                Picker(lens.noun, selection: Binding(get: { topic }, set: { topic = $0; selection = [] })) {
+                    Text("全部\(lens.noun)").tag("")
+                    ForEach(MemoryOrganization.groups(memories, by: lens)) { group in
+                        Text("\(group.topic.label)（\(group.memories.count)）").tag(group.id)
+                    }
+                }.labelsHidden().fixedSize()
+            }
+            HStack(spacing: 10) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         Chip(title: "全部 \(memories.count)", selected: kind.isEmpty) { kind = "" }
@@ -178,11 +189,6 @@ struct MemoryPane: View {
                         }
                     }
                 }
-                if searching {
-                    Toggle("搜尋所有專案", isOn: $everywhere)
-                        .toggleStyle(.checkbox)
-                        .fixedSize()
-                }
                 Text(countLine).font(.system(size: 12)).foregroundColor(Theme.secondary).fixedSize()
                 Picker("狀態", selection: $status) {
                     ForEach(statuses, id: \.self) { item in
@@ -192,19 +198,6 @@ struct MemoryPane: View {
                 .labelsHidden()
                 .fixedSize()
                 .help("要看哪種狀態的記憶")
-            }
-            HStack(spacing: 12) {
-                Picker("排列", selection: $groupByTopic) {
-                    Text("依主題分組").tag(true)
-                    Text("依確認時間").tag(false)
-                }.pickerStyle(.segmented).frame(width: 245)
-                Picker("主題", selection: Binding(get: { topic }, set: { topic = $0; selection = [] })) {
-                    Text("全部主題").tag("")
-                    ForEach(MemoryOrganization.groups(memories)) { group in
-                        Text("\(group.topic.label)（\(group.memories.count)）").tag(group.id)
-                    }
-                }.fixedSize()
-                Spacer()
             }
         }
         .padding(.horizontal, 32)
@@ -224,15 +217,13 @@ struct MemoryPane: View {
 
     private var listColumn: some View {
         Group {
-            if selectedProject == nil && !(searching && everywhere) {
-                Placeholder(text: "先選一個專案")
-            } else if shown.isEmpty {
+            if shown.isEmpty {
                 Placeholder(text: loading ? "讀取中…" : emptyText)
             } else {
                 ScrollViewReader { proxy in
                     List(selection: $selection) {
                         if groupByTopic {
-                            ForEach(MemoryOrganization.groups(shown)) { group in
+                            ForEach(MemoryOrganization.groups(shown, by: lens)) { group in
                                 Section {
                                     ForEach(group.memories) { memory in
                                         row(memory).listCell(gap: 5).tag(memory.id)
@@ -287,10 +278,11 @@ struct MemoryPane: View {
                 if status == "all" {
                     StatusBadge(status: memory.status)
                 }
-                if searching && everywhere {
-                    Text((memory.project as NSString).lastPathComponent)
+                if !groupByTopic {
+                    Text(lens.label(of: memory).label)
                         .font(.system(size: 12))
                         .foregroundColor(Theme.accent)
+                        .lineLimit(1)
                 }
                 Spacer()
                 Text(localTime(memory.lastConfirmedAt))
@@ -327,6 +319,12 @@ struct MemoryPane: View {
                 .disabled(working)
         }
         if !ids.isEmpty {
+            Button(ids.count == 1 ? "搬到別的\(lens.noun)…" : "把 \(ids.count) 條搬到別的\(lens.noun)…") {
+                startMove(ids: ids)
+            }
+            .disabled(working || topics.count < 2)
+        }
+        if !ids.isEmpty {
             Divider()
             Button("複製文字") { copy(ids) }
         }
@@ -350,7 +348,7 @@ struct MemoryPane: View {
                         .foregroundColor(Theme.secondary)
                     EngineeringDetails("詳細資料（給工程用）") {
                         fact("編號", detail.id)
-                        fact("專案資料夾", detail.project)
+                        fact("學到的資料夾", detail.project)
                         fact("範圍", detail.scope)
                         fact("建立", shortTime(detail.createdAt))
                         fact("最後確認", shortTime(detail.lastConfirmedAt))
@@ -362,13 +360,14 @@ struct MemoryPane: View {
             LoadFailed(message: detailError) { Task { await loadDetail() } }
         } else if selection.isEmpty {
             MemoryProjectOverview(
-                project: projects.first { $0.project == selectedProject }, memories: memories,
-                globalSearch: searching && everywhere, searching: searching, status: status,
-                selectedTopic: topic
-            ) { chosen in
-                topic = chosen
-                selection = []
-            }
+                lens: lens, memories: memories, topics: topics, searching: searching,
+                status: status, selectedTopic: topic,
+                chooseTopic: { chosen in
+                    topic = chosen
+                    selection = []
+                },
+                manageTopic: { startTopic($0) },
+                addTopic: { startNewTopic() })
         } else {
             Placeholder(text: "讀取中…")
         }
@@ -400,6 +399,9 @@ struct MemoryPane: View {
                     .buttonStyle(OutlineButtonStyle())
                     .disabled(toRestore.isEmpty || working)
             }
+            Button("搬到別的\(lens.noun)…") { startMove(ids: ids) }
+                .buttonStyle(OutlineButtonStyle())
+                .disabled(working || topics.count < 2)
             Button("複製文字") { copy(ids) }.buttonStyle(OutlineButtonStyle())
             if working { ProgressView().controlSize(.small) }
         }
@@ -411,6 +413,9 @@ struct MemoryPane: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Tag(text: Lexicon.kind(detail.kind), tone: .accent)
+                Text((detail.topic ?? .general).label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.accent)
                 Text(Lexicon.status(detail.status))
                     .font(.system(size: 12))
                     .foregroundColor(Theme.secondary)
@@ -430,6 +435,9 @@ struct MemoryPane: View {
                         .help("換個說法（⌘E）")
                     Button("停用") { ask(ids: [detail.id], restore: false) }
                         .buttonStyle(OutlineButtonStyle())
+                    Button("搬到別的\(lens.noun)") { startMove(ids: [detail.id]) }
+                        .buttonStyle(OutlineButtonStyle())
+                        .disabled(topics.count < 2)
                 } else if detail.restorable {
                     Button("復原") { ask(ids: [detail.id], restore: true) }
                         .buttonStyle(OutlineButtonStyle(accent: true))
@@ -594,10 +602,19 @@ struct MemoryPane: View {
         .padding(24)
     }
 
-    private func addSheet(project: String) -> some View {
+    private func topicPicker(_ title: String, without: Set<String> = []) -> some View {
+        Picker(title, selection: $draftTopic) {
+            ForEach(topics.filter { !without.contains($0.id) }) { topic in
+                Text(topic.label).tag(topic.id)
+            }
+        }
+        .frame(width: 320)
+    }
+
+    private func addSheet() -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            sheetTitle(
-                "新增記憶", "給 \((project as NSString).lastPathComponent)。這條記憶背後沒有對話紀錄。")
+            sheetTitle("新增記憶", "寫到一個\(lens.noun)下。這條記憶背後沒有對話紀錄。")
+            topicPicker(lens.noun)
             Picker("種類", selection: $draftKind) {
                 ForEach(kinds, id: \.self) { kind in
                     Text(Lexicon.kind(kind)).tag(kind)
@@ -618,12 +635,126 @@ struct MemoryPane: View {
                     let text = tidyDraft
                     let why = trimmedReason
                     let kind = draftKind
+                    let target = draftTopic
                     sheet = nil
-                    Task { await saveNew(project: project, kind: kind, text: text, reason: why) }
+                    Task { await saveNew(topic: target, kind: kind, text: text, reason: why) }
                 }
                 .buttonStyle(PrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(trimmedReason.isEmpty || !draftFits)
+                .disabled(trimmedReason.isEmpty || !draftFits || draftTopic.isEmpty)
+            }
+        }
+        .padding(24)
+    }
+
+    private func moveSheet(ids: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sheetTitle(
+                ids.count > 1 ? "把 \(ids.count) 條記憶搬到別的\(lens.noun)" : "搬到別的\(lens.noun)",
+                "只改歸在哪裡；內容、來源與狀態都不變。")
+            topicPicker("搬到")
+            QuickReasons(choices: ["歸錯了", "這裡更合適"], reason: $reason)
+            TextField("原因（會記在修改紀錄裡）", text: $reason)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 420)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("取消") { sheet = nil }
+                    .buttonStyle(OutlineButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                Button("搬移") {
+                    let why = trimmedReason
+                    let target = draftTopic
+                    sheet = nil
+                    Task { await move(ids: ids, topic: target, reason: why) }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(trimmedReason.isEmpty || draftTopic.isEmpty)
+            }
+        }
+        .padding(24)
+    }
+
+    private var tidyName: String {
+        draftName.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private func topicFields() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("名稱", text: $draftName).textFieldStyle(.roundedBorder).frame(width: 420)
+            TextField("這個主題收什麼（給整理對話時參考）", text: $draftAbout)
+                .textFieldStyle(.roundedBorder).frame(width: 420)
+        }
+    }
+
+    private func topicSheet(_ topic: Topic) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sheetTitle("整理主題「\(topic.name)」", "改名或補說明不會動到記憶。")
+            topicFields()
+            HStack(spacing: 8) {
+                Spacer()
+                Button("儲存") {
+                    let name = tidyName
+                    let about = draftAbout
+                    sheet = nil
+                    Task { await saveTopic(topic, name: name, about: about) }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(
+                    tidyName.isEmpty
+                        || (tidyName == topic.name && draftAbout == (topic.description ?? "")))
+            }
+            if topics.count > 1 {
+                Divider()
+                Text("併到另一個主題").font(.system(size: 14, weight: .semibold))
+                Text("這個主題下的 \(topic.active) 條記憶都會搬過去，這個主題就不再存在。")
+                    .font(.system(size: 12)).foregroundColor(Theme.secondary)
+                topicPicker("併到", without: [topic.id])
+                TextField("原因（會記在每條記憶的修改紀錄裡）", text: $reason)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 420)
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("合併") {
+                        let why = trimmedReason
+                        let target = draftTopic
+                        sheet = nil
+                        Task { await mergeTopic(topic, into: target, reason: why) }
+                    }
+                    .buttonStyle(OutlineButtonStyle())
+                    .disabled(
+                        trimmedReason.isEmpty || draftTopic.isEmpty || draftTopic == topic.id)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("關閉") { sheet = nil }
+                    .buttonStyle(OutlineButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(24)
+    }
+
+    private func newTopicSheet() -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sheetTitle("新增主題", "之後整理對話時，符合的記憶會歸到這裡。")
+            topicFields()
+            HStack(spacing: 8) {
+                Spacer()
+                Button("取消") { sheet = nil }
+                    .buttonStyle(OutlineButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                Button("新增") {
+                    let name = tidyName
+                    let about = draftAbout
+                    sheet = nil
+                    Task { await saveNewTopic(name: name, about: about) }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .keyboardShortcut(.defaultAction)
+                .disabled(tidyName.isEmpty)
             }
         }
         .padding(24)
@@ -679,12 +810,43 @@ struct MemoryPane: View {
         sheet = .edit(id: id, text: text)
     }
 
-    private func startAdd(project: String) {
-        guard !working else { return }
+    /// The topic a sheet starts on: the one being looked at, else the first.
+    private func startingTopic(not excluded: String = "") -> String {
+        let choices = topics.map(\.id).filter { $0 != excluded }
+        return choices.contains(topic) ? topic : choices.first ?? ""
+    }
+
+    private func startAdd() {
+        guard !working, !topics.isEmpty else { return }
         reason = ""
         draft = ""
         draftKind = kind.isEmpty ? "fact" : kind
-        sheet = .add(project: project)
+        draftTopic = startingTopic()
+        sheet = .add
+    }
+
+    private func startMove(ids: [String]) {
+        guard !working, !ids.isEmpty else { return }
+        reason = ""
+        let current = Set(memories.filter { ids.contains($0.id) }.map { lens.label(of: $0).id })
+        draftTopic = startingTopic(not: current.count == 1 ? current.first ?? "" : "")
+        sheet = .move(ids: ids)
+    }
+
+    private func startTopic(_ topic: Topic) {
+        guard !working else { return }
+        reason = ""
+        draftName = topic.name
+        draftAbout = topic.description ?? ""
+        draftTopic = topics.first { $0.id != topic.id }?.id ?? ""
+        sheet = .topic(topic)
+    }
+
+    private func startNewTopic() {
+        guard !working else { return }
+        draftName = ""
+        draftAbout = ""
+        sheet = .newTopic
     }
 
     private func copy(_ ids: [String]) {
@@ -708,12 +870,9 @@ struct MemoryPane: View {
         guard let target = app.memoryTarget else { return }
         app.memoryTarget = nil
         query = ""
-        everywhere = false
         kind = ""
         topic = ""
         status = "all"
-        keepSelection = target.project != selectedProject
-        selectedProject = target.project
         reveal = target.id
         selection = [target.id]
     }
@@ -722,25 +881,8 @@ struct MemoryPane: View {
 
     @MainActor
     private func reloadAll() async {
-        await loadProjects()
         await loadMemories(wait: false)
         await loadDetail()
-    }
-
-    @MainActor
-    private func loadProjects() async {
-        loading = true
-        defer { loading = false }
-        do {
-            projects = try await Backend.current().projects()
-            message = nil
-            if selectedProject == nil {
-                selectedProject = projects.first(where: { $0.active > 0 })?.project
-                    ?? projects.first?.project
-            }
-        } catch {
-            message = error.localizedDescription
-        }
     }
 
     @MainActor
@@ -751,26 +893,26 @@ struct MemoryPane: View {
             if Task.isCancelled { return }
         }
         let words = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let project = selectedProject
-        let allWorkspaces = !words.isEmpty && everywhere
-        guard allWorkspaces || project != nil else {
-            memories = []
-            return
-        }
+        let scope = lens.scope
         loading = true
         defer { loading = false }
         do {
             let backend = Backend.current()
             let found: [Memory]
             if words.isEmpty {
-                found = try await backend.memories(project: project ?? "", status: status)
+                found = try await backend.memories(scope: scope, status: status)
             } else {
                 found = try await backend.search(
-                    query: words, project: allWorkspaces ? nil : project, status: status)
+                    query: words, project: nil, status: status, scope: scope)
             }
+            // An older command line has no topics: the page still lists and groups.
+            let listed = (try? await backend.topics(scope: scope)) ?? []
             if Task.isCancelled { return }
             memories = found
-            if !topic.isEmpty && !found.contains(where: { ($0.topic ?? .general).id == topic }) {
+            topics = listed.sorted {
+                $0.label.localizedStandardCompare($1.label) == .orderedAscending
+            }
+            if !topic.isEmpty && !found.contains(where: { lens.label(of: $0).id == topic }) {
                 topic = ""
             }
             message = nil
@@ -796,6 +938,12 @@ struct MemoryPane: View {
             guard request == detailRequest, selection == [id] else { return }
             detail = loaded
             detailError = nil
+            // Asked for from another page: show the view the entry belongs to.
+            let wanted: MemoryLens = loaded.scope == "openclaw" ? .agents : .topics
+            if wanted != lens {
+                keepSelection += 1
+                lens = wanted
+            }
         } catch {
             guard request == detailRequest, selection == [id] else { return }
             detail = nil
@@ -826,9 +974,70 @@ struct MemoryPane: View {
         outcome = ActionNote(result, verb: restore ? "已復原" : "已停用", unit: "條")
         if ids.count > 1 { selection = [] }
         await loadMemories(wait: false)
-        await loadProjects()
         // What is selected now, which need not be what was changed.
         await loadDetail()
+    }
+
+    @MainActor
+    private func move(ids: [String], topic target: String, reason: String) async {
+        guard !working, !ids.isEmpty, !target.isEmpty else { return }
+        working = true
+        detailRequest += 1
+        defer { working = false }
+        outcome = nil
+        let backend = Backend.current()
+        var result = BatchOutcome()
+        for id in ids {
+            do {
+                _ = try await backend.move(id: id, topic: target, reason: reason)
+                result.done += 1
+            } catch {
+                result.failures.append(error.localizedDescription)
+            }
+        }
+        outcome = ActionNote(result, verb: "已搬移", unit: "條")
+        await loadMemories(wait: false)
+        await loadDetail()
+    }
+
+    @MainActor
+    private func change(topic work: @escaping (Backend) async throws -> String) async {
+        guard !working else { return }
+        working = true
+        defer { working = false }
+        outcome = nil
+        do {
+            outcome = ActionNote(text: try await work(Backend.current()))
+        } catch {
+            outcome = ActionNote(text: error.localizedDescription, failed: true)
+        }
+        await loadMemories(wait: false)
+        await loadDetail()
+    }
+
+    @MainActor
+    private func saveTopic(_ topic: Topic, name: String, about: String) async {
+        await change { backend in
+            _ = try await backend.editTopic(id: topic.id, name: name, description: about)
+            return "已儲存主題「\(name)」。"
+        }
+    }
+
+    @MainActor
+    private func mergeTopic(_ topic: Topic, into target: String, reason: String) async {
+        if self.topic == topic.id { self.topic = "" }
+        await change { backend in
+            let kept = try await backend.mergeTopic(id: topic.id, into: target, reason: reason)
+            return "已把「\(topic.name)」併到「\(kept.name)」。"
+        }
+    }
+
+    @MainActor
+    private func saveNewTopic(name: String, about: String) async {
+        await change { backend in
+            let made = try await backend.addTopic(name: name, description: about, scope: "coding")
+            return "已新增主題「\(made.name)」。"
+        }
     }
 
     @MainActor
@@ -853,21 +1062,21 @@ struct MemoryPane: View {
     }
 
     @MainActor
-    private func saveNew(project: String, kind: String, text: String, reason: String) async {
+    private func saveNew(topic target: String, kind: String, text: String, reason: String) async {
         guard !working else { return }
         working = true
         defer { working = false }
         outcome = nil
         do {
             let added = try await Backend.current().add(
-                project: project, kind: kind, text: text, reason: reason)
+                topic: target, kind: kind, text: text, reason: reason)
             outcome = ActionNote(text: "已加入。")
             // Make sure the new entry is in the list that is reloaded.
             if status != "active" && status != "all" { status = "active" }
             if !self.kind.isEmpty && self.kind != kind { self.kind = "" }
             // Also while searching: the new entry may match what is being looked for.
+            if !topic.isEmpty && topic != target { topic = "" }
             await loadMemories(wait: false)
-            await loadProjects()
             reveal = added.id
             selection = [added.id]
         } catch {

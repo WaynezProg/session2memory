@@ -62,6 +62,7 @@ struct Memory: Decodable, Identifiable, Hashable {
     let lastConfirmedAt: String
     let supersedesId: String?
     let evidence: [String]
+    /// What the entry is filed under: a subject, or for OpenClaw memory its agent.
     var topic: MemoryTopic? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -69,6 +70,23 @@ struct Memory: Decodable, Identifiable, Hashable {
         case createdAt = "created_at"
         case lastConfirmedAt = "last_confirmed_at"
         case supersedesId = "supersedes_id"
+    }
+}
+
+/// A topic memory is filed under (`console topics`): a subject, or an OpenClaw agent.
+struct Topic: Decodable, Identifiable, Hashable {
+    let id: String
+    let scope: String
+    let name: String
+    let description: String?
+    let active: Int
+
+    /// An agent is shown with its team, which is what its description holds.
+    var label: String {
+        if scope == "openclaw", let description, !description.isEmpty {
+            return "\(name) · \(description)"
+        }
+        return name
     }
 }
 
@@ -90,12 +108,13 @@ struct MemoryDetail: Decodable, Identifiable {
     let supersedesId: String?
     let evidence: [String]
     let replacedBy: [String]
+    var topic: MemoryTopic? = nil
     let restorable: Bool
     let events: [MemoryEvent]
     let evidenceSessions: [SessionSummary]
 
     enum CodingKeys: String, CodingKey {
-        case id, project, scope, kind, text, status, evidence, restorable, events
+        case id, project, scope, kind, text, status, evidence, restorable, events, topic
         case createdAt = "created_at"
         case lastConfirmedAt = "last_confirmed_at"
         case supersedesId = "supersedes_id"

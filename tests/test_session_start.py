@@ -426,6 +426,8 @@ def hook_arguments(bench: Bench) -> list[str]:
         "--ledger", bench.ledger.as_posix(),
         # A Cursor session claims its one answer here: never in the real directory.
         "--seen-dir", (bench.tmp / "seen-default").as_posix(),
+        # Nor the real store: its topics would be listed for any folder.
+        "--auto-store", (bench.tmp / "no-auto-store").as_posix(),
         "--codex-memory-root", bench.memory_root.as_posix(),
         "--source-root", f"codex={bench.codex_root.as_posix()}",
         "--source-root", f"claude={bench.claude_root.as_posix()}",

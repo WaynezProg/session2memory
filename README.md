@@ -35,9 +35,11 @@ There are two independent pipelines; pick by what you want out of it.
 
 - **`auto`: memory for your agents, unattended.** `session2memory auto run` scans every
   supported session store, compresses and archives old sessions, has a model distil each
-  session into short memories per project, retires contradicted or repeated ones, and
-  exports Markdown. A SessionStart hook then gives new agent sessions the memory of the
-  project they start in. State lives in `~/.local/share/session2memory/store`. Start with
+  session into short memories filed under topics (a subject such as "coding agent"; for
+  OpenClaw, the agent), retires contradicted or repeated ones, and exports Markdown. A
+  SessionStart hook then gives new agent sessions the memory of the topics that came up
+  in the folder they start in, or the list of topics when none did: the folder a session
+  was opened in, which is sometimes the wrong one, does not decide where memory lives. State lives in `~/.local/share/session2memory/store`. Start with
   the [Quick start](#quick-start).
 - **`import` → `review` → `promote`: reviewed Markdown for a knowledge base.** No model
   is called. Sessions of one day are compiled into daily logs and memory candidates under
@@ -764,8 +766,8 @@ order:
 | `scan` | Registers every session changed since the last run (Codex incl. per-agent homes, Claude Code, Grok, Muse, Antigravity CLI, Cursor chat stores and agent transcripts, OpenClaw native) in the source registry and stores a compact digest: the user's requests and the reply each ended with. First run looks back `--since-days` (30); `--rescan` does that again once, for a store that was added later. |
 | `compress` | Cold `rollout-*.jsonl` files in Codex homes that Codex does not maintain itself are compressed in place to `.jsonl.zst` (Codex reads and re-inflates these on resume). The original is moved to `holding/` and removed only after the holding period, once the compressed file has been verified again. |
 | `archive` | Cold Claude Code transcripts are copied into `archive/claude/` as `.zst`. The originals are not touched; Claude Code deletes them itself after `cleanupPeriodDays`. |
-| `curate` | One small LLM call per project batch summarises the new sessions and maintains project memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Memory not confirmed for 120 days becomes `stale`. |
-| `reconcile` | Looks over a project's whole active memory for entries that contradict each other (the older one is retired, naming the newer one that replaced it) or repeat each other (merged into one). One LLM call per project, and only when that project's set of active memories changed since it was last checked; `--max-reconcile-calls` (default 5) bounds a run and `0` turns the step off. A call can never retire more than half of what it was shown, and a newer memory is never retired in favour of an older one. Nothing is deleted. |
+| `curate` | One small LLM call per batch of sessions (batched by folder) summarises them and maintains memory: add, confirm, supersede (conflicting or updated), retire (no longer true). Each added memory is filed under a topic the model picks from the existing ones or names anew (at most two new ones per batch; what is left over stays unfiled for `auto retopic` or the console); OpenClaw agents' memory is filed under the agent without asking. `project` on a memory only records the folder it was learnt in. Memory not confirmed for 120 days becomes `stale`. |
+| `reconcile` | Looks over a topic's whole active memory (for memory not filed yet, a folder's) for entries that contradict each other (the older one is retired, naming the newer one that replaced it) or repeat each other (merged into one). One LLM call per topic, and only when that topic's set of active memories changed since it was last checked; `--max-reconcile-calls` (default 5) bounds a run and `0` turns the step off. A call can never retire more than half of what it was shown, and a newer memory is never retired in favour of an older one. Nothing is deleted. |
 | `embed` | Gives every active memory and session summary a vector for `auto search` (local model; skipped unless the `semantic` extra is installed). Only rows whose text changed are embedded again. |
 | `export` | Renders memory and session summaries as Markdown under `memory/` (rewritten only when changed). |
 | `index` | Optional `--index-cmd`, e.g. HKS `ks update {memory_dir}`. |
@@ -820,6 +822,14 @@ the home directory) or the config puts a workspace there, `<root>/workspaces`; w
 default `~/.openclaw`, `~/workspaces` is not one. The hook command that `setup` and
 `hook-install` write carries `--openclaw-state-dir` when `OPENCLAW_STATE_DIR` is set, so
 an agent started without that variable still knows OpenClaw's directories. The SessionStart hook injects
-the distilled memory of the workspace (`這個專案的記憶`) and stays silent for headless
-sessions, which is how OpenClaw starts its agents.
+the memory of the topics that came up in the workspace (`相關主題的記憶`), or the list of
+topics (`記憶主題目錄`) when none did, and stays silent for headless sessions, which is how
+OpenClaw starts its agents. An OpenClaw agent only ever gets its own memory.
+
+`session2memory auto topics` lists the topics and `auto topics <name>` prints one
+topic's memory. `auto retopic` files active memory that has no topic yet (everything
+from before topics): OpenClaw memory under its agent by rule, the rest under a subject an
+LLM picks, about one call per 60 memories plus one that merges topics which are the same
+subject under two names; `--dry-run` only counts. Back the store up first. The Markdown
+export for HKS is still one file per folder (`projects/`), which is what HKS reads.
 
