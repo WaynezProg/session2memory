@@ -16,8 +16,8 @@ from session2memory.auto.curate import (
     build_prompt,
     curate,
 )
-from session2memory.auto.reconcile import reconcile
-from session2memory.auto.retopic import retopic
+from session2memory.auto.reconcile import cross_topic_groups, reconcile
+from session2memory.auto.retopic import refile, retopic
 from session2memory.auto.store import AutoStore
 from session2memory.session_start import HookConfig, run_hook
 
@@ -241,8 +241,9 @@ def test_reconcile_looks_over_a_topic_across_folders(store: AutoStore) -> None:
 
     report = reconcile(store, runner, max_calls=5)
 
-    assert (report.llm_calls, report.memories_retired) == (1, 1)
-    assert "主題「匯出」" in runner.prompts[0]
+    # One call for the topic with two entries, one asking whether the topics are one.
+    assert (report.llm_calls, report.memories_retired, report.topics_merged) == (2, 1, 0)
+    assert "主題「匯出」" in runner.prompts[0] and "應該合併的主題" in runner.prompts[1]
     assert [row.memory_id for row in store.memories()] != [] and store.get_memory(old) is not None
     assert store.get_memory(old).status == "retired"  # type: ignore[union-attr]
     assert reconcile(store, Runner(), max_calls=5).llm_calls == 0, "unchanged: no second call"
@@ -306,6 +307,71 @@ def test_retopic_merges_topics_that_are_one_subject(store: AutoStore) -> None:
     report = retopic(store, runner, max_calls=5)
     assert report.topics_merged == 1 and [t.name for t in store.topics()] == ["coding agent"]
     assert {r.memory_id for r in store.memories()} == {keep, moved, todo}
+
+
+def test_refile_moves_what_holds_anywhere_out_of_a_product_topic(store: AutoStore) -> None:
+    general = remember(store, "有未提交工作時不要直接 git pull", "/work/hks", topic="HKS")
+    own = remember(store, "HKS 的 alias 要先合併再評分", "/work/hks", topic="HKS")
+    also = remember(store, "ks CLI 裝在 ~/.local/bin", "/work/hks", topic="HKS")
+    elsewhere = remember(store, "未提交時不要 git checkout main", "/work/s2m", topic="git 流程")
+    runner = Runner(
+        {
+            "topics": [{"name": "本機工具", "description": "CLI 裝在哪"}],
+            "move": [
+                {"id": general, "topic": "Git 流程"},
+                {"id": also, "topic": "本機工具"},
+                {"id": own, "topic": "沒宣告"},
+                {"id": elsewhere, "topic": "HKS"},
+            ],
+        },
+        {"move": []},
+    )
+
+    report = refile(store, runner, max_calls=5)
+
+    git = store.topic_named("git 流程", "coding")
+    assert git is not None
+    assert {r.memory_id for r in store.memories(topic_ids=[git.topic_id])} == {general, elsewhere}
+    # Half of what was shown at most: the second move of three is refused.
+    assert (report.memories_moved, report.topics_created, report.ops_rejected) == (1, 0, 3)
+    assert store.get_memory(own).topic_id == store.get_memory(also).topic_id  # type: ignore[union-attr]
+    op, detail, _ = store.events(general)[-1]
+    assert op == "retopic" and "not the product" in str(detail["reason"])
+    assert "主題「HKS」的全部內容" in runner.prompts[0] and "- git 流程｜" in runner.prompts[0]
+    assert report.topics_looked_over == 2 == report.llm_calls
+
+
+def test_entries_alike_under_different_topics_are_looked_over_together(store: AutoStore) -> None:
+    a = remember(
+        store, "repo 有未提交工作時不要直接 git checkout main && git pull", "/w/a", topic="HKS"
+    )
+    b = remember(
+        store,
+        "repo 有未提交工作時不要直接 git checkout main && git pull；可快轉",
+        "/w/b",
+        topic="git",
+    )
+    remember(store, "完全無關的另一件事情寫在這裡", "/w/a", topic="HKS")
+    same = remember(store, "同主題內相近的由該主題自己看", "/w/a", topic="git")
+    remember(store, "同主題內相近的由該主題自己看喔", "/w/b", topic="git")
+    groups = cross_topic_groups(store.memories())
+    assert [{m.memory_id for m in group} for group in groups] == [{a, b}]
+    assert same not in {m.memory_id for group in groups for m in group}
+
+    merged = {
+        "memory": [
+            {"op": "merge", "ids": [b, a], "kind": "fact", "text": "合併後", "reason": "重複"}
+        ]
+    }
+    runner = Runner({}, {}, merged, {})
+    report = reconcile(store, runner, max_calls=9)
+
+    assert (report.groups_across_topics, report.memories_merged) == (1, 2)
+    assert "歸在不同主題、內容相近的" in runner.prompts[2]
+    kept = [m for m in store.memories() if m.text == "合併後"]
+    git = store.topic_named("git", "coding")
+    assert git is not None and [m.topic_id for m in kept] == [git.topic_id]
+    assert reconcile(store, Runner(), max_calls=9).groups_across_topics == 0
 
 
 # ---- what a new session is given -----------------------------------------------

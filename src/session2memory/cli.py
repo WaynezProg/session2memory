@@ -856,11 +856,21 @@ def auto_retopic(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Only say how much there is to file.")
     ] = False,
+    refile_topics: Annotated[
+        bool,
+        typer.Option(
+            "--refile",
+            help=(
+                "Also look over each topic (one call each) for memory that is really "
+                "about another subject, and move it there."
+            ),
+        ),
+    ] = False,
     llm_command: Annotated[str | None, typer.Option("--llm-command")] = None,
     store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
 ) -> None:
     from session2memory.auto.curate import default_runner
-    from session2memory.auto.retopic import BATCH_MEMORIES, retopic
+    from session2memory.auto.retopic import BATCH_MEMORIES, refile, retopic
 
     database = store.expanduser() / AUTO_DB_NAME
     if not database.is_file():
@@ -883,9 +893,38 @@ def auto_retopic(
         return
     writable = AutoStore.open(database)
     try:
-        report = retopic(writable, default_runner(llm_command), max_calls=max_calls)
+        runner = default_runner(llm_command)
+        report = retopic(writable, runner, max_calls=max_calls)
+        result: dict[str, object] = {"file": report.as_dict()}
+        if refile_topics:
+            left = max(max_calls - report.llm_calls, 0)
+            result["refile"] = refile(writable, runner, max_calls=left).as_dict()
     finally:
         writable.close()
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@auto_app.command(
+    "rehome",
+    help=(
+        "Give OpenClaw agents the sessions plugins ran for them (plugin-state/*/sessions) "
+        "and the memory only those sessions are evidence for. Back the store up first."
+    ),
+)
+def auto_rehome(
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Only say what would move.")] = False,
+    store: Annotated[Path, typer.Option("--store")] = DEFAULT_AUTO_STORE,
+) -> None:
+    from session2memory.auto.rehome import rehome
+
+    database = store.expanduser() / AUTO_DB_NAME
+    if not database.is_file():
+        raise typer.Exit(code=1)
+    opened = AutoStore.open(database)
+    try:
+        report = rehome(opened, openclaw_roots(_openclaw_state_dir()), dry_run=dry_run)
+    finally:
+        opened.close()
     typer.echo(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
 
 

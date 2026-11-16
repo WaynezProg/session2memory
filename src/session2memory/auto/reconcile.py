@@ -30,9 +30,11 @@ from session2memory.auto.curate import (
     _clean,
     extract_json,
 )
+from session2memory.auto.retopic import RetopicReport, merge_topics
 from session2memory.auto.store import MEMORY_KINDS, AutoStore, MemoryRow, Scope, normalize
 
-MAX_MEMORY_LISTED = 80
+# A whole topic in one call: two entries that repeat each other must both be in sight.
+MAX_MEMORY_LISTED = 160
 MIN_MEMORIES = 2
 META_PREFIX = "reconcile:"
 
@@ -76,6 +78,8 @@ class ReconcileReport:
     projects_left: int = 0
     memories_retired: int = 0
     memories_merged: int = 0
+    groups_across_topics: int = 0
+    topics_merged: int = 0
     ops_rejected: int = 0
     rejections: list[str] = field(default_factory=list)
 
@@ -95,7 +99,8 @@ def _meta_key(project: str) -> str:
 
 def build_prompt(project: str, memories: list[MemoryRow]) -> str:
     listed = [f"- {m.memory_id}｜{m.kind}｜{m.last_confirmed_at[:10]}｜{m.text}" for m in memories]
-    label = project if project.startswith("主題「") else f"專案「{project}」"
+    grouped = project.startswith("主題「") or project == ACROSS_TOPICS
+    label = project if grouped else f"專案「{project}」"
     return INSTRUCTIONS.format(project=label, memories="\n".join(listed))
 
 
@@ -241,6 +246,28 @@ def reconcile(
         )
         return [memory for memory in found if scopes is None or memory.scope in scopes]
 
+    def look_over(label: str, memories: list[MemoryRow]) -> bool:
+        """One call about ``memories``; whether its answer was applied."""
+        prompt = build_prompt(label, memories)
+        report.llm_calls += 1
+        report.prompt_chars += len(prompt)
+        try:
+            reply = runner(prompt)
+        except Exception as exc:  # noqa: BLE001 - a failed call must not stop the run
+            report.llm_failures += 1
+            report.rejections.append(f"call failed: {str(exc)[:160]}")
+            return False
+        report.input_tokens += reply.input_tokens
+        report.output_tokens += reply.output_tokens
+        report.cost_usd += reply.cost_usd
+        parsed = extract_json(reply.text)
+        if parsed is None:
+            report.llm_failures += 1
+            report.rejections.append("reply was not a JSON object")
+            return False
+        apply_reply(store, label, memories, parsed, report, run_id=run_id, now=now)
+        return True
+
     groups: list[tuple[str, str | None]] = [
         (f"主題「{topic.name}」", topic.topic_id) for topic in store.topics() if topic.active
     ]
@@ -256,25 +283,108 @@ def reconcile(
         if report.llm_calls >= max_calls:
             report.projects_left += 1
             continue
-        prompt = build_prompt(project, memories)
-        report.llm_calls += 1
-        report.prompt_chars += len(prompt)
-        try:
-            reply = runner(prompt)
-        except Exception as exc:  # noqa: BLE001 - a failed call must not stop the run
-            report.llm_failures += 1
-            report.rejections.append(f"call failed: {str(exc)[:160]}")
+        if not look_over(project, memories):
             continue
-        report.input_tokens += reply.input_tokens
-        report.output_tokens += reply.output_tokens
-        report.cost_usd += reply.cost_usd
-        parsed = extract_json(reply.text)
-        if parsed is None:
-            report.llm_failures += 1
-            report.rejections.append("reply was not a JSON object")
-            continue
-        apply_reply(store, project, memories, parsed, report, run_id=run_id, now=now)
         report.projects_checked += 1
         # What is active now has been looked at: the next check waits for a change.
         store.set_meta(key, fingerprint(load(project, topic_id)))
+
+    # The same thing filed under two topics is not seen topic by topic. Entries of
+    # different topics that read alike are shown together, a batch per call.
+    if scopes is None or "coding" in scopes:
+        clustered = cross_topic_groups(
+            [m for m in store.memories(limit=100_000) if m.scope == "coding" and m.topic_id]
+        )
+        everything = [memory for cluster in clustered for memory in cluster]
+        key = _meta_key("across topics")
+        if everything and store.get_meta(key) != fingerprint(everything):
+            done = True
+            for batch in _batches(clustered):
+                if report.llm_calls >= max_calls:
+                    report.projects_left += 1
+                    done = False
+                    continue
+                if look_over(ACROSS_TOPICS, batch):
+                    report.groups_across_topics += 1
+                else:
+                    done = False
+            if done:
+                left = cross_topic_groups(
+                    [m for m in store.memories(limit=100_000) if m.scope == "coding" and m.topic_id]
+                )
+                store.set_meta(key, fingerprint([m for cluster in left for m in cluster]))
+
+        # Two topics that are one subject keep their memory apart for good: asked about
+        # whenever the set of topics changed.
+        topics = [topic for topic in store.topics(scope="coding") if topic.active]
+        key = _meta_key("topics")
+        named = sha256("\n".join(sorted(t.topic_id for t in topics)).encode()).hexdigest()[:16]
+        if len(topics) > 1 and store.get_meta(key) != named and report.llm_calls < max_calls:
+            merging = RetopicReport()
+            merge_topics(store, runner, merging)
+            report.llm_calls += merging.llm_calls
+            report.llm_failures += merging.llm_failures
+            report.input_tokens += merging.input_tokens
+            report.output_tokens += merging.output_tokens
+            report.cost_usd += merging.cost_usd
+            report.topics_merged += merging.topics_merged
+            report.rejections += merging.rejections
+            if not merging.llm_failures:
+                after = [topic for topic in store.topics(scope="coding") if topic.active]
+                store.set_meta(
+                    key,
+                    sha256("\n".join(sorted(t.topic_id for t in after)).encode()).hexdigest()[:16],
+                )
     return report
+
+
+ACROSS_TOPICS = "歸在不同主題、內容相近的"
+# Shared character pairs over all pairs of two texts, from which they count as alike.
+ALIKE = 0.4
+
+
+def _pairs(text: str) -> set[str]:
+    joined = "".join(normalize(text).split())
+    return {joined[index : index + 2] for index in range(len(joined) - 1)}
+
+
+def cross_topic_groups(memories: list[MemoryRow]) -> list[list[MemoryRow]]:
+    """Groups of entries that read alike and are not all filed under one topic, the
+    largest first. Wording that differs more than this is left to a person."""
+    pairs = {memory.memory_id: _pairs(memory.text) for memory in memories}
+    parent = {memory.memory_id: memory.memory_id for memory in memories}
+
+    def root(memory_id: str) -> str:
+        while parent[memory_id] != memory_id:
+            parent[memory_id] = parent[parent[memory_id]]
+            memory_id = parent[memory_id]
+        return memory_id
+
+    for index, one in enumerate(memories):
+        for other in memories[index + 1 :]:
+            first, second = pairs[one.memory_id], pairs[other.memory_id]
+            union = len(first | second)
+            if union and len(first & second) / union >= ALIKE:
+                parent[root(one.memory_id)] = root(other.memory_id)
+    clusters: dict[str, list[MemoryRow]] = {}
+    for memory in memories:
+        clusters.setdefault(root(memory.memory_id), []).append(memory)
+    found = [
+        cluster
+        for cluster in clusters.values()
+        if len(cluster) > 1 and len({memory.topic_id for memory in cluster}) > 1
+    ]
+    return sorted(found, key=lambda cluster: (-len(cluster), cluster[0].memory_id))
+
+
+def _batches(clusters: list[list[MemoryRow]]) -> list[list[MemoryRow]]:
+    batches: list[list[MemoryRow]] = []
+    current: list[MemoryRow] = []
+    for cluster in clusters:
+        if current and len(current) + len(cluster) > MAX_MEMORY_LISTED:
+            batches.append(current)
+            current = []
+        current += cluster[:MAX_MEMORY_LISTED]
+    if current:
+        batches.append(current)
+    return batches

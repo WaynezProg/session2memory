@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
@@ -15,8 +16,11 @@ READER_ENV = "SESSION2MEMORY_READER"
 def openclaw_roots(state_dir: Path) -> tuple[Path, ...]:
     """Directories whose sessions belong to OpenClaw agents, given OpenClaw's state dir.
 
-    These are the agents' own state, OpenClaw's built-in workspace locations
-    (``workspace`` and ``workspace-<profile>`` inside the state dir), every workspace
+    These are the agents' own state, the folders plugins run an agent's turn in
+    (``plugin-state/<plugin>/sessions``: a plugin that hands the turn to another command
+    line, such as muse-cli, gives each session a folder there), OpenClaw's built-in
+    workspace locations (``workspace`` and ``workspace-<profile>`` inside the state dir),
+    every workspace
     ``openclaw.json`` assigns an agent, and, for the split layout that keeps
     ``<root>/state`` beside ``<root>/workspaces``, that whole ``workspaces`` folder (it
     also holds the shared ``projects`` links no agent is assigned). The split layout is
@@ -28,6 +32,7 @@ def openclaw_roots(state_dir: Path) -> tuple[Path, ...]:
     """
     configured = _configured_workspaces(state_dir)
     roots = [state_dir / "agents", state_dir / "workspace", *_profile_workspaces(state_dir)]
+    roots += _plugin_session_folders(state_dir)
     roots += configured
     sibling = state_dir.parent / "workspaces"
     in_home = _absolute(state_dir.parent) == _absolute(Path.home())
@@ -39,6 +44,45 @@ def openclaw_roots(state_dir: Path) -> tuple[Path, ...]:
 
 def _absolute(path: Path) -> str:
     return Path(os.path.abspath(path.expanduser())).as_posix()
+
+
+def _plugin_session_folders(state_dir: Path) -> list[Path]:
+    try:
+        return sorted(one for one in state_dir.glob("plugin-state/*/sessions") if one.is_dir())
+    except OSError:
+        return []
+
+
+_WORKING_DIRECTORY = re.compile(r"^Working directory: (/.+)$", re.MULTILINE)
+
+
+def plugin_session_owner(path: Path, roots: tuple[Path, ...]) -> Path | None:
+    """The agent workspace a plugin's session folder was working for, if it says so.
+
+    A session a plugin runs through another command line has a folder of its own
+    (``plugin-state/<plugin>/sessions/<id>``) as its working directory, which says
+    nothing about whose work it is. OpenClaw writes the agent's instructions there as
+    ``AGENTS.md``, with the agent's ``Working directory:``. That workspace is returned
+    when it is one of OpenClaw's; a folder that is gone, or says nothing, gives ``None``.
+    """
+    parts = Path(os.path.abspath(path)).parts
+    for index in range(len(parts) - 3):
+        if parts[index] == "plugin-state" and parts[index + 2] == "sessions":
+            folder = Path(*parts[: index + 4])
+            break
+    else:
+        return None
+    if not within(folder, roots):
+        return None
+    try:
+        with (folder / "AGENTS.md").open(encoding="utf-8", errors="replace") as handle:
+            found = _WORKING_DIRECTORY.search(handle.read(200_000))
+    except OSError:
+        return None
+    if found is None:
+        return None
+    workspace = Path(found.group(1).strip())
+    return workspace if within(workspace, roots) and workspace != folder else None
 
 
 def _profile_workspaces(state_dir: Path) -> list[Path]:

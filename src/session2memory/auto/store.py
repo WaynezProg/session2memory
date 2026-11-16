@@ -908,6 +908,25 @@ class AutoStore:
             return None
         return self.ensure_topic(agent, scope="openclaw", description=team or None)
 
+    def hand_to_agent(
+        self, memory_id: str, topic_id: str | None, *, reason: str, run_id: str | None = None
+    ) -> bool:
+        """Make a coding memory an OpenClaw agent's: its scope narrows and, when active,
+        it is filed under the agent. Only for memory that turned out to come from the
+        agent's own sessions; everything else about scope only ever widens."""
+        existing = self.get_memory(memory_id)
+        if existing is None or existing.scope == "openclaw":
+            return False
+        self._connection.execute(
+            "UPDATE auto_memories SET scope='openclaw', updated_at=? WHERE memory_id=?",
+            (now_iso(), memory_id),
+        )
+        self._event(memory_id, "narrow", {"reason": reason}, run_id)
+        self._connection.commit()
+        if topic_id is not None and existing.status == ACTIVE:
+            self.set_memory_topic(memory_id, topic_id, reason=reason, run_id=run_id)
+        return True
+
     def unfiled_memories(self, *, limit: int = 5000) -> list[MemoryRow]:
         """Active memory no topic has been chosen for yet, oldest first."""
         rows = self._connection.execute(
