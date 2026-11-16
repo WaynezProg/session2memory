@@ -8,7 +8,8 @@ of them to settle the order.
 Memory and session summaries are ranked apart before that. There are some forty session
 summaries to one memory and their vectors sit a little closer to any question, so in one
 ranking the memory that answers it is rarely among the candidates; each kind brings its
-own best, and the cross-encoder, which reads the texts, decides between them.
+own best. The cross-encoder then orders each kind, and the two take turns in the result:
+its scores do not compare a one-line memory with a long summary fairly.
 
 Everything runs on this machine through the optional ``fastembed`` package (ONNX models,
 downloaded once): no text leaves it and a query costs no tokens. Without the package, or
@@ -502,7 +503,11 @@ def semantic_search(
     if reranker is not None and head:
         scores = reranker.score(query, [rows[ref][3][:RERANK_CHARS] for ref in head])
         ranked = sorted(zip(head, scores, strict=True), key=lambda pair: -pair[1])
-        head = [ref for ref, _ in ranked]
+        # The scores order each kind, not the two against each other. Measured on real
+        # memory, one order for both put a session summary above the memory that answers
+        # the question in one case out of six: the reranker reads five times as much of a
+        # summary as of a memory, and what it reads there often repeats the question.
+        head = _alternating([ref for ref, _ in ranked], rows)
     listed = set(head)
     ordered = [*head, *(ref for ref in by_meaning if ref not in listed)]
     return [rows[ref] for ref in _without_repeats(ordered, rows)[:limit]]
