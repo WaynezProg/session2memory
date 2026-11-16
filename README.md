@@ -717,13 +717,14 @@ the index is selected by workspace and recency. Search by meaning is `auto searc
 
 On 2026-11-15 a real session of each agent was handed to each of the others in one
 workspace: Claude Code, Codex, Cursor, Grok, Muse and Antigravity, 30 source → receiver
-pairs. A pair counts as confirmed when the receiving model itself reported the handoff,
-with the right source agent and session, and the ledger holds the delivery.
+pairs; all 30 are confirmed. A pair counts as confirmed when the receiving model itself
+reported the handoff, with the right source agent and session, and the ledger holds the
+delivery.
 
 | Receiver | Result |
 | --- | --- |
 | Claude Code, Codex, Cursor, Grok, Antigravity | confirmed from all five other agents (25 pairs) |
-| Muse | not confirmed by the model yet (5 pairs): the handoff was in each Muse session's log with the right source, but Muse's subscription quota was used up, so the model never answered |
+| Muse | confirmed from all five other agents (5 pairs, rerun on 2026-11-16 with `muse exec`; the first run on 2026-11-15 ran out of Muse quota before the model answered) |
 
 Claude Code was started interactively, since its hook stays silent for `claude -p`; the
 others ran in their non-interactive modes. What the test showed about each agent:
@@ -734,8 +735,10 @@ others ran in their non-interactive modes. What the test showed about each agent
   `cursor-agent` sessions each got it once and were recorded as `cursor`.
 - **Grok gets it after its first tool call**, as described above. The test prompt had Grok
   run one shell command first; a Grok session that only answers in text gets nothing.
-- **Muse as a receiver is still to be confirmed** by a run with quota left. As a source it
-  worked for all five receivers.
+- **Muse works as both source and receiver.** In the 2026-11-16 rerun each of the five
+  sources ran in its own workspace with a unique passphrase; every `muse exec` session
+  named the right source agent, session id and passphrase, and the ledger recorded all
+  five deliveries to `muse:`.
 - The same test found three faults in the packet, also fixed in #24: the goal line of a
   Grok or Cursor session was its `<rules>` block, Cursor's last activity had no time zone,
   and Muse had no last activity at all.
