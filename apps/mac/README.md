@@ -76,7 +76,9 @@ Nothing has to be set up in the app. At start it looks for session2memory by its
 
 1. the checkout the app was built from (it then runs `uv run session2memory` there);
 2. otherwise the `session2memory` command on your `PATH`, as installed with
-   `uv tool install git+https://github.com/WaynezProg/session2memory`.
+   `uv tool install "session2memory[semantic] @ git+https://github.com/WaynezProg/session2memory"`.
+   Installed without the `[semantic]` extra, the command still works, but its
+   `auto search` falls back to keyword mode.
 
 HKS, which only the HKS Query pane needs, is looked for the same way: a
 `Hybrid-Knowledge-System` checkout next to session2memory's, else the `ks` command.

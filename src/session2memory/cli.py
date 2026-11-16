@@ -5,6 +5,7 @@ import shlex
 import shutil
 import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date as Date
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,7 @@ from session2memory.auto.semantic import (
 )
 from session2memory.auto.store import AutoStore
 from session2memory.distill import DistillError, distill_reviews
+from session2memory.envfile import load_env_file
 from session2memory.handoff import (
     DEFAULT_MAX_CHARS,
     MIN_MAX_CHARS,
@@ -789,17 +791,30 @@ def auto_search(
             # Models are loaded only when this reader has something to compare, and any
             # failure there (a model that cannot be fetched) leaves keyword search.
             try:
-                embedder = load_embedder()
+                # The models load side by side while the rows are read: neither needs
+                # the other, and together they are most of a search's time.
+                with ThreadPoolExecutor(max_workers=2) as loading:
+                    waiting = loading.submit(load_reranker) if rerank else None
+                    loaded = loading.submit(load_embedder)
+                    opened.search_rows(project=project, reader=scope)
+                    embedder = loaded.result()
+                    reranker = waiting.result() if waiting is not None else None
                 if embedder is not None:
                     hits = semantic_search(
                         opened,
                         query,
                         embedder=embedder,
-                        reranker=load_reranker() if rerank else None,
+                        reranker=reranker,
                         project=project,
                         reader=scope,
                         limit=limit,
                     )
+                    failure = getattr(reranker, "failure", None)
+                    if failure:
+                        typer.echo(
+                            f"rerank service failed ({failure}); used the local reranker",
+                            err=True,
+                        )
             except Exception as exc:  # noqa: BLE001 - search must still answer
                 typer.echo(f"semantic search failed ({type(exc).__name__}: {exc})", err=True)
                 hits = None
@@ -1163,7 +1178,10 @@ def auto_console(
 
 @app.callback()
 def main() -> None:
-    pass
+    """Every command starts with the shared settings file read (see ``envfile``)."""
+    note = load_env_file()
+    if note:
+        typer.echo(note, err=True)
 
 
 app.add_typer(review_app, name="review")

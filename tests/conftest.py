@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 
@@ -22,3 +25,12 @@ def isolated_sync_backups(
     monkeypatch.setenv(
         "SESSION2MEMORY_SYNC_BACKUP_DIR", tmp_path_factory.mktemp("sync-backups").as_posix()
     )
+
+
+@pytest.fixture(autouse=True)
+def no_shared_settings_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Tests never read the settings (and key) of the person running them."""
+    monkeypatch.setenv("SESSION2MEMORY_ENV_FILE", (tmp_path / "no-settings").as_posix())
+    for name in list(os.environ):
+        if name.startswith(("SESSION2MEMORY_EMBED_API", "SESSION2MEMORY_RERANK_API")):
+            monkeypatch.delenv(name)
