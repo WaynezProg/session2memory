@@ -128,4 +128,10 @@ final class WordingTests: XCTestCase {
         XCTAssertEqual(lookups(response).map(\.route), ["wiki", "vector", "lexical"])
         XCTAssertEqual(lookups(response).map(\.note), ["沒找到", "採用這個", "有找到，沒採用"])
     }
+
+    func testFilingUnderATopicReadsInPlainWords() {
+        XCTAssertEqual(Lexicon.event("retopic"), "改歸到別的主題")
+        XCTAssertEqual(Lexicon.reason("filed by topic"), "整理時依內容歸到主題")
+        XCTAssertEqual(Lexicon.reason("by hand: 歸錯了"), "by hand: 歸錯了")
+    }
 }
