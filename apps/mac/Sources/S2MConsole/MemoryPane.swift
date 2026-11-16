@@ -175,7 +175,7 @@ struct MemoryPane: View {
                     ForEach(MemoryOrganization.groups(memories, by: lens)) { group in
                         Text("\(group.topic.label)（\(group.memories.count)）").tag(group.id)
                     }
-                }.labelsHidden().fixedSize()
+                }.labelsHidden().frame(width: 210)
             }
             HStack(spacing: 10) {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -507,7 +507,8 @@ struct MemoryPane: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(Lexicon.event(event.op)).font(.system(size: 14))
                         if let why = event.detail["reason"]?.stringValue, !why.isEmpty {
-                            Text(why).font(.system(size: 13)).foregroundColor(Theme.secondary)
+                            Text(Lexicon.reason(why))
+                                .font(.system(size: 13)).foregroundColor(Theme.secondary)
                         }
                     }
                     Spacer()

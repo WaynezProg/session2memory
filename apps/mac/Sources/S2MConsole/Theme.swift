@@ -86,7 +86,17 @@ enum Lexicon {
         case "stale": return "標為可能過期"
         case "merge", "merged": return "合併"
         case "note": return "備註"
+        case "retopic": return "改歸到別的主題"
         default: return op
+        }
+    }
+
+    /// Why a change was made, where the run wrote it in its own words.
+    static func reason(_ value: String) -> String {
+        switch value {
+        case "filed by topic": return "整理時依內容歸到主題"
+        case "same subject, two names": return "與另一個主題是同一件事，已合併"
+        default: return value
         }
     }
 
